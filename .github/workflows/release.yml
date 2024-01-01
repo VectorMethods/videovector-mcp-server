@@ -23,6 +23,7 @@ concurrency:
 
 env:
   MCP_NAME: io.github.vectormethods/videovector-mcp-server
+  MCP_REGISTRY_NAME: io.github.VectorMethods/videovector-mcp-server
   NPM_PACKAGE: "@vectormethods/videovector-mcp-server"
   GHCR_IMAGE: ghcr.io/vectormethods/videovector-mcp-server
 
@@ -85,6 +86,7 @@ jobs:
           const fs = require('node:fs');
           const version = process.env.RELEASE_VERSION;
           const mcpName = process.env.MCP_NAME;
+          const mcpRegistryName = process.env.MCP_REGISTRY_NAME;
           const npmPackage = process.env.NPM_PACKAGE;
           const ghcrImage = process.env.GHCR_IMAGE;
           if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[a-z0-9.-]+)?$/.test(version)) {
@@ -101,8 +103,8 @@ jobs:
             throw new Error(`package.json mcpName must be ${mcpName}`);
           }
           const server = JSON.parse(fs.readFileSync('server.json', 'utf8'));
-          if (server.name !== mcpName) {
-            throw new Error(`server.json name must be ${mcpName}`);
+          if (server.name !== mcpRegistryName) {
+            throw new Error(`server.json name must be ${mcpRegistryName}`);
           }
           if (server.version !== version) {
             throw new Error(`server.json version ${server.version} does not match ${version}`);
@@ -134,18 +136,18 @@ jobs:
           else
             echo "npm_version_exists=false" >> "$GITHUB_OUTPUT"
           fi
-          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.env.MCP_NAME))')"
+          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.env.MCP_REGISTRY_NAME))')"
           registry_url="https://registry.modelcontextprotocol.io/v0.1/servers/${encoded_name}/versions/${RELEASE_VERSION}"
           status="$(curl -sS -o /tmp/mcp-registry-version.json -w "%{http_code}" "$registry_url")"
           if [[ "$status" == "200" ]]; then
           node <<'NODE'
           const fs = require('node:fs');
           const version = process.env.RELEASE_VERSION;
-          const mcpName = process.env.MCP_NAME;
+          const mcpRegistryName = process.env.MCP_REGISTRY_NAME;
           const npmPackage = process.env.NPM_PACKAGE;
           const ghcrImage = process.env.GHCR_IMAGE;
           const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
-          if (payload.name !== mcpName || payload.version !== version) {
+          if (payload.name !== mcpRegistryName || payload.version !== version) {
             throw new Error('MCP Registry version metadata does not match this release');
           }
           const packages = Array.isArray(payload.packages) ? payload.packages : [];
@@ -447,7 +449,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail
-          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.env.MCP_NAME))')"
+          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.env.MCP_REGISTRY_NAME))')"
           registry_url="https://registry.modelcontextprotocol.io/v0.1/servers/${encoded_name}/versions/${RELEASE_VERSION}"
           for attempt in $(seq 1 18); do
             status="$(curl -sS -o /tmp/mcp-registry-version.json -w "%{http_code}" "$registry_url")"
@@ -455,11 +457,11 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs');
           const version = process.env.RELEASE_VERSION;
-          const mcpName = process.env.MCP_NAME;
+          const mcpRegistryName = process.env.MCP_REGISTRY_NAME;
           const npmPackage = process.env.NPM_PACKAGE;
           const ghcrImage = process.env.GHCR_IMAGE;
           const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
-          if (payload.name !== mcpName || payload.version !== version) {
+          if (payload.name !== mcpRegistryName || payload.version !== version) {
             throw new Error('MCP Registry version metadata does not match this release');
           }
           const packages = Array.isArray(payload.packages) ? payload.packages : [];

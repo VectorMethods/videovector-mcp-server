@@ -12,7 +12,7 @@ This package lets MCP clients such as Claude Desktop, Cursor, Claude Code, and c
 - Package: `@vectormethods/videovector-mcp-server`
 - Command: `videovector-mcp`
 - Server name: `videovector`
-- MCP Registry name: `io.github.vectormethods/videovector-mcp-server`
+- MCP Registry name: `io.github.VectorMethods/videovector-mcp-server`
 
 This repository is the public source of truth for VideoVector MCP server code, tool contracts, examples, and release metadata. Private VectorMethods backend deployment wiring, service accounts, project IDs, billing internals, and website source are intentionally not part of this repository.
 
