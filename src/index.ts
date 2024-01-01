@@ -33,7 +33,7 @@
  *   MCP_HTTP_ENABLE_JSON_RESPONSE - Optional: true|false (default: false)
  */
 
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
@@ -313,16 +313,18 @@ function acceptsStreamableHttpResponse(headers: IncomingHttpHeaders): boolean {
   return mediaTypes.has('application/json') && mediaTypes.has('text/event-stream');
 }
 
-function hashApiKey(apiKey: string): Buffer {
-  return createHash('sha256').update(apiKey).digest();
+const API_KEY_FINGERPRINT_SECRET = randomBytes(32);
+
+export function fingerprintApiKey(apiKey: string): Buffer {
+  return createHmac('sha256', API_KEY_FINGERPRINT_SECRET).update(apiKey).digest();
 }
 
 function hashApiKeyForCache(apiKey: string): string {
-  return hashApiKey(apiKey).toString('hex');
+  return fingerprintApiKey(apiKey).toString('hex');
 }
 
 function apiKeyMatchesHash(apiKey: string, expectedHash: Buffer): boolean {
-  const receivedHash = hashApiKey(apiKey);
+  const receivedHash = fingerprintApiKey(apiKey);
   return receivedHash.length === expectedHash.length && timingSafeEqual(receivedHash, expectedHash);
 }
 
@@ -821,7 +823,7 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       return;
     }
 
-    const requestedKeyHash = hashApiKey(auth.apiKey);
+    const requestedKeyHash = fingerprintApiKey(auth.apiKey);
     const requestedKeyHashHex = requestedKeyHash.toString('hex');
 
     if (sessions.size + pendingSessionCount >= config.maxSessions) {

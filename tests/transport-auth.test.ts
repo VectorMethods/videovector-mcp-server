@@ -1,9 +1,9 @@
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
 
 import {
   createHttpApp,
+  fingerprintApiKey,
   loadBaseConfig,
   loadStdioConfig,
   authenticateRequestHeaders,
@@ -331,7 +331,7 @@ describe('http transport auth and readiness', () => {
       sessionId: 'existing',
       transport: { handleRequest: vi.fn() } as any,
       server: { close: vi.fn().mockResolvedValue(undefined) } as any,
-      keyHash: createHash('sha256').update(existingKey).digest(),
+      keyHash: fingerprintApiKey(existingKey),
       createdAtMs: Date.now(),
       lastActivityAtMs: Date.now(),
       absoluteExpiresAtMs: Date.now() + 60_000,
@@ -509,7 +509,7 @@ describe('http transport auth and readiness', () => {
         sessionId,
         transport: transport as any,
         server: server as any,
-        keyHash: createHash('sha256').update(apiKey).digest(),
+        keyHash: fingerprintApiKey(apiKey),
         createdAtMs: Date.now(),
         lastActivityAtMs: Date.now(),
         absoluteExpiresAtMs: Date.now() + 60_000,
