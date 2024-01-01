@@ -138,26 +138,26 @@ jobs:
           registry_url="https://registry.modelcontextprotocol.io/v0.1/servers/${encoded_name}/versions/${RELEASE_VERSION}"
           status="$(curl -sS -o /tmp/mcp-registry-version.json -w "%{http_code}" "$registry_url")"
           if [[ "$status" == "200" ]]; then
-            node <<'NODE'
-            const fs = require('node:fs');
-            const version = process.env.RELEASE_VERSION;
-            const mcpName = process.env.MCP_NAME;
-            const npmPackage = process.env.NPM_PACKAGE;
-            const ghcrImage = process.env.GHCR_IMAGE;
-            const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
-            if (payload.name !== mcpName || payload.version !== version) {
-              throw new Error('MCP Registry version metadata does not match this release');
-            }
-            const packages = Array.isArray(payload.packages) ? payload.packages : [];
-            const npmEntry = packages.find((entry) => entry.registryType === 'npm');
-            const ociEntry = packages.find((entry) => entry.registryType === 'oci');
-            if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version) {
-              throw new Error('MCP Registry npm package metadata does not match this release');
-            }
-            if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}`) {
-              throw new Error('MCP Registry OCI package metadata does not match this release');
-            }
-            NODE
+          node <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.RELEASE_VERSION;
+          const mcpName = process.env.MCP_NAME;
+          const npmPackage = process.env.NPM_PACKAGE;
+          const ghcrImage = process.env.GHCR_IMAGE;
+          const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
+          if (payload.name !== mcpName || payload.version !== version) {
+            throw new Error('MCP Registry version metadata does not match this release');
+          }
+          const packages = Array.isArray(payload.packages) ? payload.packages : [];
+          const npmEntry = packages.find((entry) => entry.registryType === 'npm');
+          const ociEntry = packages.find((entry) => entry.registryType === 'oci');
+          if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version) {
+            throw new Error('MCP Registry npm package metadata does not match this release');
+          }
+          if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}`) {
+            throw new Error('MCP Registry OCI package metadata does not match this release');
+          }
+          NODE
             echo "mcp_registry_exists=true" >> "$GITHUB_OUTPUT"
           elif [[ "$status" == "404" ]]; then
             echo "mcp_registry_exists=false" >> "$GITHUB_OUTPUT"
@@ -423,26 +423,26 @@ jobs:
           for attempt in $(seq 1 18); do
             status="$(curl -sS -o /tmp/mcp-registry-version.json -w "%{http_code}" "$registry_url")"
             if [[ "$status" == "200" ]]; then
-              node <<'NODE'
-              const fs = require('node:fs');
-              const version = process.env.RELEASE_VERSION;
-              const mcpName = process.env.MCP_NAME;
-              const npmPackage = process.env.NPM_PACKAGE;
-              const ghcrImage = process.env.GHCR_IMAGE;
-              const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
-              if (payload.name !== mcpName || payload.version !== version) {
-                throw new Error('MCP Registry version metadata does not match this release');
-              }
-              const packages = Array.isArray(payload.packages) ? payload.packages : [];
-              const npmEntry = packages.find((entry) => entry.registryType === 'npm');
-              const ociEntry = packages.find((entry) => entry.registryType === 'oci');
-              if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version) {
-                throw new Error('MCP Registry npm package metadata does not match this release');
-              }
-              if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}`) {
-                throw new Error('MCP Registry OCI package metadata does not match this release');
-              }
-              NODE
+          node <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.RELEASE_VERSION;
+          const mcpName = process.env.MCP_NAME;
+          const npmPackage = process.env.NPM_PACKAGE;
+          const ghcrImage = process.env.GHCR_IMAGE;
+          const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
+          if (payload.name !== mcpName || payload.version !== version) {
+            throw new Error('MCP Registry version metadata does not match this release');
+          }
+          const packages = Array.isArray(payload.packages) ? payload.packages : [];
+          const npmEntry = packages.find((entry) => entry.registryType === 'npm');
+          const ociEntry = packages.find((entry) => entry.registryType === 'oci');
+          if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version) {
+            throw new Error('MCP Registry npm package metadata does not match this release');
+          }
+          if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}`) {
+            throw new Error('MCP Registry OCI package metadata does not match this release');
+          }
+          NODE
               exit 0
             fi
             sleep 10
