@@ -96,7 +96,7 @@ authentication or publisher installation. A resumed workflow retrieves the exact
 draft release ID, asset ID, and SHA-256, then reruns source verification, the
 dependency audit, independent semantic checks, and the npm stdio smoke. The
 smoke compares the published server version and full tool list against the
-committed contract, including the stdio-only upload tool.
+committed six-tool contract and canonical app-only helpers. Local upload is an option on analyze/import_media, not a separate tool.
 
 Node, npm, the MCP publisher, and GitHub Actions are pinned. Build and manifest
 tooling use npm 11.15.0. After bundle verification, the npm publisher installs

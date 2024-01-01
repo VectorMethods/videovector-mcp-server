@@ -1,3 +1,4 @@
+import type { McpToolResponse } from '../types/mcp.js';
 /**
  * VideoVector API Client
  *
@@ -15,6 +16,8 @@ import { Readable } from 'node:stream';
 
 import { PACKAGE_VERSION } from '../version.js';
 import {
+  type AnalysisReadOptions,
+  type AnalysisResponse,
   type Index,
   type Video,
   type Segment,
@@ -485,6 +488,8 @@ export class VideoVectorClient {
       allowEmptyResponse?: boolean;
       timeoutMs?: number;
       capability?: { url: string; token: string };
+      signal?: AbortSignal;
+      deadline?: number;
     } = {}
   ): Promise<T> {
     const {
@@ -530,10 +535,24 @@ export class VideoVectorClient {
 
     // Create abort controller for timeout
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? this.timeout);
+    const timeout = Math.min(this.timeout, options.timeoutMs ?? this.timeout);
+    const remaining = options.deadline === undefined ? timeout : Math.min(timeout, options.deadline - Date.now());
+    if (options.signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
+    if (remaining <= 0) throw new VideoVectorApiError('Request timed out', 'timeout_error', 408);
+    const abort = () => controller.abort();
+    options.signal?.addEventListener('abort', abort, { once: true });
+    const timeoutId = setTimeout(abort, remaining);
     const retryRequest = async (delay: number): Promise<T> => {
       clearTimeout(timeoutId);
-      await this.sleep(delay);
+      if (options.signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
+      if (options.deadline !== undefined && Date.now() + delay >= options.deadline) {
+        throw new VideoVectorApiError('Request timed out', 'timeout_error', 408);
+      }
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => { clearTimeout(timer); reject(new VideoVectorApiError('Request cancelled', 'request_cancelled', 499)); };
+        const timer = setTimeout(() => { options.signal?.removeEventListener('abort', onAbort); resolve(); }, delay);
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+      });
       return this.request<T>(method, path, {
         body,
         query,
@@ -542,6 +561,8 @@ export class VideoVectorClient {
         allowEmptyResponse,
         timeoutMs: options.timeoutMs,
         capability: options.capability,
+        signal: options.signal,
+        deadline: options.deadline,
       });
     };
 
@@ -551,7 +572,9 @@ export class VideoVectorClient {
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: controller.signal,
-        redirect: options.capability ? 'error' : undefined,
+        // Neither account credentials nor narrow upload grants may follow a
+        // backend redirect to an unrelated origin.
+        redirect: 'error',
       });
 
       // Handle non-2xx responses
@@ -597,6 +620,8 @@ export class VideoVectorClient {
     } catch (error) {
       // Handle abort/timeout
       if (isAbortError(error)) {
+        if (options.signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
+        if (options.deadline !== undefined && Date.now() >= options.deadline) throw new VideoVectorApiError('Request timed out', 'timeout_error', 408);
         if (allowRetry && retryCount < this.maxRetries) {
           return retryRequest(INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount));
         }
@@ -640,6 +665,7 @@ export class VideoVectorClient {
       );
     } finally {
       clearTimeout(timeoutId);
+      options.signal?.removeEventListener('abort', abort);
     }
   }
 
@@ -959,7 +985,7 @@ export class VideoVectorClient {
       | { reason: 'authentication' }
       | {
           reason: 'processing_intent';
-          operation: 'upload_media' | 'process_media' | 'find' | 'retry_prompt_run_segment';
+          operation: 'import_media' | 'analyze';
         },
     eventId: string = randomUUID()
   ): Promise<void> {
@@ -998,6 +1024,27 @@ export class VideoVectorClient {
     });
   }
 
+  async mcpTool(name: 'analyze' | 'get_analysis' | 'search' | 'import_media' | 'save_prompt' | 'browse', args: Record<string, unknown>, options: { idempotencyKey?: string; signal?: AbortSignal; deadline?: number } = {}): Promise<McpToolResponse> {
+    const result = await this.request<McpToolResponse>('POST', `/workflow/mcp/${name}`, {
+      body: args, signal: options.signal, deadline: options.deadline ?? Date.now() + 30000,
+      ...(options.idempotencyKey ? { headers: { 'Idempotency-Key': options.idempotencyKey } } : {}),
+    });
+    if (!result || !Array.isArray(result.content) || !result.content.every(item => item.type === 'text' && typeof item.text === 'string')) {
+      throw new VideoVectorApiError('Invalid MCP facade response', 'invalid_json_response', 502);
+    }
+    return result;
+  }
+
+  async mcpImportProgress(importId: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    return this.request('GET', `/workflow/mcp/imports/${encodeURIComponent(importId)}`, { signal, deadline: Date.now() + 30000 });
+  }
+
+  async getAnalysis(analysisId: string, options: AnalysisReadOptions = {}, signal?: AbortSignal, deadline = Date.now() + 30000): Promise<AnalysisResponse> {
+    return this.request('GET', `/workflow/analyses/${encodeURIComponent(analysisId)}`, {
+      query: { ...options }, signal, deadline,
+    });
+  }
+
   async workflowAttachments(request: WorkflowAttachmentRequest, idempotencyKey?: string): Promise<WorkflowIntakeResponse> {
     return this.request('POST', '/workflow/attachments', {
       body: request,
@@ -1016,17 +1063,18 @@ export class VideoVectorClient {
   async workflowUploadAttachment(
     jobId: string, grant: WorkflowUploadGrant, filePath: string, fileId: string,
     expectedIdentity: WorkflowUploadFileIdentity,
+    signal?: AbortSignal,
   ): Promise<WorkflowIntakeResponse> {
     this.validateUploadGrant(jobId, grant);
-    return this.requestWorkflowUpload({ file_path: filePath }, `attachment:${jobId}:${fileId}`, expectedIdentity, { grant, fileId });
+    return this.requestWorkflowUpload({ file_path: filePath }, `attachment:${jobId}:${fileId}`, expectedIdentity, { grant, fileId }, signal);
   }
 
   async workflowCompleteAttachments(
-    jobId: string, grant: WorkflowUploadGrant, fileIds: string[],
+    jobId: string, grant: WorkflowUploadGrant, fileIds: string[], signal?: AbortSignal, deadline?: number,
   ): Promise<WorkflowIntakeResponse> {
     this.validateUploadGrant(jobId, grant);
     return this.request('POST', '', {
-      body: { file_ids: fileIds },
+      body: { file_ids: fileIds }, signal, deadline,
       headers: { 'Idempotency-Key': `attachment-complete:${jobId}` },
       capability: { url: grant.complete_url, token: grant.token },
     });
@@ -1103,7 +1151,7 @@ export class VideoVectorClient {
     return this.request('GET', `/workflow/deliveries/${sourceKind}/${encodeURIComponent(sourceId)}`);
   }
 
-  async workflowSnapshotResults(snapshotId: string, options: { cursor?: string; limit?: number } = {}): Promise<WorkflowSearchResponse> {
+  async workflowSnapshotResults(snapshotId: string, options: { cursor?: string; limit?: number; include_download?: boolean } = {}): Promise<WorkflowSearchResponse> {
     return this.request('GET', `/workflow/searches/${encodeURIComponent(snapshotId)}/results`, { query: { ...options } });
   }
 
@@ -1119,6 +1167,10 @@ export class VideoVectorClient {
     return this.request<Index[]>('GET', '/indexes', {
       query: { include_defaults: includeDefaults },
     });
+  }
+
+  async workflowListIndexes(options: { index_id?: string; index_name?: string; include_defaults?: boolean; limit?: number; cursor?: string } = {}): Promise<Record<string, unknown>> {
+    return this.request('GET', '/workflow/indexes', { query: { ...options } });
   }
 
   async getIndex(indexId: string): Promise<Index> {
@@ -1825,13 +1877,15 @@ export class VideoVectorClient {
   /**
    * Stream a local media file as multipart data. Each retry opens a fresh file
    * descriptor while retaining one backend idempotency key; the file is never
-   * buffered into memory.
+   * buffered into memory. Transfers use the configured per-attempt timeout,
+   * separate from the short analysis admission and observation deadlines.
    */
   private async requestWorkflowUpload<T>(
     request: WorkflowUploadRequest,
     idempotencyKey: string,
     expectedIdentity?: WorkflowUploadFileIdentity,
     attachment?: { grant: WorkflowUploadGrant; fileId: string },
+    signal?: AbortSignal,
   ): Promise<T> {
     const boundary = `videovector-${randomUUID()}`;
     const fields: Buffer[] = [];
@@ -1857,6 +1911,7 @@ export class VideoVectorClient {
     const url = new URL(attachment?.grant.url ?? `${this.baseUrl}/workflow/upload`);
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      if (signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
       let fileHandle: Awaited<ReturnType<typeof fs.open>>;
       try {
         fileHandle = await fs.open(
@@ -1873,7 +1928,9 @@ export class VideoVectorClient {
       let body: Readable | undefined;
       let retryDelay: number | undefined;
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+      const abort = () => controller.abort();
+      signal?.addEventListener('abort', abort, { once: true });
+      const timeoutId = setTimeout(abort, this.timeout);
 
       try {
         const fileStat = await fileHandle.stat();
@@ -1964,6 +2021,7 @@ export class VideoVectorClient {
         }
       } catch (error) {
         if (isAbortError(error)) {
+          if (signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
           if (attempt < this.maxRetries) {
             retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
           } else {
@@ -1996,6 +2054,7 @@ export class VideoVectorClient {
         }
       } finally {
         clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', abort);
         body?.destroy();
         await fileHandle.close().catch(() => undefined);
       }

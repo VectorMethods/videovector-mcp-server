@@ -1,6 +1,6 @@
 {
   "name": "@vectormethods/videovector-mcp-server",
-  "version": "4.0.1",
+  "version": "5.0.0",
   "packageManager": "npm@11.15.0",
   "mcpName": "io.github.VectorMethods/videovector-mcp-server",
   "description": "Model Context Protocol server for the VectorMethods VideoVector media intelligence API",
@@ -10,7 +10,7 @@
     "videovector-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc && node scripts/build-picker.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc && node scripts/build-picker.mjs",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",

@@ -56,11 +56,11 @@ describe('explicit processing activity transport', () => {
       baseUrl: config.baseUrl,
       credential: { kind: 'oauth', accessToken: 'verified-token', issuer: 'issuer', subject: 'user', resource: 'resource' },
     });
-    await client.recordProcessingActivity({ reason: 'processing_intent', operation: 'find' }, EVENT_ID);
+    await client.recordProcessingActivity({ reason: 'processing_intent', operation: 'analyze' }, EVENT_ID);
     const init = fetchSpy.mock.calls[0]![1] as RequestInit;
     expect(init.headers).toMatchObject({ Authorization: 'Bearer verified-token' });
     expect(init.headers).not.toHaveProperty('X-API-Key');
-    expect(JSON.parse(init.body as string)).toMatchObject({ operation: 'find', reason: 'processing_intent' });
+    expect(JSON.parse(init.body as string)).toMatchObject({ operation: 'analyze', reason: 'processing_intent' });
   });
 
   it.each([401, 429, 503])('keeps readiness HTTP%s advisory and never retries', async status => {
@@ -131,7 +131,7 @@ describe('foreground MCP triggers', () => {
     expect(context.activeRequests.size).toBe(0);
   });
 
-  it.each(['upload_media', 'process_media', 'find', 'retry_prompt_run_segment'] as const)(
+  it.each(['import_media', 'analyze'] as const)(
     'signals a deliberate %s tool invocation once, before tool execution',
     async operation => {
       vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(null, { status: 204 })));
@@ -142,7 +142,7 @@ describe('foreground MCP triggers', () => {
     }
   );
 
-  it.each(['get_prompt_run_status', 'get_import_job_status', 'create_import_job', 'retry_import_job'])(
+  it.each(['get_analysis', 'browse', 'search', 'save_prompt'])(
     'does not add readiness to %s',
     async name => {
       vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(null, { status: 204 })));
@@ -152,6 +152,14 @@ describe('foreground MCP triggers', () => {
       expect(activity).not.toHaveBeenCalled();
     }
   );
+
+  it('does not wake processing for import progress reads',async()=>{
+    vi.stubGlobal('fetch',vi.fn().mockImplementation(async()=>new Response(null,{status:204})));
+    const activity=vi.spyOn(VideoVectorClient.prototype,'recordProcessingActivity').mockResolvedValue();
+    const {app}=createHttpApp(config);
+    await send(app,{jsonrpc:'2.0',id:'import-progress',method:'tools/call',params:{name:'import_media',arguments:{import_id:'import-1',wait_seconds:0}}});
+    expect(activity).not.toHaveBeenCalled();
+  });
 
   it('stdio begins one readiness request on protocol initialization, never construction', async () => {
     const activity = vi.spyOn(VideoVectorClient.prototype, 'recordProcessingActivity').mockResolvedValue();

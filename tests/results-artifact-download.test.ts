@@ -39,8 +39,8 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('private workflow artifact downloads', () => {
   it('publishes only an app-visible read-scope helper', () => {
-    expect(getToolDefinitions('full', false).some(tool => tool.name === 'download_workflow_artifact')).toBe(false);
-    const tool = getToolDefinitions('full', false, { includeAppTools: true, advertiseOAuth: true }).find(tool => tool.name === 'download_workflow_artifact')!;
+    expect(getToolDefinitions({includeLocalUpload:false}).some(tool => tool.name === 'download_workflow_artifact')).toBe(false);
+    const tool = getToolDefinitions({includeLocalUpload:false,includeAppTools:true,advertiseOAuth:true}).find(tool => tool.name === 'download_workflow_artifact')!;
     expect(tool._meta).toMatchObject({ ui: { visibility: ['app'] }, 'openai/visibility': 'private', securitySchemes: [{ type: 'oauth2', scopes: [] }] });
     expect(tool.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: false });
     expect(getToolRequiredScope(tool.name)).toBe('read');

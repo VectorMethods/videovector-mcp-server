@@ -1,0 +1,113 @@
+{
+  "schema_version": "1.0.0",
+  "tools": [
+    {
+      "name": "read_analysis",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "ui": {
+          "visibility": [
+            "app"
+          ]
+        },
+        "openai/visibility": "private",
+        "openai/widgetAccessible": true
+      }
+    },
+    {
+      "name": "list_studio_scope",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "ui": {
+          "visibility": [
+            "app"
+          ]
+        },
+        "openai/visibility": "private",
+        "openai/widgetAccessible": true
+      }
+    },
+    {
+      "name": "get_studio_previews",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "ui": {
+          "visibility": [
+            "app"
+          ]
+        },
+        "openai/visibility": "private",
+        "openai/widgetAccessible": true
+      }
+    },
+    {
+      "name": "download_workflow_artifact",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "ui": {
+          "visibility": [
+            "app"
+          ]
+        },
+        "openai/visibility": "private",
+        "openai/widgetAccessible": true
+      }
+    },
+    {
+      "name": "view_workflow_results",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "ui": {
+          "visibility": [
+            "app"
+          ]
+        },
+        "openai/visibility": "private",
+        "openai/widgetAccessible": true
+      }
+    },
+    {
+      "name": "play_workflow_media",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "ui": {
+          "visibility": [
+            "app"
+          ]
+        },
+        "openai/visibility": "private",
+        "openai/widgetAccessible": true
+      }
+    }
+  ]
+}

@@ -25,7 +25,7 @@ execution. Mixed credentials are rejected. The transport is stateless: no sessio
 credential, or server object is retained after the response closes. This
 allows requests to move safely across instances and restarts.
 
-HTTP tool listings expose native `files` inputs for `find` and `upload_media`.
+HTTP tool listings expose native `files` inputs for `analyze` and `import_media`.
 Local path fields are omitted and rejected at execution, so a remote caller
 cannot cause the server to read a local filesystem path.
 
@@ -37,17 +37,20 @@ The UI resource declares that exact origin in its CSP. The upload API must allow
 the host's sandbox origin in CORS. Jobs continue in the backend after tool calls
 close, and completion names the exact selected file IDs.
 
-Workflow summaries use explicit public field allowlists for every authentication
-method. Raw media locations, storage paths, and playback capabilities are absent
-from model-visible text and structured results, including `detail=full` (which
-preserves user-authored extracted metadata as opaque data). App navigation and
-artifact URLs are constructed from identifiers under the configured app origin;
-backend URL fields are not passed through.
+Workflow summaries use reviewed public envelopes for every authentication
+method. Raw media locations and storage paths are absent from model-visible
+results; user-authored extracted metadata remains opaque data. Analysis JSON and
+segment download links are intentional first-party, one-hour bearer capabilities.
+Segment delivery validates current access and exact snapshot membership before
+redirecting to the canonical generation-pinned storage download. Agents follow
+that redirect without forwarding account credentials. App navigation links stay
+under the configured app origin.
 
 The results card requests existing pages and media by ID through the authenticated
 MCP connection. App-only visibility is a host UI instruction, not authorization:
 the backend still enforces tenant ownership and run/segment membership. Media
-grants appear only in `_meta.media`, and full card rows only in `_meta.view`.
+Playback grants appear only in `_meta.media`, and full card rows in `_meta.view`.
+Direct analysis segment downloads also appear in the model response and JSON.
 Account OAuth/API credentials never enter the iframe. The card does not call
 `updateModelContext` or send extracted JSON into chat. Its CSP allows media only
 from declared Google Cloud Storage origins and no fetch/XHR origins.
@@ -86,11 +89,10 @@ HTTP mode has optional host and origin allowlists:
 - `MCP_HTTP_ALLOWED_HOSTS`
 - `MCP_HTTP_ALLOWED_ORIGINS`
 
-## Credential-Sensitive Tools
+## Credential-sensitive options
 
-Cloud connector creation tools accept user-provided cloud credentials and forward them to the VideoVector API. The MCP server does not persist them. Users should provide least-privilege credentials and rotate them according to their own cloud policy.
+Direct API-key/stdio integrations may supply cloud source configuration or a task callback signing secret to `analyze`/`import_media`. The MCP server forwards these only to the configured first-party API and does not persist or log them. Callbacks are terminal-only and scoped to the submitted task. Use least-privilege credentials and protect the caller's signing secret.
 
-Those credential-creation tools, `create_webhook`, and
-`get_export_download_url` are excluded from the published OAuth tool surface.
-They remain available to the existing API-key HTTP and local stdio surfaces.
+OAuth exposes the same six names while omitting cloud source, import retry, and webhook arguments. Runtime schema validation rejects excluded options before backend dispatch. Analysis/search downloads remain authorized one-hour result capabilities. They are scoped to a captured snapshot and separate from private account credentials and upload grants. Generic download clients fetch them without forwarding OAuth headers. Export administration remains outside MCP.
+
 See [hosted OAuth](hosted-oauth.md#available-tools-and-existing-api-key-clients).

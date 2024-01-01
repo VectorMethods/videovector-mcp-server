@@ -14,6 +14,7 @@ export interface StudioRun {
 }
 export interface StudioBrowseTarget { video_id: string; run_id: string; cursor?: string; limit?: number }
 export interface StudioSearchCatalog {
+  container?: { type: 'playground' | 'index'; index_id?: string };
   videos: StudioVideo[];
   runs: StudioRun[];
   browse_targets: StudioBrowseTarget[];

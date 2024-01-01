@@ -35,6 +35,10 @@ body { padding: 10px; font-size: 12px; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .muted { color: var(--text-muted); font-size: 11px; }
 #status { margin: 6px 0; }
+#analysis-progress { margin: 6px 0 12px; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; }
+#analysis-progress p { margin: 5px 0 0; }
+#upload-form { margin: 8px 0 12px; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; }
+#upload-form label, #upload-form input { display: block; margin-bottom: 8px; max-width: 100%; }
 .error { color: var(--color-text-danger, #c33832); }
 #rows { min-width: 0; }
 .segment-preview-gallery__button { font-weight: 400; }

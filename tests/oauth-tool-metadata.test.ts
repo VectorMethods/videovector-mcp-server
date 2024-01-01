@@ -1,51 +1,11 @@
-import { describe, expect, it } from 'vitest';
-
-import {
-  TOOL_DEFINITIONS,
-  getToolDefinitions,
-} from '../src/tools/definitions.js';
-
-const OAUTH_PUBLICATION_UNSAFE_TOOLS = [
-  'create_gcs_connector',
-  'create_s3_connector',
-  'create_azure_connector',
-  'create_webhook',
-  'get_export_download_url',
-].sort();
-
-describe('hosted OAuth tool metadata', () => {
-  it('decorates only cloned hosted tools with empty-scope OAuth schemes', () => {
-    const hosted = getToolDefinitions('full', false, { advertiseOAuth: true });
-    expect(hosted.length).toBeGreaterThan(0);
-    const hostedNames = hosted.map((tool) => tool.name);
-    expect(hostedNames).toContain('upload_media');
-    for (const unsafeTool of OAUTH_PUBLICATION_UNSAFE_TOOLS) {
-      expect(hostedNames).not.toContain(unsafeTool);
-    }
-    for (const tool of hosted as Array<Record<string, any>>) {
-      expect(tool.securitySchemes).toEqual([{ type: 'oauth2', scopes: [] }]);
-      expect(tool._meta?.securitySchemes).toEqual(tool.securitySchemes);
-    }
-
-    const stdio = getToolDefinitions('full', true);
-    expect(stdio.map((tool) => tool.name)).toContain('upload_media');
-    for (const tool of stdio as Array<Record<string, any>>) {
-      expect(tool.securitySchemes).toBeUndefined();
-      expect(tool._meta?.securitySchemes).toBeUndefined();
-    }
-    for (const tool of TOOL_DEFINITIONS as Array<Record<string, any>>) {
-      expect(tool.securitySchemes).toBeUndefined();
-      expect(tool._meta?.securitySchemes).toBeUndefined();
-    }
-
-    const apiKeyHttpNames = getToolDefinitions('full', false).map((tool) => tool.name);
-    expect(apiKeyHttpNames).toEqual(expect.arrayContaining(OAUTH_PUBLICATION_UNSAFE_TOOLS));
-  });
-
-  it('does not change tool-profile selection', () => {
-    expect(
-      getToolDefinitions('simple', false, { advertiseOAuth: true })
-        .map((tool) => tool.name)
-    ).toEqual(['find', 'upload_media', 'define_prompt', 'process_media', 'search_media', 'get_prompt_run_status', 'get_prompt_run_results', 'get_import_job', 'retry_import_job']);
-  });
+import { describe, expect, it, vi } from 'vitest';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+import type { VideoVectorClient } from '../src/client/index.js';
+import { TOOL_DEFINITIONS,getToolDefinitions,executeTool } from '../src/tools/index.js';
+describe('OAuth six-tool publication',()=>{
+ it('publishes the same names while cloning security metadata',()=>{const hosted=getToolDefinitions({advertiseOAuth:true,includeLocalUpload:false});expect(hosted.map(t=>t.name)).toEqual(TOOL_DEFINITIONS.map(t=>t.name));for(const tool of hosted){expect(tool.securitySchemes).toEqual([{type:'oauth2',scopes:[]}]);expect(tool._meta?.securitySchemes).toEqual(tool.securitySchemes);}expect(TOOL_DEFINITIONS.every(t=>!t.securitySchemes)).toBe(true);});
+ it('hides direct-only credentials, cloud import and callback options',()=>{for(const tool of getToolDefinitions({advertiseOAuth:true,includeLocalUpload:false})){const schema=JSON.stringify(tool.inputSchema);for(const forbidden of ['signing_secret','webhook','connector_id','credentials_json','aws_secret_access_key','client_secret','file_paths','retry'])expect(schema,tool.name).not.toContain('"'+forbidden+'"');}});
+ it('includes six private app helpers only when requested',()=>{const tools=getToolDefinitions({advertiseOAuth:true,includeLocalUpload:false,includeAppTools:true});expect(tools).toHaveLength(12);expect(tools.filter(t=>(t._meta?.ui as any)?.visibility?.includes('app'))).toHaveLength(6);});
+ it.each([['analyze',{instruction:'x',webhook:{url:'https://receiver.example',signing_secret:'secret-value-not-for-output'}}],['analyze',{instruction:'x',source:{connector_id:'c'}}],['import_media',{source:{connector:{provider:'gcs',config:{bucket:'b',gcp_project_id:'p',credentials_json:{private_key:'secret-value-not-for-output'}}}}}],['import_media',{import_id:'i',retry:true,idempotency_key:'k'}]])('rejects direct-only %s options before backend access without echoing secret values',async(name,args)=>{const mcpTool=vi.fn();const out=await executeTool(name as string,args as any,{mcpTool} as unknown as VideoVectorClient,{authenticationKind:'oauth',transportMode:'http'});expect(out.isError).toBe(true);expect(mcpTool).not.toHaveBeenCalled();expect(JSON.stringify(out)).not.toContain('secret-value-not-for-output');});
+ it('accepts exact direct cloud config and rejects provider-mismatched credentials',()=>{const tool=getToolDefinitions({includeLocalUpload:false}).find(t=>t.name==='import_media')!;const validate=new AjvJsonSchemaValidator().getValidator(tool.inputSchema);expect(validate({source:{connector:{provider:'gcs',config:{bucket:'b',gcp_project_id:'p',credentials_json:{type:'service_account'}}}}}).valid).toBe(true);expect(validate({source:{connector:{provider:'gcs',config:{bucket:'b',gcp_project_id:'p',credentials_json:{},aws_secret_access_key:'wrong-provider'}}}}).valid).toBe(false);});
 });

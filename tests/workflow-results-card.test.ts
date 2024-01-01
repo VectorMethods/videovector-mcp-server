@@ -1,13 +1,15 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import type { VideoVectorClient } from '../src/client/index.js';
 import { executeTool, getToolDefinitions, getToolRequiredScope } from '../src/tools/index.js';
-import { artifactLink, appOrigin, projectWorkflowPayload, projectWorkflowResult, resultLink } from '../src/tools/workflow-result-projection.js';
+import { artifactLink, appOrigin, projectWorkflowPayload, resultLink } from '../src/tools/workflow-result-projection.js';
 import { WORKFLOW_RESULT_TOOLS, WORKFLOW_DETAIL_TOOLS, RESULTS_CARD_URI } from '../src/tools/workflow-result-contract.js';
 import * as resultView from '../ui/results-view';
+import { createAnalysisProgressController, analysisResultView, readCompletedAnalysisVideo } from '../ui/analysis-progress';
 import { createStudioTransport, normalizeStudioResult } from '../ui/results-search';
 import { getSearchResultKey } from '../ui/utils/searchResultIdentity';
+import { uploadAttachmentBatch } from '../src/attachments/upload-batch.js';
 
 const secret = 'https://storage.googleapis.com/private/clip.mp4?X-Goog-Signature=private-capability';
 const row = { result_id: 'segment:seg-1:run-1', result_type: 'segment', run_id: 'run-1', video_id: 'video-1', segment_id: 'seg-1', video_name: 'Launch', start_time: 4, end_time: 9, metadata: { scene: 'x'.repeat(200000), gcs_uri: 'customer field' }, video_uri: secret, segment_uri: secret, raw_llm_response: 'private raw output', source_index_id: 'index-1' };
@@ -26,27 +28,10 @@ function client(overrides = {}): VideoVectorClient {
 }
 
 describe('workflow result contract v2', () => {
-  it.each(['api-key', 'oauth'] as const)('bounds default summaries and mirrors text/structured results for %s', async authenticationKind => {
-    const result = await executeTool('get_prompt_run_results', { run_id: 'run-1' }, client(), { authenticationKind });
-    expect(result.isError).not.toBe(true);
-    const payload = result.structuredContent!;
-    expect(JSON.parse(result.content[0]!.text)).toEqual(payload);
-    expect(result.content[0]!.text.length).toBeLessThan(6000);
-    expect(result.content[0]!.text).not.toContain('private-capability');
-    expect(result.content[0]!.text).not.toContain('private raw output');
-    expect(payload).toMatchObject({ contract_version: 2, detail: 'summary', selection_summary: runPage.selection_summary,
-      filtered: { data: [{ metadata_fields: ['scene', 'gcs_uri'], metadata_field_count: 2, metadata_omitted: true }], pagination: { next_cursor: cursor } },
-      artifacts: [{ scope: 'all', state: 'ready', export_id: 'export-1' }, { scope: 'matches', state: 'preparing' }],
-    });
-    expect((payload.filtered as any).data[0].links.play).toContain('/index?');
-    expect((payload.links as any).open_in_app).toContain('video=video-1');
-    expect((payload.artifacts as any[])[0].href).toBe('https://app.vectormethods.com/jobs?tab=exports&export=export-1&source_kind=prompt_run&source_id=run-1&scope=all');
-    expect(JSON.stringify(payload.artifacts)).not.toContain('download_path');
-  });
 
   it('budgets useful summary previews across both pages, including multi-byte metadata', () => {
     const data = Array.from({ length: 50 }, (_, index) => ({ ...row, result_id: String(index), metadata: { scene: 'Visible café 🚀 '.repeat(200) }, text_content: 'Scene details '.repeat(80) }));
-    const projected = projectWorkflowPayload('get_prompt_run_results', { ...runPage, filtered: { data, pagination: runPage.filtered.pagination }, unfiltered: { data, pagination: runPage.unfiltered.pagination } }, 'summary');
+    const projected = projectWorkflowPayload('analysis_results', { ...runPage, filtered: { data, pagination: runPage.filtered.pagination }, unfiltered: { data, pagination: runPage.unfiltered.pagination } }, 'summary');
     const rows = [...(projected.filtered as any).data, ...(projected.unfiltered as any).data];
     expect(rows[0].metadata_preview).toContain('Visible café');
     expect(rows[0].metadata_preview.length).toBeLessThanOrEqual(512);
@@ -56,123 +41,16 @@ describe('workflow result contract v2', () => {
 
   it('preserves complete canonical public fields in full mode and uses a valid landing without a video', () => {
     const raw = { ...row, text_content: 'complete '.repeat(4000), content_preview: 'short', metadata_text: 'metadata text', raw_llm_response: 'full generated response', field_scores: { scene: 0.9 } };
-    const projected = projectWorkflowPayload('search_media', { data: [raw], pagination: {} }, 'full');
+    const projected = projectWorkflowPayload('search_results', { data: [raw], pagination: {} }, 'full');
     expect((projected.data as any)[0]).toMatchObject({ content: raw.text_content, text_content: raw.text_content, content_preview: 'short', metadata_text: 'metadata text', raw_llm_response: 'full generated response', field_scores: { scene: 0.9 } });
     expect((projected.data as any)[0]).not.toHaveProperty('segment_uri');
-    const pending = projectWorkflowPayload('get_prompt_run_status', { run_id: 'run-1', status: 'pending' }, 'summary');
-    expect((pending.links as any).open_in_app).toContain('/jobs?tab=exports&');
-    const processing = projectWorkflowPayload('process_media', { run_id: 'run-1', run: { run_context: { video_ids: ['video-2'], index_id: 'index-2' } } }, 'summary');
-    expect((processing.links as any).open_in_app).toContain('/index?index=index-2&view=video&video=video-2');
     expect(resultLink({ video_id: 'video-1', result_type: 'video', preview_segment_id: 'seg-1' }, 'run-1', 'all', appOrigin())).toContain('output=video');
-  });
-
-  it('rejects non-string presentation controls before backend execution', async () => {
-    const backend = client();
-    const result = await executeTool('get_prompt_run_results', { run_id: 'run-1', detail: ['full'] }, backend);
-    expect(result.isError).toBe(true);
-    expect(backend.workflowRunResults).not.toHaveBeenCalled();
-  });
-
-  it('opens whole media from processing and status without requiring video-level analysis', () => {
-    for (const tool of ['process_media', 'get_prompt_run_status']) {
-      const run = { status: 'completed', run_context: { video_ids: ['video-1'], is_playground: true } };
-      const payload = projectWorkflowPayload(tool, { run_id: 'run-1', ...(tool === 'process_media' ? { run } : run) }, 'summary');
-      const url = new URL((payload.links as any).open_in_app);
-      expect(url.pathname).toBe('/playground');
-      expect(url.searchParams.get('video')).toBe('video-1');
-      expect(url.searchParams.get('run')).toBe('run-1');
-      expect(url.searchParams.get('playback')).toBe('video');
-      expect(url.searchParams.has('output')).toBe(false);
-    }
-  });
-
-  it.each(['find', 'upload_media', 'get_import_job', 'retry_import_job'])('exposes imported media directly from %s before and after a run exists', tool => {
-    for (const runId of [undefined, 'run-1']) for (const indexId of [undefined, 'index-1']) {
-      const payload = projectWorkflowPayload(tool, { job_id: 'job-1', status: 'completed', video_ids: ['video-1'], run_id: runId, target_index_id: indexId }, 'summary');
-      const url = new URL((payload.links as any).watch_video);
-      expect(url.pathname).toBe(indexId ? '/index' : '/playground');
-      expect(url.searchParams.get('video')).toBe('video-1');
-      expect(url.searchParams.get('run')).toBe(runId ?? null);
-      expect(url.searchParams.get('index')).toBe(indexId ?? null);
-      expect(url.searchParams.get('playback')).toBe('video');
-      expect(url.searchParams.has('output')).toBe(false);
-      if (runId) expect((payload.links as any).open_in_app).toBe(url.href);
-      else expect((payload.links as any).open_in_app).toContain('/jobs?tab=imports&job=job-1');
-    }
-  });
-
-  it.each(['api-key', 'oauth'] as const)('fails closed on malformed public pages for %s', async authenticationKind => {
-    for (const malformed of [
-      null, [], { ...runPage, unfiltered: undefined },
-      { ...runPage, filtered: { data: 'not-an-array', pagination: {} } },
-      { ...runPage, filtered: { data: [{ ...row, metadata: secret }], pagination: {} } },
-      { ...runPage, filtered: { data: [{ ...row, video_id: null }], pagination: {} } },
-    ]) {
-      const backend = client({ workflowRunResults: vi.fn().mockResolvedValue(malformed) });
-      const result = await executeTool('get_prompt_run_results', { run_id: 'run-1', detail: 'full' }, backend, { authenticationKind });
-      expect(result.isError).toBe(true);
-      expect(result.structuredContent).toBeUndefined();
-      expect(result.content[0]!.text).not.toContain('private-capability');
-      expect(backend.workflowDelivery).not.toHaveBeenCalled();
-    }
-    const search = await executeTool('search_media', { query: 'scene' }, client({ workflowSearchMedia: vi.fn().mockResolvedValue({ data: [{ result_id: 'result', video_id: 'video' }], pagination: {} }) }), { authenticationKind });
-    expect(search.isError).toBe(true); // Never make a link that silently chooses a newer run.
-  });
-
-  it('rejects malformed JSON content without exposing it or private metadata', async () => {
-    const result = await projectWorkflowResult('search_media', {
-      content: [{ type: 'text', text: `not-json ${secret}` }], _meta: { private: secret },
-    }, 'summary', client());
-    expect(result).toMatchObject({ isError: true });
-    expect(result._meta).toBeUndefined();
-    expect(JSON.parse(result.content[0]!.text).code).toBe('workflow_result_projection_failed');
-    expect(JSON.stringify(result)).not.toContain('private-capability');
-  });
-
-  it('projects full status settings without private run context and preserves exact navigation', () => {
-    const payload = projectWorkflowPayload('get_prompt_run_status', {
-      run_id: 'logical-run', status: 'completed', billing_error: secret,
-      configuration: { video_segment_duration: 12, processing_model: 'model',
-        run_context: { is_playground: true, index_id: 'internal-owner', video_ids: ['video-1'],
-          extraction_source_by_video: { 'video-1': 'physical-run' }, artifact_delivery: { token: secret }, active_attempt_id: 'private-attempt' },
-        provider_options: { url: secret },
-      },
-      operations: { field_extraction: { succeeded: true, failures: 0, provider_url: secret } },
-      media_breakdown: { videos: { completed: 1, private: secret } },
-      reuse_summary: { reused_media_count: 1, physical_run_id: 'physical-run' },
-    }, 'full');
-    expect(payload.configuration).toEqual({ video_segment_duration: 12, processing_model: 'model', run_context: { is_playground: true, video_ids: ['video-1'] } });
-    expect(payload.operations).toEqual({ field_extraction: { succeeded: true, failures: 0 } });
-    expect(payload.media_breakdown).toEqual({ videos: { completed: 1 } });
-    expect(payload.reuse_summary).toEqual({ reused_media_count: 1 });
-    const url = new URL((payload.links as any).open_in_app);
-    expect(url.pathname).toBe('/playground');
-    expect(url.searchParams.get('run')).toBe('logical-run');
-    for (const privateValue of ['private-capability', 'private-attempt', 'physical-run', 'internal-owner']) expect(JSON.stringify(payload)).not.toContain(privateValue);
-  });
-
-  it('keeps complete prompt definitions and logical source run aliases', () => {
-    const name = 'complete-name '.repeat(100);
-    const payload = projectWorkflowPayload('define_prompt', { saved: true, prompt: { name, description: name, json_schema: { properties: { gcs_uri: { type: 'string' } } }, user_id: 'private-owner' } }, 'full');
-    expect(payload.prompt).toMatchObject({ name, description: name });
-    expect(payload.prompt).not.toHaveProperty('user_id');
-    const page = projectWorkflowPayload('search_media', { data: [{ ...row, run_id: undefined, source_run_id: 'logical-run' }], pagination: {} }, 'full');
-    expect(new URL((page.data as any[])[0].links.play).searchParams.get('run')).toBe('logical-run');
-  });
-
-  it('preserves actual processing overrides in full mode through the same public settings projection', () => {
-    const payload = projectWorkflowPayload('process_media', {
-      run_id: 'run-1', run: { status: 'pending', video_segment_duration: 24,
-        video_segmentation_type: 'fixed', run_context: { video_ids: ['video-1'], index_id: 'index-1', active_attempt_id: 'private-attempt' } },
-    }, 'full');
-    expect(payload.configuration).toEqual({ video_segment_duration: 24, video_segmentation_type: 'fixed', run_context: { video_ids: ['video-1'], index_id: 'index-1' } });
-    expect(JSON.stringify(payload)).not.toContain('private-attempt');
   });
 
   it.each(['summary', 'full'] as const)('retains canonical search scope and coverage in %s', detail => {
     const coverage = { prompt_run_count: 2, searchable_video_count: 3, partial_prompt_run_count: 1, requested_video_count: 4, covered_video_count: 3 };
     const scope = { type: 'videos', video_ids: ['video-1', 'video-2', 'video-3', 'video-4'] };
-    const projected = projectWorkflowPayload('search_media', { data: [], pagination: {}, scope: { ...scope, physical_run_id: 'private' }, coverage }, detail);
+    const projected = projectWorkflowPayload('search_results', { data: [], pagination: {}, scope: { ...scope, physical_run_id: 'private' }, coverage }, detail);
     expect(projected.coverage).toEqual(coverage);
     expect(projected.scope).toEqual(scope);
   });
@@ -180,17 +58,7 @@ describe('workflow result contract v2', () => {
   it('keeps Studio destinations and identifiers exact, with a separate whole-video link', () => {
     const videoId = 'v'.repeat(256);
     const segmentId = 's'.repeat(256);
-    for (const source of [
-      { destination: { type: 'playground' }, run: { run_context: { video_ids: [videoId], index_id: 'account-owner' } } },
-      { run: { configuration: { run_context: { video_ids: [videoId], index_id: 'account-owner', is_playground: true } } } },
-    ]) {
-      const payload = projectWorkflowPayload('process_media', { ...source, run_id: 'run-1' }, 'summary');
-      const url = new URL((payload.links as any).open_in_app);
-      expect(url.pathname).toBe('/playground');
-      expect(url.searchParams.get('video')).toBe(videoId);
-      expect(url.searchParams.has('index')).toBe(false);
-    }
-    const payload = projectWorkflowPayload('search_media', { data: [{ ...row, video_id: videoId, segment_id: segmentId }], pagination: {} }, 'summary');
+    const payload = projectWorkflowPayload('search_results', { data: [{ ...row, video_id: videoId, segment_id: segmentId }], pagination: {} }, 'summary');
     const result = (payload.data as any[])[0];
     expect(result.video_id).toBe(videoId);
     expect(result.segment_id).toBe(segmentId);
@@ -204,8 +72,8 @@ describe('workflow result contract v2', () => {
   });
 
   it('routes the canonical Playground search sentinel and run destination into Studio', () => {
-    const search = projectWorkflowPayload('search_media', { data: [{ ...row, source_index_id: 'playground' }], pagination: {} }, 'summary');
-    const results = projectWorkflowPayload('get_prompt_run_results', { ...runPage, destination: { type: 'playground' } }, 'summary');
+    const search = projectWorkflowPayload('search_results', { data: [{ ...row, source_index_id: 'playground' }], pagination: {} }, 'summary');
+    const results = projectWorkflowPayload('analysis_results', { ...runPage, destination: { type: 'playground' } }, 'summary');
     for (const result of [(search.data as any[])[0], ...(results.filtered as any).data, ...(results.unfiltered as any).data]) {
       for (const href of Object.values(result.links)) {
         const url = new URL(href as string);
@@ -214,50 +82,6 @@ describe('workflow result contract v2', () => {
         expect(url.searchParams.has('index')).toBe(false);
       }
     }
-  });
-
-  it('keeps full JSON opt-in and independent cursors unchanged without reexecuting work', async () => {
-    const backend = client();
-    const summary = await executeTool('get_prompt_run_results', { run_id: 'run-1', view: 'filtered', filtered_cursor: cursor }, backend);
-    const full = await executeTool('get_prompt_run_results', { run_id: 'run-1', view: 'filtered', filtered_cursor: cursor, detail: 'full' }, backend);
-    expect(vi.mocked(backend.workflowRunResults).mock.calls[1]).toEqual(vi.mocked(backend.workflowRunResults).mock.calls[0]);
-    expect((full.structuredContent!.filtered as any).data[0].metadata).toEqual(row.metadata);
-    expect((summary.structuredContent!.filtered as any).data[0]).not.toHaveProperty('metadata');
-    expect((full.structuredContent!.filtered as any).pagination.next_cursor).toBe(cursor);
-    expect(full.content[0]!.text).not.toContain('private-capability');
-  });
-
-  it('strips detail before process idempotency and search cursor validation', async () => {
-    const backend = client({ workflowProcessMedia: vi.fn().mockResolvedValue({ run_id: 'run-1', run: { status: 'pending' } }), workflowSearchPage: vi.fn().mockResolvedValue({ data: [], mode: 'vector', result_level: 'segment', snapshot_id: 'snapshot-1', pagination: { next_cursor: null } }) });
-    for (const detail of ['summary', 'full']) await executeTool('process_media', { prompt_id: 'prompt-1', idempotency_key: 'same-key', detail }, backend);
-    expect(vi.mocked(backend.workflowProcessMedia).mock.calls).toEqual([
-      [{ prompt_id: 'prompt-1', artifact_delivery: 'automatic' }, 'same-key'],
-      [{ prompt_id: 'prompt-1', artifact_delivery: 'automatic' }, 'same-key'],
-    ]);
-    const result = await executeTool('search_media', { cursor, detail: 'full' }, backend);
-    expect(result.isError).not.toBe(true);
-    expect(backend.workflowSearchPage).toHaveBeenCalledWith(cursor);
-  });
-
-  it('publishes the same versioned contract for all nine workflow names and narrows detail to heavy outputs', () => {
-    const validator = new AjvJsonSchemaValidator();
-    for (const profile of ['simple', 'full'] as const) for (const local of [true, false]) {
-      const definitions = getToolDefinitions(profile, local);
-      for (const name of WORKFLOW_RESULT_TOOLS) {
-        const tool = definitions.find(tool => tool.name === name)!;
-        expect(Boolean(tool.inputSchema.properties?.detail)).toBe(WORKFLOW_DETAIL_TOOLS.has(name));
-        const payload = projectWorkflowPayload(name, { job_id: 'job-1', status: 'pending', video_ids: [], run_id: 'run-1', run: { status: 'pending' }, prompt_id: 'prompt-1', data: [], pagination: {}, filtered: null, unfiltered: null }, 'summary');
-        expect(validator.getValidator(tool.outputSchema!)(payload).valid, name).toBe(true);
-      }
-    }
-    expect(getToolDefinitions('simple', false)).toHaveLength(9);
-  });
-
-  it('makes delivery lookup failure explicit while preserving the successful result', async () => {
-    const result = await executeTool('get_prompt_run_results', { run_id: 'run-1' }, client({ workflowDelivery: vi.fn().mockRejectedValue(new Error(secret)) }));
-    expect(result.isError).not.toBe(true);
-    expect(result.structuredContent!.artifacts).toEqual(expect.arrayContaining([expect.objectContaining({ scope: 'all', state: 'unavailable', error_code: 'delivery_lookup_failed' })]));
-    expect(result.content[0]!.text).not.toContain('private-capability');
   });
 
   it('supports the frontend navigation contract and rejects non-origin configuration', () => {
@@ -278,36 +102,16 @@ describe('workflow result contract v2', () => {
 });
 
 describe('results app tools', () => {
-  it.each(['api-key', 'oauth'] as const)('keeps the original card scope and page only in private metadata for %s', async authenticationKind => {
-    const request = { run_id: 'run-1', video_id: 'narrow-video', view: 'both', result_level: 'segment', limit: 7, filtered_cursor: 'current-matches', unfiltered_cursor: 'current-all', detail: 'summary' };
-    const backend = client();
-    const result = await executeTool('get_prompt_run_results', request, backend, { authenticationKind });
-    expect(result.isError).not.toBe(true);
-    expect(result._meta!.viewRequest).toEqual({ video_id: 'narrow-video', view: 'both', result_level: 'segment', limit: 7, filtered_cursor: 'current-matches', unfiltered_cursor: 'current-all' });
-    expect((result._meta!.view as any).filtered.data[0].metadata).toEqual(row.metadata);
-    expect(JSON.stringify([result.content, result.structuredContent])).not.toMatch(/narrow-video|current-matches|current-all|viewRequest/);
-    expect(backend.workflowRunResults).toHaveBeenCalledWith('run-1', result._meta!.viewRequest);
-  });
-
-  it('retains private search decisions and exact continuation without exposing them to the model', async () => {
-    const backend = client({ workflowSearchPage: vi.fn().mockResolvedValue({ snapshot_id: 'snapshot-1', data: [], pagination: { limit: 3, next_cursor: 'next' } }) });
-    const result = await executeTool('search_media', { cursor: 'current-search-page', detail: 'full' }, backend);
-    expect(result._meta!.viewRequest).toEqual({ limit: 3, cursor: 'current-search-page' });
-    expect(JSON.stringify([result.content, result.structuredContent])).not.toContain('current-search-page');
-    const firstPage = await executeTool('search_media', { query: 'visible scene', limit: 4, idempotency_key: 'search-retry' }, client({ workflowSearchMedia: vi.fn().mockResolvedValue({ snapshot_id: 'snapshot-1', data: [], pagination: { limit: 4 } }) }));
-    expect(firstPage._meta!.viewRequest).toEqual({ limit: 4, query: 'visible scene' });
-    expect(JSON.stringify([firstPage.content, firstPage.structuredContent])).not.toContain('visible scene');
-  });
 
   it('publishes app-only helpers and attaches the results card only to result tools', () => {
-    const tools = getToolDefinitions('simple', false, { includeAppTools: true });
+    const tools = getToolDefinitions({ includeAppTools: true });
     for (const name of ['view_workflow_results', 'play_workflow_media']) {
       const tool = tools.find(tool => tool.name === name)!;
       expect(tool._meta).toMatchObject({ ui: { visibility: ['app'] }, 'openai/visibility': 'private' });
       expect(getToolRequiredScope(name)).toBe('read');
     }
     expect(RESULTS_CARD_URI).toBe('ui://videovector/results-card-v2.html');
-    expect(tools.filter(tool => (tool._meta?.ui as any)?.resourceUri === RESULTS_CARD_URI).map(tool => tool.name)).toEqual(['search_media', 'get_prompt_run_results']);
+    expect(tools.filter(tool => (tool._meta?.ui as any)?.resourceUri === RESULTS_CARD_URI).map(tool => tool.name)).toEqual(['analyze', 'get_analysis', 'search', 'import_media']);
   });
 
   it('loads full run pages only in private metadata', async () => {
@@ -325,7 +129,7 @@ describe('results app tools', () => {
     const backend = client({ workflowSnapshotResults: vi.fn().mockResolvedValue({ snapshot_id: 'snapshot-1', data: [row], pagination: { next_cursor: 'next' } }), workflowSearchMedia: vi.fn() });
     const result = await executeTool('view_workflow_results', { source_kind: 'search_snapshot', source_id: 'snapshot-1', cursor: 'next', limit: 10 }, backend);
     expect(result.isError).not.toBe(true);
-    expect(backend.workflowSnapshotResults).toHaveBeenCalledWith('snapshot-1', { cursor: 'next', limit: 10 });
+    expect(backend.workflowSnapshotResults).toHaveBeenCalledWith('snapshot-1', { cursor: 'next', limit: 10, include_download: false });
     expect(backend.workflowSearchMedia).not.toHaveBeenCalled();
   });
 
@@ -357,12 +161,13 @@ async function cardHarness(restored: any = null) {
     return {
       hidden: false, disabled: false, textContent: '', className: '', readyState: 1, currentTime: 0, duration: 20, src: '',
       addEventListener: (name: string, callback: (...args: any[]) => unknown) => listeners.set(name, callback),
-      fire: async (name: string) => listeners.get(name)?.(),
+      fire: async (name: string, event: any = { preventDefault() {} }) => listeners.get(name)?.(event),
       removeAttribute(name: string) { if (name === 'src') this.src = ''; }, getAttribute(name: string) { return name === 'src' ? this.src : undefined; },
       pause: vi.fn(), play: vi.fn(), load: vi.fn(),
     };
   }
-  const document = { getElementById(id: string) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } };
+  const document = Object.assign(new EventTarget(), { visibilityState: 'visible',
+    getElementById(id: string) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); } });
   const defaultResponse = async (request: any): Promise<any> => request.name === 'play_workflow_media'
     ? request.arguments.intent === 'download'
       ? { _meta: { file: { url: secret, name: 'media.mp4', mimeType: 'video/mp4' } } }
@@ -373,7 +178,7 @@ async function cardHarness(restored: any = null) {
       : { _meta: { view: cardPage } };
   const callServerTool = vi.fn(defaultResponse);
   let studioProps: any;
-  const views = { ...resultView, createStudioTransport, normalizeStudioResult, getSearchResultKey, readStudioState: () => restored, saveStudioState: vi.fn(), createStudioSearchHost: () => ({ update: (props: any) => {
+  const views = { ...resultView, uploadAttachmentBatch, createAnalysisProgressController: (options: any) => createAnalysisProgressController({ ...options, visibility: document }), analysisResultView, readCompletedAnalysisVideo, createStudioTransport, normalizeStudioResult, getSearchResultKey, readStudioState: () => restored, saveStudioState: vi.fn(), createStudioSearchHost: () => ({ update: (props: any) => {
     studioProps = props; const p = props.segmentProps;
     views.renderSegments(document.getElementById('rows'), p.rows, p.selected, p.onSelect, p.label, p.range, p.downloadMedia, p.downloadMetadata);
   }, unmount: vi.fn() }), renderMetadata: vi.fn(), renderSegments: vi.fn(), renderTimeline: vi.fn(), renderToolbar: vi.fn(), renderDownloads: vi.fn() };
@@ -389,6 +194,7 @@ async function cardHarness(restored: any = null) {
   const app = await new AsyncFunction('App', 'document', ...Object.keys(views), `${source}\nreturn app;`)(App, document, ...Object.values(views));
   const receive = (value: any = cardPage, request: any = { video_id: 'video-1', view: 'both' }) => app.ontoolresult({ structuredContent: { ...value, source_kind: 'prompt_run', source_id: 'run-1' }, _meta: { view: value, viewRequest: request } });
   return { app, receive, callServerTool, defaultResponse, ...views, studio: () => studioProps, control: document.getElementById,
+    setVisibility: (value: string) => { document.visibilityState = value; document.dispatchEvent(new Event('visibilitychange')); },
     mediaCalls: () => callServerTool.mock.calls.filter(([request]) => request.name === 'play_workflow_media'),
     viewCalls: () => callServerTool.mock.calls.filter(([request]) => request.name === 'view_workflow_results'),
     toolbar: () => views.renderToolbar.mock.lastCall![1], tiles: () => views.renderSegments.mock.lastCall![1] };
@@ -434,7 +240,7 @@ describe('results card Studio behavior', () => {
     expect(card.studio()).toMatchObject({ mode: 'studio', state: restored.search, segmentProps: { selected: laterRow } });
     expect(card.control('player').currentTime).toBe(9);
     expect(card.mediaCalls()).toHaveLength(1);
-    expect(card.callServerTool.mock.calls.every(([request]) => request.name !== 'search_media')).toBe(true);
+    expect(card.callServerTool.mock.calls.every(([request]) => request.name !== 'search_results')).toBe(true);
   });
 
   it('restores unprocessed media by video identity without inventing an execution', async () => {
@@ -686,5 +492,266 @@ describe('results card Studio behavior', () => {
     await card.renderDownloads.mock.lastCall![2]();
     expect(card.app.openLink).not.toHaveBeenCalled();
     expect(card.control('status').textContent).toContain('cancelled');
+  });
+});
+
+const liveAnalysis = (revision: string, options: any = {}) => ({
+  analysis_id: 'anl-current', status: 'processing', stage: 'processing', message: 'One video is ready; two are processing.',
+  scope: { type: 'index', index_id: 'index-1' }, progress: { total: 3, imported: 3, completed: 1, failed: 0, processing: 2 },
+  files: [{ name: 'Launch', status: 'completed' }], next_action: { type: 'continue_polling', after_seconds: 15 },
+  results: { revision, included_videos: 1, final: false, download_url: null, data: [{
+    video_id: 'video-1', name: 'Launch', media_type: 'video', selection: { status: 'not_applicable' },
+    video_level: { metadata: { summary: 'Ready output' } }, segments: [{ segment_id: 'seg-1', start_time: 4, end_time: 9, metadata: { scene: 'Ready segment' } }],
+  }] }, ...options,
+});
+
+it('keeps an import-only task in the same progress widget and never requests an analysis bundle', async () => {
+  vi.useFakeTimers();
+  const card = await cardHarness();
+  try {
+    const importing = { import_id: 'imp-current', status: 'importing', stage: 'importing', scope: { type: 'index', index_id: 'index-1' },
+      progress: { imported: 1, parts_completed: 1 }, files: { items: [{ file_name: 'clip.mp4', status: 'importing' }] }, results: { final: false } };
+    const completed = { ...importing, status: 'completed', stage: 'completed', results: { final: true }, progress: { imported: 2, parts_completed: 2 } };
+    card.callServerTool.mockResolvedValue({ _meta: { import: completed } });
+    await card.app.ontoolresult({ _meta: { import: { ...importing, status: 'awaiting_upload', stage: 'uploading' },
+      upload: { url: 'https://api.example/uploads', complete_url: 'https://api.example/complete', token: 'test-grant', accept: 'video/*', max_files: 8 } } });
+    expect(card.control('upload-form').hidden).toBe(false);
+    await card.app.ontoolresult({ structuredContent: importing, _meta: { import: importing } });
+    expect(card.control('upload-form').hidden).toBe(true);
+    expect(card.control('analysis-stage').textContent).toBe('importing');
+    expect(card.control('analysis-files').textContent).toContain('clip.mp4');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(card.callServerTool).toHaveBeenCalledExactlyOnceWith({ name: 'read_analysis', arguments: { import_id: 'imp-current' } }, expect.any(Object));
+    expect(card.control('analysis-stage').textContent).toBe('completed');
+    expect(card.control('analysis-counts').textContent).toContain('2 complete');
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(card.callServerTool).toHaveBeenCalledTimes(1);
+    expect(card.viewCalls()).toHaveLength(0);
+    expect(card.mediaCalls()).toHaveLength(0);
+  } finally { await card.app.onteardown(); vi.useRealTimers(); }
+});
+describe('analysis widget lifecycle', () => {
+  it('runs import through terminal through the private adapter, pausing hidden reads without changing index or playback', async () => {
+    vi.useFakeTimers();
+    const card = await cardHarness();
+    const empty = { revision: 'intake', included_videos: 0, final: false, videos: [], data: [] };
+    let current = liveAnalysis('intake', { status: 'importing', stage: 'importing', message: 'Receiving three videos.',
+      progress: { total: 3, imported: 1, completed: 0, processing: 0 }, results: empty });
+    const client = {
+      getAnalysis: vi.fn(async (_identity, options) => {
+        const value = structuredClone(current);
+        if (options.detail !== 'full') delete value.results.data;
+        return value;
+      }),
+      getVideosInIndex: vi.fn().mockResolvedValue({ data: [{ video_id: 'video-1', title: 'Launch' }], pagination: {} }),
+      getPlaygroundVideos: vi.fn(),
+      workflowSearchScope: vi.fn().mockResolvedValue({ runs: [], browse_targets: [{ run_id: 'anl-current', video_id: 'video-1' }], fields: [] }),
+    } as unknown as VideoVectorClient;
+    card.callServerTool.mockImplementation(async request => ['read_analysis', 'list_studio_scope'].includes(request.name)
+      ? executeTool(request.name, request.arguments, client) : card.defaultResponse(request));
+    try {
+      await card.app.ontoolresult({ structuredContent: current, _meta: { analysis: current } });
+      expect(card.control('analysis-stage').textContent).toBe('importing');
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(client.getAnalysis).not.toHaveBeenCalled();
+      current = liveAnalysis('queued', { status: 'processing', stage: 'processing', message: 'All videos received; analysis is running.',
+        progress: { total: 3, imported: 3, completed: 0, processing: 3 }, results: { ...empty, revision: 'queued' } });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(card.control('analysis-stage').textContent).toBe('processing');
+      expect(card.control('analysis-counts').textContent).toBe('3 received · 0 complete · 3 processing');
+
+      current = liveAnalysis('partial');
+      current.results.videos = [{ video_id: 'video-1', name: 'Launch' }];
+      current.results.data[0].segments.push({ segment_id: 'seg-2', start_time: 9, end_time: 14, metadata: { scene: 'Second scene' } });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(card.control('analysis-counts').textContent).toContain('1 complete');
+      expect(card.tiles()).toHaveLength(2);
+      await card.studio().segmentProps.onSelect(card.tiles()[1]);
+      card.control('player').currentTime = 12;
+      const selectedKey = card.studio().segmentProps.selected.result_id;
+      const mediaCalls = card.mediaCalls().length;
+      await card.studio().transport.catalog({});
+      expect(client.getVideosInIndex).toHaveBeenCalledWith('index-1', 100, undefined);
+      expect(client.getPlaygroundVideos).not.toHaveBeenCalled();
+      expect(client.workflowSearchScope).toHaveBeenCalledWith({ video_ids: ['video-1'], latest_only: true, container_index_id: 'index-1' });
+
+      card.setVisibility('hidden');
+      const readsBeforeHidden = vi.mocked(client.getAnalysis).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(client.getAnalysis).toHaveBeenCalledTimes(readsBeforeHidden);
+      current = liveAnalysis('final', { status: 'completed', stage: 'completed', message: 'All three videos are complete.',
+        progress: { total: 3, imported: 3, completed: 3, processing: 0 },
+        results: { ...current.results, revision: 'final', final: true, included_videos: 3 }, next_action: { type: 'download_and_answer' } });
+      card.setVisibility('visible');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(card.control('analysis-stage').textContent).toBe('completed');
+      expect(card.control('analysis-counts').textContent).toBe('3 received · 3 complete');
+      expect(card.studio().segmentProps.selected.result_id).toBe(selectedKey);
+      expect(card.studio().segmentProps.selected.source_index_id).toBe('index-1');
+      expect(card.control('player').currentTime).toBe(12);
+      expect(card.mediaCalls()).toHaveLength(mediaCalls);
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(client.getAnalysis).toHaveBeenCalledTimes(readsBeforeHidden + 1);
+      expect(vi.mocked(client.getAnalysis).mock.calls.every(([, options]) => options?.include_download === false)).toBe(true);
+      expect(card.callServerTool.mock.calls.every(([request]) => request.arguments.intent !== 'download')).toBe(true);
+      expect(card.viewCalls()).toHaveLength(0);
+    } finally { await card.app.onteardown(); vi.useRealTimers(); }
+  });
+
+  it('opens a complete video while its siblings process, refreshes progress, and preserves playback', async () => {
+    vi.useFakeTimers();
+    const card = await cardHarness();
+    try {
+      const value = liveAnalysis('rev-1');
+      card.callServerTool.mockImplementation(async request => request.name === 'read_analysis' ? { _meta: { analysis: value } } : card.defaultResponse(request));
+      await card.app.ontoolresult({ structuredContent: value, _meta: { analysis: value } });
+      expect(card.tiles()).toEqual([expect.objectContaining({ metadata: { scene: 'Ready segment' }, run_id: 'anl-current' })]);
+      expect(card.viewCalls()).toHaveLength(0);
+      expect(card.control('analysis-counts').textContent).toContain('3 received');
+      expect(card.control('analysis-files').textContent).toContain('Launch: completed');
+      card.control('player').currentTime = 7;
+      const mediaCalls = card.mediaCalls().length;
+      card.callServerTool.mockImplementation(async request => request.name === 'read_analysis'
+        ? { _meta: { analysis: liveAnalysis('rev-2', { progress: { total: 3, imported: 3, completed: 2, processing: 1 } }) } }
+        : card.defaultResponse(request));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(card.callServerTool).toHaveBeenCalledWith({ name: 'read_analysis', arguments: { analysis_id: 'anl-current' } }, expect.any(Object));
+      expect(card.control('analysis-counts').textContent).toContain('2 complete');
+      expect(card.control('player').currentTime).toBe(7);
+      expect(card.mediaCalls()).toHaveLength(mediaCalls);
+      expect(card.viewCalls()).toHaveLength(0);
+    } finally { await card.app.onteardown(); vi.useRealTimers(); }
+  });
+
+  it('renews the included JSON download only when the user clicks download', async () => {
+    const card = await cardHarness();
+    const value = liveAnalysis('rev-1', { status: 'completed', next_action: { type: 'download_and_answer' } });
+    try {
+      card.callServerTool.mockImplementation(async request => request.name === 'read_analysis' ? { _meta: { analysis: value } } : card.defaultResponse(request));
+      await card.app.ontoolresult({ structuredContent: value, _meta: { analysis: value } });
+      expect(card.callServerTool.mock.calls.some(([request]) => request.arguments.intent === 'download')).toBe(false);
+      card.callServerTool.mockImplementation(async request => request.name === 'read_analysis'
+        ? { _meta: { analysis: { results: { download_url: 'https://api.example/analyses/anl-current/results.json?token=grant' } } } }
+        : card.defaultResponse(request));
+      const downloadAll = card.renderDownloads.mock.lastCall![2];
+      await downloadAll();
+      expect(card.callServerTool).toHaveBeenLastCalledWith({ name: 'read_analysis', arguments: { analysis_id: 'anl-current', video_id: 'video-1', intent: 'download' } }, undefined);
+      expect(card.app.downloadFile).toHaveBeenCalledWith({ contents: [expect.objectContaining({ type: 'resource_link', uri: expect.stringContaining('/results.json?token=grant') })] });
+    } finally { await card.app.onteardown(); }
+  });
+
+  it('uses the scoped index in host searches and reads published bundles for gallery browsing', async () => {
+    const call = vi.fn(async (name: string, args: any) => name === 'list_studio_scope'
+      ? { _meta: { catalog: { videos: [{ video_id: 'video-1' }], runs: [], browse_targets: [{ run_id: 'anl-current', video_id: 'video-1' }], fields: [] } } }
+      : name === 'read_analysis' ? { _meta: { analysis: liveAnalysis('r1') } }
+      : { _meta: { view: { snapshot_id: 'snap', data: [], pagination: {} } } });
+    const transport = createStudioTransport(call, { type: 'index', index_id: 'index-a' });
+    await transport.catalog({});
+    expect(call).toHaveBeenCalledWith('list_studio_scope', { limit: 100, index_id: 'index-a' }, undefined);
+    const pages = await transport.browse({ targets: [{ run_id: 'anl-current', video_id: 'video-1' }] });
+    expect(pages[0].results).toHaveLength(1);
+    expect(call).toHaveBeenCalledWith('read_analysis', { analysis_id: 'anl-current', video_id: 'video-1', detail: 'full' }, undefined);
+    await transport.search({ videoIds: ['video-1'], query: 'street', filters: [{ field: 'colour', type: 'string', operator: 'equals', value: 'blue' }] });
+    expect(call).toHaveBeenLastCalledWith('view_workflow_results', expect.objectContaining({ action: 'search', container_index_id: 'index-a', query: 'street', filters: [{ field: 'colour', operator: 'equals', value: 'blue' }] }), undefined);
+  });
+});
+
+
+it('keeps native upload and import-to-processing updates in the same analysis widget', async () => {
+  vi.useFakeTimers();
+  const card = await cardHarness();
+  const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+  vi.stubGlobal('fetch', fetch);
+  try {
+    const initial = liveAnalysis('empty', { stage: 'awaiting_upload', status: 'awaiting_upload', results: { revision: 'empty', included_videos: 0, final: false }, next_action: { type: 'request_input' } });
+    const importing = { ...initial, stage: 'importing', status: 'importing', message: 'Files received.', progress: { total: 1, imported: 1, completed: 0, processing: 1 }, next_action: { type: 'continue_polling' } };
+    card.callServerTool.mockImplementation(async () => ({ _meta: { analysis: importing } }));
+    await card.app.ontoolresult({ structuredContent: initial, _meta: { analysis: initial, upload: { url: 'https://api.example/upload', complete_url: 'https://api.example/complete', token: 'upload-token', max_files: 5, accept: 'video/*' } } });
+    card.control('files').files = [new File(['video'], 'launch.mp4', { type: 'video/mp4' })];
+    await card.control('files').fire('change');
+    await card.control('upload-form').fire('submit');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(card.control('upload-form').hidden).toBe(true);
+    expect(card.control('analysis-stage').textContent).toBe('importing');
+    expect(card.callServerTool).toHaveBeenLastCalledWith({ name: 'read_analysis', arguments: { analysis_id: 'anl-current' } }, expect.any(Object));
+    card.callServerTool.mockResolvedValue({ _meta: { analysis: { ...importing, stage: 'processing', status: 'processing', message: 'Video analysis is running.' } } });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(card.control('analysis-stage').textContent).toBe('processing');
+    expect(card.control('analysis-message').textContent).toBe('Video analysis is running.');
+    expect(card.callServerTool.mock.calls.every(([request]) => request.name === 'read_analysis')).toBe(true);
+  } finally { await card.app.onteardown(); vi.unstubAllGlobals(); vi.useRealTimers(); }
+});
+
+it('preserves an explicit older execution when the active analysis progresses', async () => {
+  vi.useFakeTimers();
+  const card = await cardHarness();
+  try {
+    const current = liveAnalysis('current');
+    const older = { ...liveAnalysis('older'), analysis_id: 'run-old', status: 'completed' };
+    card.callServerTool.mockImplementation(async request => request.name === 'read_analysis' ? { _meta: { analysis: request.arguments.analysis_id === 'run-old' ? older : current } } : card.defaultResponse(request));
+    await card.app.ontoolresult({ structuredContent: current, _meta: { analysis: current } });
+    const hit = { ...cardRow, run_id: 'run-old', result_id: 'segment:seg-1:run-old' };
+    await card.studio().onSelectResult(hit, [hit]);
+    card.control('player').currentTime = 6;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(card.studio().segmentProps.selected.run_id).toBe('run-old');
+    expect(card.control('player').currentTime).toBe(6);
+    expect(card.studio().mode).toBe('result');
+  } finally { await card.app.onteardown(); vi.useRealTimers(); }
+});
+
+describe('unified picker batch recovery', () => {
+  const active: any[] = [];
+  afterEach(async () => { for (const card of active.splice(0)) await card.app.onteardown(); vi.unstubAllGlobals(); });
+  async function unifiedPicker(count: number) {
+    const card = await cardHarness(); active.push(card);
+    const initial = liveAnalysis('empty', { stage: 'awaiting_upload', status: 'awaiting_upload', results: { revision: 'empty', included_videos: 0, final: false }, next_action: { type: 'request_input' } });
+    card.callServerTool.mockResolvedValue({ _meta: { analysis: { ...initial, stage: 'importing', next_action: { type: 'continue_polling' } } } });
+    await card.app.ontoolresult({ _meta: { analysis: initial, upload: { url: 'https://api.example/files', complete_url: 'https://api.example/complete', token: 'grant', max_files: 8 } } });
+    card.control('files').files = Array.from({ length: count }, (_, index) => new File(['video'], `${index}.mp4`));
+    await card.control('files').fire('change');
+    return { card, submit: () => card.control('upload-form').fire('submit') };
+  }
+  it('rejects a ninth selection without sending bytes', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const ui = await unifiedPicker(9);
+    await ui.submit();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(ui.card.control('upload-message').textContent).toBe('Choose no more than 8 files.');
+  });
+
+  it('settles started uploads, retains successes and completes the same ordered IDs on retry', async () => {
+    let fail!: (response: Response) => void;
+    let finish!: (response: Response) => void;
+    const first = new Promise<Response>(resolve => { fail = resolve; });
+    const second = new Promise<Response>(resolve => { finish = resolve; });
+    const fetch = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
+    vi.stubGlobal('fetch', fetch);
+    const ui = await unifiedPicker(8);
+    const pending = ui.submit();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const ids = fetch.mock.calls.map(([, init]) => init.body.get('file_id'));
+    fail(new Response('{}', { status: 500 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ui.card.control('submit').disabled).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    finish(new Response('{}', { status: 200 }));
+    await pending;
+    expect(ui.card.control('submit').disabled).toBe(false);
+    expect(ui.card.callServerTool).not.toHaveBeenCalled();
+    fetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/complete') ? { job_id: 'batch', status: 'pending' } : {}
+    ), { status: 200 }));
+    await ui.submit();
+    const retried = fetch.mock.calls.slice(2).filter(([url]) => url.endsWith('/files')).map(([, init]) => init.body.get('file_id'));
+    expect(retried).toHaveLength(7);
+    expect(retried[0]).toBe(ids[0]);
+    expect(retried).not.toContain(ids[1]);
+    const completion = fetch.mock.calls.filter(([url]) => url.endsWith('/complete'));
+    expect(completion).toHaveLength(1);
+    expect(JSON.parse(completion[0]![1].body).file_ids).toEqual([ids[0], ids[1], ...retried.slice(1)]);
+    expect(ui.card.callServerTool).toHaveBeenCalledExactlyOnceWith({ name: 'read_analysis', arguments: { analysis_id: 'anl-current' } }, expect.any(Object));
   });
 });

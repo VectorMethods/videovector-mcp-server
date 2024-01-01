@@ -9,6 +9,7 @@ import type { StudioSearchTransport } from './features/studio-search/types';
 import { getSearchResultKey } from './utils/searchResultIdentity';
 import StudioVideoRail from './components/studio-search/StudioVideoRail';
 import { ResultSegments } from './results-view';
+import { analysisResultView } from './analysis-progress';
 
 export function normalizeStudioResult(row: any) {
   return {
@@ -23,13 +24,14 @@ export function normalizeStudioResult(row: any) {
   };
 }
 
-export function createStudioTransport(callTool: (name: string, args: any, signal?: AbortSignal) => Promise<any>): StudioSearchTransport {
+export function createStudioTransport(callTool: (name: string, args: any, signal?: AbortSignal) => Promise<any>, container: { type?: string; index_id?: string } = { type: 'playground' }): StudioSearchTransport {
+  const indexId = container.index_id && container.index_id !== 'playground' ? container.index_id : undefined;
   let library: any = null;
   let libraryRequest: Promise<any> | null = null;
   let catalogGeneration = 0;
   const searchAttempts = new Map<string, string>();
   const catalogPage = async (args: any, signal?: AbortSignal) => {
-    const response = await callTool('list_studio_scope', args, signal);
+    const response = await callTool('list_studio_scope', { ...args, ...(indexId ? { index_id: indexId } : {}) }, signal);
     if (!response._meta?.catalog) throw new Error('The Studio video scope is unavailable.');
     return response._meta.catalog;
   };
@@ -45,9 +47,13 @@ export function createStudioTransport(callTool: (name: string, args: any, signal
         const generation = catalogGeneration;
         const next = await catalogPage({ cursor, limit: 100 }, signal);
         if (signal?.aborted) throw new DOMException('The request was aborted.', 'AbortError');
-        const continued = { ...library, videos: Array.from(new Map([...(library?.videos ?? []), ...next.videos].map(video => [video.video_id, video])).values()), nextCursor: next.nextCursor };
+        const merge = (key: string, identity: (item: any) => string) => Array.from(new Map([...(library?.[key] ?? []), ...(next[key] ?? [])].map(item => [identity(item), item])).values());
+        const continued = { ...next, videos: merge('videos', item => item.video_id),
+          runs: merge('runs', item => item.run_id).map(run => ({ ...run, video_ids: [...new Set([...(library?.runs ?? []), ...(next.runs ?? [])].filter(item => item.run_id === run.run_id).flatMap(item => item.video_ids ?? []))] })), browse_targets: merge('browse_targets', item => `${item.run_id}:${item.video_id}`),
+          fields: merge('fields', item => item.name), warnings: [...new Set([...(library?.warnings ?? []), ...(next.warnings ?? [])])] };
+        continued.scope_error = next.scope_error || (continued.videos.length > 100 ? 'Search supports up to 100 selected videos. Narrow the video scope to continue.' : undefined);
         if (catalogGeneration === generation) library = continued;
-        return { ...continued, videos: next.videos, nextCursor: next.nextCursor };
+        return { ...continued, videos: next.videos, nextCursor: next.nextCursor, scopeError: continued.scope_error };
       }
       let activeLibrary = library;
       if (!activeLibrary) {
@@ -68,7 +74,7 @@ export function createStudioTransport(callTool: (name: string, args: any, signal
         ? await catalogPage({ video_ids: videoIds }, signal)
         : { browse_targets: [], fields: [], warnings: [] };
       return { ...scoped, videos: activeLibrary.videos, runs: activeLibrary.runs ?? [], nextCursor: activeLibrary.nextCursor,
-        scopeError: scoped.scope_error, fields: scoped.fields ?? [], browse_targets: scoped.browse_targets ?? [] };
+        scopeError: scoped.scope_error || (videoIds === undefined && activeLibrary.videos.length > 100 ? 'Search supports up to 100 selected videos. Narrow the video scope to continue.' : undefined), fields: scoped.fields ?? [], browse_targets: scoped.browse_targets ?? [] };
     },
     async browse({ targets, signal }) {
       const pages: any[] = [];
@@ -77,13 +83,13 @@ export function createStudioTransport(callTool: (name: string, args: any, signal
         while (offset < targets.length && !signal?.aborted) {
           const index = offset++;
           const target = targets[index];
-          const response = await callTool('view_workflow_results', { source_kind: 'prompt_run', source_id: target.run_id,
-            video_id: target.video_id, result_level: 'segment', view: 'unfiltered', limit: target.limit ?? 12,
-            ...(target.cursor ? { unfiltered_cursor: target.cursor } : {}),
-          }, signal);
-          const page = response._meta?.view?.unfiltered;
-          if (!page) throw new Error('This execution result page is unavailable.');
-          pages[index] = { video_id: target.video_id, run_id: target.run_id, results: page.data.map(normalizeStudioResult), nextCursor: page.pagination?.next_cursor || null };
+          const response = await callTool('read_analysis', { analysis_id: target.run_id, video_id: target.video_id, detail: 'full', ...(target.cursor ? { cursor: target.cursor } : {}) }, signal);
+          const analysis = response._meta?.analysis;
+          if (!Array.isArray(analysis?.results?.data)) throw new Error('This completed analysis is unavailable.');
+          const view = analysisResultView(analysis);
+          pages[index] = { video_id: target.video_id, run_id: target.run_id,
+            results: view.unfiltered.data.filter((row: any) => row.result_type === 'segment').map(normalizeStudioResult), nextCursor: analysis.results.pagination?.next_cursor ?? null };
+
         }
       }));
       return pages;
@@ -97,7 +103,8 @@ export function createStudioTransport(callTool: (name: string, args: any, signal
       const signature = JSON.stringify(args);
       const key = searchAttempts.get(signature) ?? crypto.randomUUID();
       searchAttempts.set(signature, key);
-      const page = searchPage(await callTool('search_media', { ...args, idempotency_key: key }, signal));
+      const page = searchPage(await callTool('view_workflow_results', { action: 'search', ...args,
+        container_index_id: indexId ?? 'playground', idempotency_key: key }, signal));
       searchAttempts.delete(signature);
       return page;
     },

@@ -45,9 +45,10 @@ JSON file below configures local stdio servers. See the current
 [Claude connector instructions](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
 and [Cursor MCP configuration](https://cursor.com/docs/mcp).
 
-OAuth connects the signed-in VideoVector account, including permitted create,
-update, and delete operations. Product ownership, credits, and entitlements
-still apply. For a deliberately limited integration, use a scoped API key.
+OAuth connects the signed-in VideoVector account to the six published media
+tools. MCP exposes no deletion or administration tools. Product ownership,
+credits, and entitlements still apply. For narrower integration permissions,
+use a scoped API key.
 See [hosted OAuth setup and troubleshooting](docs/hosted-oauth.md) for discovery,
 custom clients, token refresh, and the available tool surface.
 
@@ -79,8 +80,7 @@ Environment variables:
 | `VIDEOVECTOR_BASE_URL` | No | `https://api.vectormethods.com/api/v2` | API base URL. |
 | `VIDEOVECTOR_TIMEOUT` | No | `90000` | Request timeout in milliseconds. |
 | `VIDEOVECTOR_MAX_RETRIES` | No | `3` | Retry count for retryable API failures. |
-| `VIDEOVECTOR_TOOL_PROFILE` | No | `full` | `simple` exposes find, uploads, processing, search, and their status/results tools. |
-| `VIDEOVECTOR_UPLOAD_ROOTS` | No | current directory | Comma-separated directories from which local stdio `upload_media` may read. |
+| `VIDEOVECTOR_UPLOAD_ROOTS` | No | current directory | Comma-separated directories from which local stdio `analyze` or `import_media` may read. |
 | `MCP_UPLOAD_API_BASE_URL` | No | API base URL | Public upload API base including `/api/v2`; must match the backend upload URL configuration and picker CSP. |
 | `MCP_APP_BASE_URL` | No | `https://app.vectormethods.com` | HTTPS app origin for authenticated playback, JSON, and export links. |
 | `MCP_TRANSPORT_MODE` | No | `stdio` | `stdio` or `http`. |
@@ -90,15 +90,16 @@ Environment variables:
 - Claude Desktop: [examples/claude-desktop.json](examples/claude-desktop.json)
 - Cursor: [examples/cursor.json](examples/cursor.json)
 - Generic stdio: [examples/custom-stdio.json](examples/custom-stdio.json)
-- Simplified workflow stdio: [examples/simple-stdio.json](examples/simple-stdio.json)
 - Local Streamable HTTP: [examples/streamable-http-local.json](examples/streamable-http-local.json)
 
 ## Self-Hosted HTTP
 
 HTTP mode is intended for self-hosted or private network deployments.
 
-The commands and settings below apply to this package and its source.
-Install dependencies with `npm ci` before building from source.
+The commands and settings below apply to this checked-out server source.
+Install its dependencies with `npm ci` before building. For the published npm
+package's API-key HTTP mode and supported settings, follow the
+[public package README](https://github.com/VectorMethods/videovector-mcp-server#self-hosted-http).
 
 ```bash
 npm run build
@@ -152,8 +153,8 @@ Plaintext keys are never written to caches or logs. Requests that combine
 Authenticated HTTP initialization and a local stdio session's initialized
 notification send one explicit `POST /auth/processing-activity` using the same
 credential. The control service starts API and LOW capacity without waiting for
-the main API to cold-start. Calls to `upload_media`, `process_media`, `find`, and
-`retry_prompt_run_segment` also signal processing intent before backend work.
+the main API to cold-start. New `import_media` and `analyze` submissions
+also signal processing intent before backend work.
 The server owns event receipts, coalescing and readiness windows (15 minutes
 for LOW, 30 minutes for API).
 
@@ -161,7 +162,7 @@ These requests are advisory, bounded to three seconds (or the configured
 shorter timeout), and never automatically retried. Failure does not change
 authentication or tool results. An acknowledgement is not proof that startup
 has completed. Read-only credential validation, its cache refresh, token
-refresh, discovery, status polling, imports and ordinary reads do not send
+refresh, discovery, status polling and ordinary reads do not send
 readiness activity.
 
 OAuth access tokens are verified locally with the pinned WorkOS issuer,
@@ -192,89 +193,24 @@ deployment settings apply when operating your own server; see
 
 ## Tools
 
-For the lowest-friction agent workflow, set `VIDEOVECTOR_TOOL_PROFILE=simple`.
-It exposes:
+One six-tool catalog is shared by stdio, API-key HTTP, and OAuth:
 
-- `find`: upload attached videos, generate schemas and optional filters together, and start one fresh Playground execution
-- `upload_media`: import native attachments, local stdio files, or files chosen in the inline picker
-- `define_prompt`: generate extraction schemas and optional selection filters in one call, saving the prompt by default
-- `process_media`: start an asynchronous execution for Playground, an index, or selected media; saved engine execution settings apply unless explicitly overridden
-- `search_media`: vector, conditional, or combined search over Playground, an index, selected media, or prompt runs with stable cursor pagination
-- `get_prompt_run_status`: poll execution progress and selection readiness
-- `get_prompt_run_results`: read filtered matches and unfiltered extraction with independent bounded pages
-- `get_import_job`: follow upload progress and obtain the downstream execution ID
-- `retry_import_job`: resume a failed attachment job using its staged files
+| Tool | Purpose |
+| --- | --- |
+| `analyze` | Analyze root native `files` or one nested `source`, using `instruction` or `prompt_id`. |
+| `get_analysis` | Read one analysis or the latest complete analysis for a video. |
+| `search` | Combine text, image, and metadata filters in one nested `scope`; resume saved snapshots. |
+| `import_media` | Import without analysis, inspect `import_id`, or retry failures where supported. |
+| `save_prompt` | Generate/save a prompt from instruction or an explicit definition. |
+| `browse` | Discover indexes, videos, analyses, imports, or prompts with resource-specific filters. |
 
-`process_media` replaces the former `execute_prompt` tool. Its optional overrides
-are `video_segmentation_type`, `audio_segmentation_type`,
-`video_segment_duration`,
-`audio_segment_duration`, `processing_model`,
-`enable_transcription`, and `enable_image_embedding`. Omit settings to retain
-the saved engine defaults in both indexed media and Playground. Null overrides
-also inherit. Video and audio support `content_aware` (the default) and `fixed`
-segmentation. Fixed mode requires its corresponding duration in integer seconds
-from 1 to 300. `define_prompt` preserves supported segmentation intent
-qualitatively in the generated instructions. Save engine settings through
-`create_prompt`/`update_prompt` under `execution_config`.
+There are no Simple/Full profiles or retired-name aliases. OAuth omits cloud source credentials, cloud import, import retry, and webhook arguments while keeping the same six names. Direct integrations can supply terminal-only task callbacks. Local paths are nested under `source.file_paths` and appear only on stdio. All schemas include conditional rules and examples; see the [hierarchical contract](docs/tool-contract.md) and [generated JSON Schema](artifacts/tool-contract.json).
 
-The default `full` profile adds the advanced surface below. Both transports
-accept native attachment descriptors. Local `file_path` (`upload_media`) and
-`file_paths` (`find`) shortcuts are advertised only over stdio, require allowed
-upload roots, and stream files into the same intake job.
+Analysis retains one durable ID across upload and processing. Observations wait at most 30 seconds; local transfers use the configured request timeout. Typed `next_action` distinguishes required input, progress, results, and errors. Continue observing within host/user controls, preserving the ID and retry identity. Pending does not mean stuck.
 
-`find` accepts an instruction and the videos attached to that command. It
-disables advanced transcription and image embeddings, uses content-aware segmentation, and returns a durable
-job ID immediately for native attachments. Poll `get_import_job`, then the run's
-status and both result pages. Each new command starts fresh; retain one
-idempotency key only when retrying that command.
+Complete-video JSON appears incrementally through included one-hour download grants. The response and JSON also contain direct segment downloads. Fetch these capabilities without OAuth headers; refresh through the same result tool without rerunning or creating an export. Save JSON where the host supports files and retain its path for context recovery. Hosts without filesystem tools can use bounded full-detail pages.
 
-`retry_import_job` reuses the uploaded files. A known wizard failure starts a
-new generation attempt; a successful generation is reused. An uncertain
-generation outcome returns a conflict instead of silently generating again.
-
-If a host cannot forward video attachments, omitting `files` opens the MCP Apps
-picker in the conversation. The picker sends bytes directly to the configured
-upload API using a job-scoped capability delivered only in private `_meta`.
-Clients without MCP Apps can use native attachments or the local stdio shortcuts.
-
-The nine workflow tools return compact version 2 summaries with authenticated
-app links and automatic JSON export status. Use `detail=full` on definition,
-processing, status, or result tools only when the model needs the full payload.
-`get_prompt_run_results` and `search_media` can display an optional MCP Apps card
-for playback, result browsing, and JSON inspection. The card keeps media grants
-and full metadata outside model-visible tool output. Other clients receive the
-same links and bounded summaries. See [the result contract](docs/tool-contract.md#workflow-results-version-2).
-
-The Studio can browse every Playground video, scope searches to individual videos, and select an execution as a visual group. Search results open in the player with a result carousel and the selected execution’s complete segment strip. Back navigation retains the search, and supported hosts restore navigation from private widget state using frozen snapshot reads. Semantic queries can be combined with conditions; combined filters apply to the existing ranked window of up to 100 candidates, not the entire corpus. Conditional-only searches use the canonical metadata engine.
-
-The card preselects the current run result and preloads paused playback. Search tools open the result grid. Its formatted
-analysis and segment strip reuse the application's presentation components;
-The standalone UI components and utilities are included under `ui/components`
-and `ui/utils`; `npm run build` bundles both embedded apps for distribution.
-
-For an existing ChatGPT connection that returns links without the card, open
-VideoVector's app settings, choose **Refresh tools**, then request the results
-again. ChatGPT retains discovered tool metadata from earlier connections.
-
-The server exposes tools for:
-
-- semantic, image, multimodal, and structured metadata search
-- index, video, segment, and prompt discovery
-- prompt-run estimation, execution, status, results, retries, and cancellation
-- prompt management and schema testing
-- cloud connectors, import jobs, exports, and webhooks
-
-The machine-readable tool contract is generated at [artifacts/tool-contract.json](artifacts/tool-contract.json). Private backend and website releases should vendor this artifact for MCP helper endpoints and documentation updates.
-
-`get_export_status` is side-effect free: its `download_url` is only the
-authenticated API endpoint and it never mints a bearer credential. Present
-`links.open_in_app` and, when ready, `links.download_json` to users; these open
-the existing export card and authenticated download in their signed-in app.
-Use the
-separate `get_export_download_url` tool only when a header-free client
-explicitly needs a short-lived bounded URL. Connector-delivered, processing,
-failed, and otherwise unavailable exports return `download_url: null`. Treat
-any non-null minted URL as a credential and do not log or persist it.
+Every new search requires an explicit scope. Search filters candidates before ranking; library/video/Playground scopes use latest complete results per video. `scope.analysis_ids` selects history. Use `search_id` with an optional cursor to resume the same saved snapshot without rerunning. The shared Studio supports native upload, visible progress polling, playback, and JSON inspection through private app-only helpers. Native REST APIs remain available independently.
 
 ## Development
 
@@ -307,15 +243,9 @@ Never commit API keys, cloud credentials, connector credentials, webhook secrets
 
 See [SECURITY.md](SECURITY.md) for supported versions, disclosure instructions, and operational guidance.
 
-### Expired attachment links
+### Failed imports
 
-`get_import_job` returns per-file failure codes, HTTP status when available, and
-`refresh_required`. `retry_import_job` reuses imported and staged files. Supply
-its optional `files` with fresh host-provided download descriptors only for the
-unfinished, unstaged file IDs that need refresh. Keep their original file IDs,
-filenames and MIME types; use a new idempotency key when descriptors change.
-`cancel_import_job` can discard retained unfinished files from a failed attachment
-job while keeping imported media. Signed download links never appear in tool output.
+Read `import_media` with the original `import_id` for safe per-file errors and progress. Direct integrations can retry failed work with `retry:true` and an explicit idempotency key. OAuth users review failures in the app. Never invent fresh attachment descriptors or restart successful work because a read timed out.
 
 ## Standalone parts and grounded extraction
 
@@ -324,8 +254,8 @@ balanced standalone parts, each at most 40 minutes. Each part has its own media
 ID, local timestamps, segments and optional whole-media output. Job phase and
 source-file counters are separate from `parts_total`, `parts_completed`, and
 `parts_failed`. Read every ordered outputs page (`next_cursor` until null).
-`video_ids` includes only the current page. Use `import_job_id` with processing
-to select the complete completed import, exclusive with `video_ids`.
+`video_ids` includes only the current page. Use `analyze` with `source.import_id`
+to select the complete completed import; it is exclusive with other source selectors.
 
 The optional `video_level` configuration contains only `instructions_text` and
 `json_schema`. It requires content-aware segmentation. Segment and whole-media

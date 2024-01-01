@@ -1,10 +1,10 @@
 import type { VideoVectorClient } from '../client/index.js';
-import type { PreviewGrantIdentity, WorkflowRunResultsRequest } from '../types/index.js';
+import type { PreviewGrantIdentity, WorkflowRunResultsRequest, WorkflowSearchRequest } from '../types/index.js';
 import { VideoVectorApiError } from '../types/index.js';
 import type { ToolHandlerResult } from './index.js';
 import { ToolInputError } from '../utils/helpers.js';
-import { RESULTS_ARTIFACT_TOOL, RESULTS_MEDIA_TOOL, RESULTS_VIEW_TOOL, STUDIO_SCOPE_TOOL, STUDIO_PREVIEWS_TOOL } from './workflow-result-contract.js';
-import { projectWorkflowPayload, asRecord } from './workflow-result-projection.js';
+import { RESULTS_ARTIFACT_TOOL, RESULTS_MEDIA_TOOL, RESULTS_VIEW_TOOL, STUDIO_SCOPE_TOOL, STUDIO_PREVIEWS_TOOL, ANALYSIS_VIEW_TOOL } from './workflow-result-contract.js';
+import { projectWorkflowPayload, asRecord, appOrigin, resultLink } from './workflow-result-projection.js';
 import { addWorkflowPreviewReferences } from './workflow-result-previews.js';
 
 function required(args: Record<string, unknown>, key: string): string {
@@ -33,7 +33,7 @@ async function loadViewContext(runId: string, videoId: string, destination: unkn
   if (run.video_level_enabled) {
     try {
       const output = await client.getPromptRunVideoResult(runId, videoId);
-      const projected = projectWorkflowPayload('get_prompt_run_results', {
+      const projected = projectWorkflowPayload('analysis_results', {
         run_id: runId, destination, filtered: null, unfiltered: { data: [output], pagination: {} },
       }, 'full');
       videoLevelOutput = (asRecord(projected.unfiltered).data as Record<string, unknown>[])[0] ?? null;
@@ -53,8 +53,31 @@ async function loadViewContext(runId: string, videoId: string, destination: unkn
 }
 
 export async function executeResultsAppTool(name: string, args: Record<string, unknown>, client: VideoVectorClient): Promise<ToolHandlerResult> {
+  if (name === ANALYSIS_VIEW_TOOL) {
+    exact(args, ['analysis_id', 'import_id', 'detail', 'video_id', 'intent', 'cursor', 'page_size']);
+    if (args.import_id !== undefined) {
+      exact(args, ['import_id']);
+      const snapshot = await client.mcpImportProgress(required(args, 'import_id'));
+      return { content: [{ type: 'text', text: 'Import updated in Studio.' }], _meta: { import: snapshot } };
+    }
+    if (args.intent !== undefined && args.intent !== 'download') throw new ToolInputError('Invalid analysis intent');
+    const analysisId = required(args, 'analysis_id');
+    const detail = args.detail ?? 'summary';
+    if (detail !== 'summary' && detail !== 'full') throw new ToolInputError('detail must be summary or full');
+    if (args.page_size !== undefined && (!Number.isInteger(args.page_size) || Number(args.page_size) < 1 || Number(args.page_size) > 20)) throw new ToolInputError('page_size must be between 1 and 20');
+    const analysis = await client.getAnalysis(analysisId, {
+      ...(args.cursor === undefined ? {} : { cursor: optionalCursor(args, 'cursor') }),
+      ...(args.page_size === undefined ? {} : { page_size: Number(args.page_size) }),
+      detail, include_download: args.intent === 'download',
+      ...(args.video_id === undefined ? {} : { video_id: required(args, 'video_id') }),
+    });
+    const videoId = optional(args, 'video_id') ?? (analysis.results.videos?.[0] as { video_id?: string } | undefined)?.video_id;
+    const openInApp = videoId ? resultLink({ video_id: videoId, source_index_id: analysis.scope?.index_id }, analysisId, 'all', appOrigin()) : undefined;
+    return { content: [{ type: 'text', text: 'Analysis updated in Studio.' }], _meta: { analysis: { ...analysis, ...(openInApp ? { links: { open_in_app: openInApp } } : {}) } } };
+  }
   if (name === STUDIO_SCOPE_TOOL) {
-    exact(args, ['video_ids', 'prompt_run_ids', 'cursor', 'limit']);
+    exact(args, ['index_id', 'video_ids', 'prompt_run_ids', 'cursor', 'limit']);
+    const indexId = optional(args, 'index_id');
     if (args.video_ids !== undefined && args.prompt_run_ids !== undefined) throw new ToolInputError('Select videos or prompt runs, not both');
     const limit = args.limit ?? 100;
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new ToolInputError('limit must be between 1 and 100');
@@ -72,22 +95,22 @@ export async function executeResultsAppTool(name: string, args: Record<string, u
     if (cursor && (videoIds || promptRunIds)) throw new ToolInputError('Library continuation does not accept a scope selector');
     const videos = videoIds || promptRunIds
       ? { data: [], pagination: { limit, has_more: false, next_cursor: null } }
-      : await client.getPlaygroundVideos({ limit, cursor });
+      : indexId && indexId !== 'playground'
+        ? await client.getVideosInIndex(indexId, limit, cursor)
+        : await client.getPlaygroundVideos({ limit, cursor });
     const emptyScope = { runs: [], browse_targets: [], fields: [], warnings: [] };
-    let scope: object = {};
-    if (!cursor) {
-      if (!videoIds && !promptRunIds && videos.pagination.has_more) {
-        scope = { ...emptyScope, scope_error: 'Search supports up to 100 selected videos. Narrow the video scope to continue.' };
-      } else {
-        const selectedVideos = videoIds ?? (!promptRunIds ? videos.data.map(video => video.video_id) : undefined);
-        scope = selectedVideos?.length === 0 ? emptyScope
-          : await client.workflowSearchScope(promptRunIds ? { prompt_run_ids: promptRunIds } : { video_ids: selectedVideos! }).catch(error => {
-            if (!(error instanceof VideoVectorApiError) || error.code !== 'scope_too_large') throw error;
-            return { ...emptyScope, scope_error: error.message };
-          });
-      }
-    }
-    const publicVideos = videos.data.map(video => ({
+    const selectedVideos = videoIds ?? (!promptRunIds ? videos.data.map(video => video.video_id) : undefined);
+    const scope = selectedVideos?.length === 0 ? emptyScope
+      : await client.workflowSearchScope(promptRunIds ? { prompt_run_ids: promptRunIds } : {
+        video_ids: selectedVideos!, latest_only: true, container_index_id: indexId ?? 'playground',
+      }).catch(error => {
+        if (!(error instanceof VideoVectorApiError) || error.code !== 'scope_too_large') throw error;
+        return { ...emptyScope, scope_error: error.message };
+      });
+    const targets = (scope as { browse_targets?: Array<{ video_id: string }> }).browse_targets;
+    const scopeError = (scope as { scope_error?: string }).scope_error;
+    const processedIds = targets && !scopeError ? new Set(targets.map(target => target.video_id)) : null;
+    const publicVideos = videos.data.filter(video => !processedIds || processedIds.has(video.video_id)).map(video => ({
       ...Object.fromEntries(
         ['video_id', 'title', 'media_type', 'status', 'created_at', 'duration_seconds', 'thumbnail_gcs_uri', 'gif_gcs_uri'].flatMap(key =>
           (video as unknown as Record<string, unknown>)[key] === undefined ? [] : [[key, (video as unknown as Record<string, unknown>)[key]]]),
@@ -99,7 +122,7 @@ export async function executeResultsAppTool(name: string, args: Record<string, u
     }));
     return {
       content: [{ type: 'text', text: 'Studio videos and searchable executions loaded.' }],
-      _meta: { catalog: { ...scope, videos: publicVideos, pagination: videos.pagination, nextCursor: videos.pagination.next_cursor } },
+      _meta: { catalog: { ...scope, container: { type: indexId && indexId !== 'playground' ? 'index' : 'playground', ...(indexId && indexId !== 'playground' ? { index_id: indexId } : {}) }, videos: publicVideos, pagination: videos.pagination, nextCursor: videos.pagination.next_cursor } },
     };
   }
   if (name === STUDIO_PREVIEWS_TOOL) {
@@ -180,6 +203,23 @@ export async function executeResultsAppTool(name: string, args: Record<string, u
     };
   }
   if (name !== RESULTS_VIEW_TOOL) throw new ToolInputError('Unknown results card tool');
+  if (args.action === 'search') {
+    exact(args, ['action', 'container_index_id', 'video_ids', 'query', 'filters', 'idempotency_key', 'limit', 'result_level']);
+    if (!Array.isArray(args.video_ids) || !args.video_ids.length || args.video_ids.length > 100) throw new ToolInputError('Select between 1 and 100 videos');
+    if (args.query !== undefined && typeof args.query !== 'string') throw new ToolInputError('query must be a string');
+    if (args.filters !== undefined && (!Array.isArray(args.filters) || args.filters.length > 4)) throw new ToolInputError('filters must contain at most four conditions');
+    const request: WorkflowSearchRequest = {
+      video_ids: [...new Set(args.video_ids.map((id: unknown) => required({ id }, 'id')))],
+      latest_only: true, result_level: 'segment', limit: 50,
+      container_index_id: optional(args, 'container_index_id') ?? 'playground',
+      ...(args.query ? { query: args.query as string } : {}),
+      ...(args.filters ? { filters: args.filters as WorkflowSearchRequest['filters'] } : {}),
+    };
+    const response = await client.workflowSearchMedia(request, optional(args, 'idempotency_key'));
+    const projected = projectWorkflowPayload('search_results', response as unknown as Record<string, unknown>, 'full');
+    addWorkflowPreviewReferences(projected, response as unknown as Record<string, unknown>);
+    return { content: [{ type: 'text', text: 'Search results loaded in Studio.' }], _meta: { view: projected } };
+  }
   exact(args, ['source_kind', 'source_id', 'result_level', 'view', 'video_id', 'cursor', 'filtered_cursor', 'unfiltered_cursor', 'limit', 'include_context']);
   const sourceId = required(args, 'source_id');
   const kind = required(args, 'source_kind');
@@ -191,8 +231,8 @@ export async function executeResultsAppTool(name: string, args: Record<string, u
   let projected: Record<string, unknown>;
   if (kind === 'search_snapshot') {
     if (['result_level', 'view', 'video_id', 'filtered_cursor', 'unfiltered_cursor'].some(key => args[key] !== undefined)) throw new ToolInputError('Search snapshot pages accept only cursor and limit');
-    const response = await client.workflowSnapshotResults(sourceId, { cursor: optionalCursor(args, 'cursor'), limit });
-    projected = projectWorkflowPayload('search_media', response, 'full');
+    const response = await client.workflowSnapshotResults(sourceId, { cursor: optionalCursor(args, 'cursor'), limit, include_download: false });
+    projected = projectWorkflowPayload('search_results', response, 'full');
     addWorkflowPreviewReferences(projected, response as unknown as Record<string, unknown>);
   } else {
     if (args.cursor !== undefined) throw new ToolInputError('Use the filtered or unfiltered cursor for prompt run pages');
@@ -204,7 +244,7 @@ export async function executeResultsAppTool(name: string, args: Record<string, u
       video_id: optional(args, 'video_id'), filtered_cursor: optionalCursor(args, 'filtered_cursor'), unfiltered_cursor: optionalCursor(args, 'unfiltered_cursor'),
     };
     const response = await client.workflowRunResults(sourceId, options);
-    projected = projectWorkflowPayload('get_prompt_run_results', { ...response }, 'full');
+    projected = projectWorkflowPayload('analysis_results', { ...response }, 'full');
     addWorkflowPreviewReferences(projected, { ...response });
   }
   const context = args.include_context ? await loadViewContext(sourceId, required(args, 'video_id'), projected.destination, client) : undefined;

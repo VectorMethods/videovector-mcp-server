@@ -8,7 +8,6 @@ import {
   loadBaseConfig,
   loadHttpConfig,
   loadStdioConfig,
-  readToolProfile,
   type BaseConfig,
   type HttpConfig,
 } from '../src/index.js';
@@ -48,7 +47,7 @@ function callToolRequest(id: string, name: string): Record<string, unknown> {
     method: 'tools/call',
     params: {
       name,
-      arguments: {},
+      arguments: name === 'browse' ? { resource: 'indexes' } : {},
     },
   };
 }
@@ -97,10 +96,10 @@ describe('stateless HTTP transport authentication', () => {
 
     expect(response.status).toBe(200);
     const names = response.body.result.tools.map((tool: { name: string }) => tool.name);
-    expect(names).toContain('define_prompt');
-    expect(names).toContain('process_media');
-    expect(names).toContain('search_media');
-    expect(names).toContain('upload_media');
+    expect(names).toContain('get_analysis');
+    expect(names).toContain('analyze');
+    expect(names).toContain('search');
+    expect(names).toContain('browse');
   });
 
   it('rejects local paths through hosted upload', async () => {
@@ -111,11 +110,11 @@ describe('stateless HTTP transport authentication', () => {
       .post('/mcp')
       .set('X-API-Key', publicApiKey(98))
       .set('Accept', 'application/json, text/event-stream')
-      .send({ ...callToolRequest('hidden-upload', 'upload_media'), params: { name: 'upload_media', arguments: { file_path: '/tmp/private.mp4' } } });
+      .send({ ...callToolRequest('hidden-upload', 'analyze'), params: { name: 'analyze', arguments: { instruction:'Describe', source: { file_paths: ['/tmp/private.mp4'] } } } });
 
     expect(response.status).toBe(200);
     expect(response.body.result.isError).toBe(true);
-    expect(response.body.result.content[0].text).toContain('local stdio');
+    expect(response.body.result.content[0].text).toContain('Invalid analyze arguments');
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(fetchSpy.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
       '/api/v2/auth/validate',
@@ -123,10 +122,10 @@ describe('stateless HTTP transport authentication', () => {
     ]);
   });
 
-  it('enforces the simple profile for listings and direct tool calls', async () => {
+  it('enforces the single catalog for listings and direct tool calls', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(successfulValidation());
     vi.stubGlobal('fetch', fetchSpy);
-    const { app } = createHttpApp({ ...httpConfig, toolProfile: 'simple' });
+    const { app } = createHttpApp(httpConfig);
     const apiKey = publicApiKey(97);
 
     const listed = await request(app as any)
@@ -135,10 +134,10 @@ describe('stateless HTTP transport authentication', () => {
       .set('Accept', 'application/json, text/event-stream')
       .send(listToolsRequest('simple-tools'));
     const names = listed.body.result.tools.filter((tool: { _meta?: { ui?: { visibility?: string[] } } }) => tool._meta?.ui?.visibility?.includes('app') !== true).map((tool: { name: string }) => tool.name);
-    expect(names).toEqual(['find', 'upload_media', 'define_prompt', 'process_media', 'search_media', 'get_prompt_run_status', 'get_prompt_run_results', 'get_import_job', 'retry_import_job']);
+    expect(names).toEqual(['analyze', 'get_analysis', 'search', 'import_media', 'save_prompt', 'browse']);
     const appTools = listed.body.result.tools.filter((tool: { _meta?: { ui?: { visibility?: string[] } } }) => tool._meta?.ui?.visibility?.includes('app') === true);
     expect(appTools.map((tool: { name: string }) => tool.name).sort()).toEqual([
-      'download_workflow_artifact', 'get_studio_previews', 'list_studio_scope', 'play_workflow_media', 'view_workflow_results',
+      'download_workflow_artifact', 'get_studio_previews', 'list_studio_scope', 'play_workflow_media', 'read_analysis', 'view_workflow_results',
     ]);
     for (const tool of appTools) {
       expect(tool._meta.ui.visibility).toEqual(['app']);
@@ -149,7 +148,7 @@ describe('stateless HTTP transport authentication', () => {
       .post('/mcp')
       .set('X-API-Key', apiKey)
       .set('Accept', 'application/json, text/event-stream')
-      .send(callToolRequest('hidden-advanced', 'list_indexes'));
+      .send(callToolRequest('hidden-advanced', 'create_index'));
     expect(hidden.body.result.isError).toBe(true);
     expect(hidden.body.result.content[0].text).toContain('not available');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -474,7 +473,7 @@ describe('stateless HTTP lifecycle', () => {
       .post('/mcp')
       .set('X-API-Key', publicApiKey(46))
       .set('Accept', 'application/json, text/event-stream')
-      .send(callToolRequest('abort-request', 'list_indexes'));
+      .send(callToolRequest('abort-request', 'browse'));
     pending.end(() => {});
 
     await vi.waitFor(() => expect(context.activeRequests.size).toBe(1));
@@ -512,7 +511,7 @@ describe('stateless HTTP lifecycle', () => {
       .post('/mcp')
       .set('X-API-Key', publicApiKey(47))
       .set('Accept', 'application/json, text/event-stream')
-      .send(callToolRequest('drain-request', 'list_indexes'));
+      .send(callToolRequest('drain-request', 'browse'));
     pending.end(() => {});
 
     await vi.waitFor(() => expect(context.activeRequests.size).toBe(1));
@@ -1046,16 +1045,6 @@ describe('HTTP CORS policy', () => {
 });
 
 describe('stdio transport configuration', () => {
-  it('defaults to the full profile and accepts the simple profile', () => {
-    const original = process.env.VIDEOVECTOR_TOOL_PROFILE;
-    delete process.env.VIDEOVECTOR_TOOL_PROFILE;
-    expect(readToolProfile()).toBe('full');
-    process.env.VIDEOVECTOR_TOOL_PROFILE = 'simple';
-    expect(readToolProfile()).toBe('simple');
-    if (original === undefined) delete process.env.VIDEOVECTOR_TOOL_PROFILE;
-    else process.env.VIDEOVECTOR_TOOL_PROFILE = original;
-  });
-
   it('requires VIDEOVECTOR_API_KEY in stdio mode', () => {
     const original = process.env.VIDEOVECTOR_API_KEY;
     delete process.env.VIDEOVECTOR_API_KEY;

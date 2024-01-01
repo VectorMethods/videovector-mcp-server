@@ -16,7 +16,7 @@ export function validateStdioSmoke(response, contract, appTools = []) {
   assert(Array.isArray(listed?.result?.tools), 'Artifact did not return a tools list');
   const expected = [
     ...contract.tools.filter((tool) =>
-      tool.availability.transports.includes('stdio') && tool.availability.profiles.includes('full')
+      tool.availability.transports.includes('stdio')
     ),
     ...appTools,
   ].map((tool) => tool.name).sort();
