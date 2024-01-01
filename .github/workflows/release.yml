@@ -3,73 +3,46 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Package version to publish, matching package.json"
+      release_tag:
+        description: "Bot-created release tag, for example videovector-mcp-v2.0.0"
         required: true
         type: string
+      release_body_sha256:
+        description: "SHA-256 of the scanned release body held by vectormethods-public-bot"
+        required: true
+        type: string
+
+run-name: Release ${{ inputs.release_tag }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-videovector-mcp-${{ inputs.version }}
+  group: release-${{ inputs.release_tag }}
   cancel-in-progress: false
 
+env:
+  MCP_NAME: io.github.vectormethods/videovector-mcp-server
+  NPM_PACKAGE: "@vectormethods/videovector-mcp-server"
+  GHCR_IMAGE: ghcr.io/vectormethods/videovector-mcp-server
+
 jobs:
-  build:
-    name: Build MCP package
+  guard:
+    name: Validate bot release request
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      npm_package_exists: ${{ steps.registry.outputs.npm_package_exists }}
+      npm_version_exists: ${{ steps.registry.outputs.npm_version_exists }}
+      mcp_registry_exists: ${{ steps.registry.outputs.mcp_registry_exists }}
 
     steps:
-      - name: Checkout
+      - name: Checkout release tag
         uses: actions/checkout@v6
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
         with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Verify release version
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          node - <<'NODE'
-          const fs = require('node:fs');
-          const version = process.env.RELEASE_VERSION;
-          if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[a-z0-9.-]+)?$/.test(version)) {
-            throw new Error(`Invalid release version: ${version}`);
-          }
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          if (pkg.version !== version) {
-            throw new Error(`package.json version ${pkg.version} does not match ${version}`);
-          }
-          NODE
-
-      - name: Verify package
-        run: npm run verify
-
-      - name: Pack dry run
-        run: npm pack --dry-run
-
-  publish-npm:
-    name: Publish to npm
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: npm
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -78,34 +51,399 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Publish package
+      - name: Validate actor, tag, target, and metadata
+        id: validate
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
-        run: npm publish --access public
-
-  create-github-release:
-    name: Create GitHub release
-    needs: publish-npm
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Create release tag and notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          tag="videovector-mcp-v${RELEASE_VERSION}"
-          gh release create "$tag" \
-            --target "$GITHUB_SHA" \
-            --title "VideoVector MCP Server ${RELEASE_VERSION}" \
-            --generate-notes
+          if [[ "$GITHUB_ACTOR" != "vectormethods-public-bot[bot]" && "$GITHUB_ACTOR" != "vectormethods-public-bot" ]]; then
+            echo "Release workflow may only be dispatched by vectormethods-public-bot." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^videovector-mcp-v([0-9]+\.[0-9]+\.[0-9]+([a-z0-9.-]+)?)$ ]]; then
+            echo "Release tag must match videovector-mcp-vX.Y.Z." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_BODY_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "release_body_sha256 must be a lowercase SHA-256 digest." >&2
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          tag_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          if [[ "$tag_sha" != "$main_sha" ]]; then
+            echo "Release tag must point at public main." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          RELEASE_VERSION="$version" node <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.RELEASE_VERSION;
+          const mcpName = process.env.MCP_NAME;
+          const npmPackage = process.env.NPM_PACKAGE;
+          const ghcrImage = process.env.GHCR_IMAGE;
+          if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[a-z0-9.-]+)?$/.test(version)) {
+            throw new Error('Invalid release version');
+          }
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (pkg.name !== npmPackage) {
+            throw new Error(`package.json name ${pkg.name} does not match ${npmPackage}`);
+          }
+          if (pkg.version !== version) {
+            throw new Error(`package.json version ${pkg.version} does not match ${version}`);
+          }
+          if (pkg.mcpName !== mcpName) {
+            throw new Error(`package.json mcpName must be ${mcpName}`);
+          }
+          const server = JSON.parse(fs.readFileSync('server.json', 'utf8'));
+          if (server.name !== mcpName) {
+            throw new Error(`server.json name must be ${mcpName}`);
+          }
+          if (server.version !== version) {
+            throw new Error(`server.json version ${server.version} does not match ${version}`);
+          }
+          const packages = Array.isArray(server.packages) ? server.packages : [];
+          const npmEntry = packages.find((entry) => entry.registryType === 'npm');
+          if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version || npmEntry.transport?.type !== 'stdio') {
+            throw new Error('server.json npm package metadata is not release-consistent');
+          }
+          const ociEntry = packages.find((entry) => entry.registryType === 'oci');
+          if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}` || ociEntry.transport?.type !== 'stdio') {
+            throw new Error('server.json OCI package metadata is not release-consistent');
+          }
+          NODE
+
+      - name: Check registry version state
+        id: registry
+        env:
+          RELEASE_VERSION: ${{ steps.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          if npm view "$NPM_PACKAGE" name >/dev/null 2>&1; then
+            echo "npm_package_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm_package_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          if npm view "${NPM_PACKAGE}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+            echo "npm_version_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm_version_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.env.MCP_NAME))')"
+          registry_url="https://registry.modelcontextprotocol.io/v0.1/servers/${encoded_name}/versions/${RELEASE_VERSION}"
+          status="$(curl -sS -o /tmp/mcp-registry-version.json -w "%{http_code}" "$registry_url")"
+          if [[ "$status" == "200" ]]; then
+            node <<'NODE'
+            const fs = require('node:fs');
+            const version = process.env.RELEASE_VERSION;
+            const mcpName = process.env.MCP_NAME;
+            const npmPackage = process.env.NPM_PACKAGE;
+            const ghcrImage = process.env.GHCR_IMAGE;
+            const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
+            if (payload.name !== mcpName || payload.version !== version) {
+              throw new Error('MCP Registry version metadata does not match this release');
+            }
+            const packages = Array.isArray(payload.packages) ? payload.packages : [];
+            const npmEntry = packages.find((entry) => entry.registryType === 'npm');
+            const ociEntry = packages.find((entry) => entry.registryType === 'oci');
+            if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version) {
+              throw new Error('MCP Registry npm package metadata does not match this release');
+            }
+            if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}`) {
+              throw new Error('MCP Registry OCI package metadata does not match this release');
+            }
+            NODE
+            echo "mcp_registry_exists=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$status" == "404" ]]; then
+            echo "mcp_registry_exists=false" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/mcp-registry-version.json >&2
+            echo "Unexpected MCP Registry status: $status" >&2
+            exit 1
+          fi
+
+  build:
+    name: Verify and pack MCP package
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Install npm 11 and dependencies
+        run: |
+          npm install -g npm@^11.15.0
+          npm ci
+
+      - name: Verify package
+        run: |
+          set -euo pipefail
+          npm run verify
+          npm audit --omit=dev --audit-level=high
+          npm pack --dry-run
+
+      - name: Create and scan npm tarball
+        run: |
+          set -euo pipefail
+          npm pack --json > /tmp/npm-pack.json
+          tarball="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('/tmp/npm-pack.json','utf8')); process.stdout.write(p[0].filename)")"
+          tar -tzf "$tarball" | tee /tmp/npm-tarball-contents.txt
+          if grep -E '(^|/)(\.env|\.npmrc|.*\.(pem|p12|pfx|key)|.*service[-_]?account.*\.json)$' /tmp/npm-tarball-contents.txt; then
+            echo "Unsafe file found in npm tarball." >&2
+            exit 1
+          fi
+          node <<'NODE'
+          const fs = require('node:fs');
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (packageJson.mcpName !== process.env.MCP_NAME) {
+            throw new Error('package.json mcpName changed before pack');
+          }
+          NODE
+
+      - name: Local tarball install smoke
+        run: |
+          set -euo pipefail
+          tarball="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('/tmp/npm-pack.json','utf8')); process.stdout.write(p[0].filename)")"
+          mkdir -p /tmp/videovector-mcp-tarball-smoke
+          cd /tmp/videovector-mcp-tarball-smoke
+          npm init -y >/dev/null
+          npm install "${GITHUB_WORKSPACE}/${tarball}"
+          test -x node_modules/.bin/videovector-mcp
+          test -f node_modules/@vectormethods/videovector-mcp-server/dist/index.js
+
+  publish-npm:
+    name: Publish to npm
+    needs:
+      - guard
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Install npm 11 and dependencies
+        run: |
+          npm install -g npm@^11.15.0
+          npm ci
+
+      - name: Publish or verify npm package
+        env:
+          NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+          NPM_PACKAGE_EXISTS: ${{ needs.guard.outputs.npm_package_exists }}
+          NPM_VERSION_EXISTS: ${{ needs.guard.outputs.npm_version_exists }}
+          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$NPM_VERSION_EXISTS" == "true" ]]; then
+            npm view "${NPM_PACKAGE}@${RELEASE_VERSION}" version
+            exit 0
+          fi
+          if [[ "$NPM_PACKAGE_EXISTS" == "true" ]]; then
+            npm publish --access public
+          else
+            if [[ -z "${NPM_BOOTSTRAP_TOKEN:-}" ]]; then
+              echo "First npm publish requires NPM_BOOTSTRAP_TOKEN in the npm environment." >&2
+              exit 1
+            fi
+            npm_config_userconfig="$(mktemp)"
+            export npm_config_userconfig
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_BOOTSTRAP_TOKEN" > "$npm_config_userconfig"
+            npm publish --access public
+            rm -f "$npm_config_userconfig"
+          fi
+
+      - name: Install smoke from npm
+        env:
+          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 18); do
+            rm -rf /tmp/videovector-mcp-npm-smoke
+            mkdir -p /tmp/videovector-mcp-npm-smoke
+            cd /tmp/videovector-mcp-npm-smoke
+            npm init -y >/dev/null
+            if npm install "${NPM_PACKAGE}@${RELEASE_VERSION}"; then
+              test -x node_modules/.bin/videovector-mcp
+              test -f node_modules/@vectormethods/videovector-mcp-server/dist/index.js
+              status=0
+              timeout 5s env VIDEOVECTOR_API_KEY=sk_test_release npx -y "${NPM_PACKAGE}@${RELEASE_VERSION}" >/tmp/videovector-mcp-npx.out 2>&1 || status="$?"
+              if [[ "$status" == "0" || "$status" == "124" ]]; then
+                exit 0
+              fi
+              cat /tmp/videovector-mcp-npx.out >&2
+            fi
+            sleep 10
+          done
+          exit 1
+
+  publish-ghcr:
+    name: Publish GHCR image
+    needs:
+      - guard
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Login to GHCR
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Build, smoke, and push immutable version image
+        env:
+          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          image="${GHCR_IMAGE}:${RELEASE_VERSION}"
+          if docker manifest inspect "$image" >/tmp/ghcr-manifest.json 2>/dev/null; then
+            docker pull "$image"
+            label="$(docker inspect "$image" --format '{{ index .Config.Labels "io.modelcontextprotocol.server.name" }}')"
+            if [[ "$label" != "$MCP_NAME" ]]; then
+              echo "Existing GHCR image label does not match MCP server name." >&2
+              exit 1
+            fi
+            exit 0
+          fi
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${RELEASE_VERSION}" \
+            --label "io.modelcontextprotocol.server.name=${MCP_NAME}" \
+            -t "$image" .
+          container_id="$(docker run -d -p 8080:8080 -e MCP_TRANSPORT_MODE=http "$image")"
+          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          healthy=0
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health >/tmp/videovector-mcp-health.json; then
+              grep -q '"status":"ok"' /tmp/videovector-mcp-health.json
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$healthy" != "1" ]]; then
+            docker logs "$container_id" >&2 || true
+            echo "Container health smoke failed." >&2
+            exit 1
+          fi
+          docker stop "$container_id"
+          trap - EXIT
+          docker push "$image"
+
+  publish-mcp-registry:
+    name: Publish to MCP Registry
+    needs:
+      - guard
+      - publish-npm
+      - publish-ghcr
+    if: ${{ needs.guard.outputs.mcp_registry_exists != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Publish server metadata
+        run: |
+          set -euo pipefail
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
+  verify-mcp-registry:
+    name: Verify MCP Registry publish
+    needs:
+      - guard
+      - publish-mcp-registry
+    if: ${{ always() && needs.guard.result == 'success' && (needs.publish-mcp-registry.result == 'success' || needs.publish-mcp-registry.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Verify registry version metadata
+        env:
+          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.env.MCP_NAME))')"
+          registry_url="https://registry.modelcontextprotocol.io/v0.1/servers/${encoded_name}/versions/${RELEASE_VERSION}"
+          for attempt in $(seq 1 18); do
+            status="$(curl -sS -o /tmp/mcp-registry-version.json -w "%{http_code}" "$registry_url")"
+            if [[ "$status" == "200" ]]; then
+              node <<'NODE'
+              const fs = require('node:fs');
+              const version = process.env.RELEASE_VERSION;
+              const mcpName = process.env.MCP_NAME;
+              const npmPackage = process.env.NPM_PACKAGE;
+              const ghcrImage = process.env.GHCR_IMAGE;
+              const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
+              if (payload.name !== mcpName || payload.version !== version) {
+                throw new Error('MCP Registry version metadata does not match this release');
+              }
+              const packages = Array.isArray(payload.packages) ? payload.packages : [];
+              const npmEntry = packages.find((entry) => entry.registryType === 'npm');
+              const ociEntry = packages.find((entry) => entry.registryType === 'oci');
+              if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version) {
+                throw new Error('MCP Registry npm package metadata does not match this release');
+              }
+              if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}`) {
+                throw new Error('MCP Registry OCI package metadata does not match this release');
+              }
+              NODE
+              exit 0
+            fi
+            sleep 10
+          done
+          cat /tmp/mcp-registry-version.json >&2 || true
+          exit 1

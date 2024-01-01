@@ -1,7 +1,8 @@
 # Release Process
 
-Releases are automation-driven from the public repository. Do not create or
-push release tags from a personal workstation or personal GitHub account.
+Releases are orchestrated by `vectormethods-public-bot` from the private control
+repository. Do not create or push release tags from a personal workstation,
+personal GitHub account, or a manual public workflow dispatch.
 
 ## Normal Release
 
@@ -15,11 +16,13 @@ push release tags from a personal workstation or personal GitHub account.
    npm pack --dry-run
    ```
 
-3. Dispatch the `Release` workflow from GitHub Actions with the exact version,
-   for example `2.0.1`.
-4. The workflow verifies package metadata, builds and tests the package,
-   publishes to npm through trusted publishing, then creates the
-   `videovector-mcp-vX.Y.Z` GitHub release tag.
+3. Run the private `Public Repo Bot` workflow in `release` mode for this
+   repository. The tag must match `videovector-mcp-vX.Y.Z` and target public
+   `main`.
+4. The bot verifies the public graph, creates or verifies the public tag,
+   dispatches this repository's `Release` workflow, waits for npm, GHCR, and MCP
+   Registry publish checks to pass, then creates the GitHub Release with scanned
+   release text and generated notes disabled.
 
 ## First npm Publish
 
@@ -29,7 +32,7 @@ registry. For the first publish only:
 1. Use a generic company-owned npm account with 2FA enabled.
 2. Add a short-lived `NPM_BOOTSTRAP_TOKEN` environment secret to the `npm`
    GitHub environment.
-3. Run the `Release` workflow for the first version.
+3. Run the private `Public Repo Bot` release for the first version.
 4. Configure trusted publishing:
 
    ```bash
@@ -45,3 +48,6 @@ registry. For the first publish only:
 6. In npm package settings, require 2FA and disallow token publishing.
 
 After that bootstrap, releases must rely on OIDC trusted publishing only.
+The workflow only uses `NPM_BOOTSTRAP_TOKEN` when the npm package does not
+already exist. Future version publishes use npm trusted publishing with GitHub
+OIDC.

@@ -14,6 +14,8 @@ RUN npm prune --omit=dev
 FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 
+LABEL io.modelcontextprotocol.server.name="io.github.vectormethods/videovector-mcp-server"
+
 ENV NODE_ENV=production
 ENV PORT=8080
 ENV MCP_TRANSPORT_MODE=http

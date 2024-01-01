@@ -1,6 +1,7 @@
 {
   "name": "@vectormethods/videovector-mcp-server",
   "version": "2.0.0",
+  "mcpName": "io.github.vectormethods/videovector-mcp-server",
   "description": "Model Context Protocol server for the VectorMethods VideoVector media intelligence API",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -69,6 +70,7 @@
     "CHANGELOG.md",
     "CODE_OF_CONDUCT.md",
     "LICENSE",
-    "SECURITY.md"
+    "SECURITY.md",
+    "server.json"
   ]
 }
