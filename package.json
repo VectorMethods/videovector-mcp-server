@@ -1,6 +1,7 @@
 {
   "name": "@vectormethods/videovector-mcp-server",
   "version": "2.0.2",
+  "packageManager": "npm@10.8.2",
   "mcpName": "io.github.VectorMethods/videovector-mcp-server",
   "description": "Model Context Protocol server for the VectorMethods VideoVector media intelligence API",
   "main": "dist/index.js",
