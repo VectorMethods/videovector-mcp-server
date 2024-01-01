@@ -1,5 +1,9 @@
 # Changelog
 
+## 6.1.1
+
+- Remove the retired multipart media uploader and its request types. Authorized local files use the existing native resumable storage flow across all six conversational tools.
+
 ## 6.1.0
 
 - Analyze or import public HTTPS media and individual YouTube URLs using `source.urls` across hosted, OAuth, and local transports. The backend shares the existing durable import and analysis lifecycle.
