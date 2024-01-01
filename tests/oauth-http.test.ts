@@ -327,12 +327,7 @@ describe('hosted MCP OAuth authentication', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.result.serverInfo.name).toBe('videovector');
-    const activity = fetchSpy.mock.calls.find(([url]) => url.endsWith('/auth/processing-activity'));
-    expect(activity).toBeDefined();
-    const init = activity![1] as RequestInit;
-    expect(init.headers).toMatchObject({ Authorization: `Bearer ${token}` });
-    expect(init.headers).not.toHaveProperty('X-API-Key');
-    expect(JSON.parse(init.body as string)).toMatchObject({ surface: 'mcp', reason: 'authentication' });
+    expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([JWKS_URL]);
   });
 
   it('honors configured expiration skew through the SDK bearer middleware', async () => {
@@ -394,10 +389,14 @@ describe('hosted MCP OAuth authentication', () => {
       if (url.href === JWKS_URL) {
         return jwksResponse();
       }
-      expect(url.pathname).toBe('/api/v2/workflow/mcp/browse');
       const headers = init?.headers as Record<string, string>;
       expect(headers.Authorization).toBe(`Bearer ${token}`);
       expect(headers['X-API-Key']).toBeUndefined();
+      if (url.pathname === '/api/v2/auth/processing-activity') {
+        expect(JSON.parse(init!.body as string)).toMatchObject({ surface: 'mcp', reason: 'processing_intent', operation: 'browse' });
+        return new Response(JSON.stringify({ accepted: true }));
+      }
+      expect(url.pathname).toBe('/api/v2/workflow/mcp/browse');
       return new Response(JSON.stringify({content:[{type:'text',text:'{}'}],structuredContent:{items:[],next_action:{type:'select_resource'}}}), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -413,7 +412,7 @@ describe('hosted MCP OAuth authentication', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.result.isError).not.toBe(true);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it.each([

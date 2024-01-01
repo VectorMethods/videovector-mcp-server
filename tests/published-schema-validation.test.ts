@@ -20,6 +20,25 @@ function schemaValidator() {
 }
 
 describe('published JSON Schema validity', () => {
+  it.each(transports)('requires explicit fixed durations in strict execution contracts for $name', ({ options }) => {
+    const ajv = schemaValidator();
+    const tools = getValidationToolDefinitions(options);
+    const analyze = ajv.compile(tools.find(tool => tool.name === 'analyze')!.inputSchema);
+    const save = ajv.compile(tools.find(tool => tool.name === 'save_prompt')!.inputSchema);
+    for (const media of ['video', 'audio']) {
+      const execution = { [`${media}_segmentation_type`]: 'fixed' };
+      const request = { prompt_id: 'prompt-1', source: { video_ids: ['video-1'] }, execution };
+      const definition = { name: 'Example', prompt_text: 'Describe', json_schema: { type: 'object' }, execution_config: execution };
+      expect(analyze(request)).toBe(false);
+      expect(save({ definition })).toBe(false);
+      for (const duration of [null, 0, 301]) {
+        expect(analyze({ ...request, execution: { ...execution, [`${media}_segment_duration`]: duration } })).toBe(false);
+      }
+      expect(analyze({ ...request, execution: { ...execution, [`${media}_segment_duration`]: 120 } })).toBe(true);
+      expect(save({ definition: { ...definition, execution_config: { ...execution, [`${media}_segment_duration`]: 120 } } })).toBe(true);
+    }
+    expect(analyze({ prompt_id: 'prompt-1', source: { video_ids: ['video-1'] }, execution: { enable_image_embedding: false } })).toBe(true);
+  });
   it.each(catalogs)('compiles every input and output schema for $name', ({ options, catalog }) => {
     const ajv = schemaValidator();
     for (const tool of catalog(options)) {
@@ -50,7 +69,9 @@ describe('published JSON Schema validity', () => {
     expect(validateOAuth({ instruction: 'Summarize', source: { video_ids: ['video_123'] } })).toBe(true);
     expect(validateOAuth({ instruction: 'Summarize', source: { connector_id: 'connector_123' } })).toBe(false);
     const oauthImport = getToolDefinitions({ advertiseOAuth: true, includeLocalUpload: false }).find(tool => tool.name === 'import_media')!;
-    expect(oauthImport.inputSchema.properties).not.toHaveProperty('source');
+    expect(oauthImport.inputSchema.properties).toHaveProperty('source.properties.urls');
+    expect(oauthImport.inputSchema.properties).not.toHaveProperty('source.properties.connector');
+    expect(oauthImport.inputSchema.properties).not.toHaveProperty('source.properties.connector_id');
   });
 
   it.each(transports)('publishes typed fields without conditional record unions for $name', ({ options }) => {
@@ -71,6 +92,20 @@ describe('published JSON Schema validity', () => {
         expect(files.items.required).toEqual(['download_url', 'file_id']);
         expect(Object.values(files.items.properties).every((field: any) => field.type === 'string')).toBe(true);
       }
+    }
+  });
+
+  it('publishes only the search snapshot fields and no retired analysis preview', () => {
+    const tools = getToolDefinitions();
+    const search = tools.find(tool => tool.name === 'search')!.outputSchema!;
+    expect(Object.keys(search.properties!)).toEqual([
+      'contract_version', 'detail', 'links', 'artifacts', 'search_id', 'snapshot_id', 'source_id',
+      'source_kind', 'mode', 'result_level', 'captured_at', 'expires_at', 'results', 'next_action',
+      'coverage', 'scope', 'pagination', 'data', 'warnings',
+    ]);
+    for (const name of ['analyze', 'get_analysis']) {
+      const results = tools.find(tool => tool.name === name)!.outputSchema!.properties!.results as any;
+      expect(results.properties).not.toHaveProperty('preview');
     }
   });
 

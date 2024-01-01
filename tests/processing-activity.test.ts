@@ -1,4 +1,7 @@
 import request from 'supertest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { TOOL_NAMES, type ToolName } from '../src/tools/index.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { VideoVectorClient } from '../src/client/index.js';
@@ -38,14 +41,14 @@ describe('explicit processing activity transport', () => {
   it('sends the existing credential and stable event to the canonical control route', async () => {
     const fetchSpy = vi.fn().mockImplementation(async () => activityResponse());
     vi.stubGlobal('fetch', fetchSpy);
-    await apiClient().recordProcessingActivity({ reason: 'authentication' }, EVENT_ID);
+    await apiClient().recordProcessingActivity({ reason: 'processing_intent', operation: 'save_prompt' }, EVENT_ID);
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${config.baseUrl}/auth/processing-activity`);
     expect(init.method).toBe('POST');
     expect(init.headers).toMatchObject({ 'X-API-Key': API_KEY });
     expect(init.headers).not.toHaveProperty('Idempotency-Key');
     expect(JSON.parse(init.body as string)).toEqual({
-      event_id: EVENT_ID, surface: 'mcp', reason: 'authentication',
+      event_id: EVENT_ID, surface: 'mcp', reason: 'processing_intent', operation: 'save_prompt',
     });
   });
 
@@ -69,7 +72,7 @@ describe('explicit processing activity transport', () => {
     ));
     vi.stubGlobal('fetch', fetchSpy);
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await expect(apiClient().recordProcessingActivity({ reason: 'authentication' })).resolves.toBeUndefined();
+    await expect(apiClient().recordProcessingActivity({ reason: 'processing_intent', operation: 'save_prompt' })).resolves.toBeUndefined();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith('[videovector-mcp] Processing readiness unavailable; continuing.');
     expect(JSON.stringify(log.mock.calls)).not.toContain('private');
@@ -82,7 +85,7 @@ describe('explicit processing activity transport', () => {
     }));
     vi.stubGlobal('fetch', fetchSpy);
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const work = apiClient(timeout).recordProcessingActivity({ reason: 'authentication' });
+    const work = apiClient(timeout).recordProcessingActivity({ reason: 'processing_intent', operation: 'save_prompt' });
     await vi.advanceTimersByTimeAsync(Math.min(timeout, 3_000));
     await expect(work).resolves.toBeUndefined();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -90,7 +93,7 @@ describe('explicit processing activity transport', () => {
 });
 
 describe('foreground MCP triggers', () => {
-  it('warms only initialize, not discovery, initialized notifications or validation cache refresh', async () => {
+  it('keeps initialization, discovery, notifications and validation cache refresh passive', async () => {
     let now = Date.now();
     vi.spyOn(Date, 'now').mockImplementation(() => now);
     const fetchSpy = vi.fn().mockImplementation(async (url: string) => (
@@ -103,7 +106,7 @@ describe('foreground MCP triggers', () => {
     expect((await send(app, { jsonrpc: '2.0', id: 'list', method: 'tools/list', params: {} })).status).toBe(200);
     await send(app, { jsonrpc: '2.0', method: 'notifications/initialized' });
     expect(fetchSpy.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
-      '/api/v2/auth/validate', '/api/v2/auth/processing-activity', '/api/v2/auth/validate',
+      '/api/v2/auth/validate', '/api/v2/auth/validate',
     ]);
   });
 
@@ -116,58 +119,89 @@ describe('foreground MCP triggers', () => {
     expect(fetchSpy.mock.calls[0]![0]).toBe(`${config.baseUrl}/auth/validate`);
   });
 
-  it('does not allocate a request after draining starts during the bounded readiness call', async () => {
+  it('does not allocate a request after draining starts during authentication', async () => {
     let finish!: (response: Response) => void;
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => (
-      url.endsWith('/auth/validate') ? new Response(null, { status: 204 })
-        : new Promise<Response>(resolve => { finish = resolve; })
-    )));
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise<Response>(resolve => { finish = resolve; })));
     const context = createHttpApp(config);
     const response = send(context.app, initialize).then(value => value);
     await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
     context.startDraining();
-    finish(activityResponse());
+    finish(new Response(null, { status: 204 }));
     expect((await response).status).toBe(503);
     expect(context.activeRequests.size).toBe(0);
   });
 
-  it.each(['import_media', 'analyze'] as const)(
-    'signals a deliberate %s tool invocation once, before tool execution',
-    async operation => {
-      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(null, { status: 204 })));
-      const activity = vi.spyOn(VideoVectorClient.prototype, 'recordProcessingActivity').mockResolvedValue();
-      const { app } = createHttpApp(config);
-      await send(app, { jsonrpc: '2.0', id: operation, method: 'tools/call', params: { name: operation, arguments: {} } });
-      expect(activity).toHaveBeenCalledExactlyOnceWith({ reason: 'processing_intent', operation });
-    }
-  );
+  const toolArguments: Record<ToolName, Record<string, unknown>> = {
+    analyze: { instruction: 'Summarize', source: { video_ids: ['video-1'] }, wait_seconds: 0 },
+    import_media: { files: [{ file_id: 'file-1', download_url: 'https://media.example/video.mp4' }], wait_seconds: 0 },
+    save_prompt: { instruction: 'Extract decisions', save: false },
+    get_analysis: { analysis_id: 'analysis-1', wait_seconds: 0 },
+    search: { query: 'decisions', scope: { playground: true } },
+    browse: { resource: 'indexes' },
+  };
 
-  it.each(['get_analysis', 'browse', 'search', 'save_prompt'])(
-    'does not add readiness to %s',
-    async name => {
-      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(null, { status: 204 })));
-      const activity = vi.spyOn(VideoVectorClient.prototype, 'recordProcessingActivity').mockResolvedValue();
-      const { app } = createHttpApp(config);
-      await send(app, { jsonrpc: '2.0', id: name, method: 'tools/call', params: { name, arguments: {} } });
-      expect(activity).not.toHaveBeenCalled();
-    }
-  );
+  it.each(Object.values(TOOL_NAMES))('signals %s once before executing the tool', async operation => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    let finish!: () => void;
+    const activity = vi.spyOn(VideoVectorClient.prototype, 'recordProcessingActivity')
+      .mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    const execute = vi.spyOn(VideoVectorClient.prototype, 'mcpTool').mockResolvedValue({
+      content: [], structuredContent: { analysis_id: 'analysis-1', import_id: 'import-1' },
+    });
+    const { app } = createHttpApp(config);
+    const response = send(app, { jsonrpc: '2.0', id: operation, method: 'tools/call',
+      params: { name: operation, arguments: toolArguments[operation] } }).then(value => value);
+    await vi.waitFor(() => expect(activity).toHaveBeenCalledExactlyOnceWith({ reason: 'processing_intent', operation }));
+    expect(execute).not.toHaveBeenCalled();
+    finish();
+    expect((await response).body.result.isError).not.toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]![0]).toBe(operation);
+  });
 
-  it('does not wake processing for import progress reads',async()=>{
-    vi.stubGlobal('fetch',vi.fn().mockImplementation(async()=>new Response(null,{status:204})));
-    const activity=vi.spyOn(VideoVectorClient.prototype,'recordProcessingActivity').mockResolvedValue();
-    const {app}=createHttpApp(config);
-    await send(app,{jsonrpc:'2.0',id:'import-progress',method:'tools/call',params:{name:'import_media',arguments:{import_id:'import-1',wait_seconds:0}}});
+  it('signals import progress tool calls, but not their underlying API reads', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    const activity = vi.spyOn(VideoVectorClient.prototype, 'recordProcessingActivity').mockResolvedValue();
+    const execute = vi.spyOn(VideoVectorClient.prototype, 'mcpTool').mockResolvedValue({ content: [] });
+    const { app } = createHttpApp(config);
+    await send(app, { jsonrpc: '2.0', id: 'import-progress', method: 'tools/call',
+      params: { name: 'import_media', arguments: { import_id: 'import-1', wait_seconds: 0 } } });
+    expect(activity).toHaveBeenCalledExactlyOnceWith({ reason: 'processing_intent', operation: 'import_media' });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warm unknown tools or unauthenticated tool calls', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    const activity = vi.spyOn(VideoVectorClient.prototype, 'recordProcessingActivity').mockResolvedValue();
+    const { app } = createHttpApp(config);
+    const unknown = await send(app, { jsonrpc: '2.0', id: 'unknown', method: 'tools/call', params: { name: 'unknown' } });
+    expect(unknown.body.result.isError).toBe(true);
+    const unauthenticated = await request(app).post('/mcp').set('Accept', 'application/json, text/event-stream')
+      .send({ jsonrpc: '2.0', id: 'unauthenticated', method: 'tools/call', params: { name: 'browse', arguments: toolArguments.browse } });
+    expect(unauthenticated.status).toBe(401);
     expect(activity).not.toHaveBeenCalled();
   });
 
-  it('stdio begins one readiness request on protocol initialization, never construction', async () => {
+  it('stdio stays passive through initialization and discovery, then warms on each tool call', async () => {
     const activity = vi.spyOn(VideoVectorClient.prototype, 'recordProcessingActivity').mockResolvedValue();
+    vi.spyOn(VideoVectorClient.prototype, 'mcpTool').mockResolvedValue({ content: [], isError: true });
     const server = createMcpServer(apiClient(), { mode: 'stdio', authenticationKind: 'api-key' });
-    expect(activity).not.toHaveBeenCalled();
-    server.oninitialized?.();
-    server.oninitialized?.();
-    expect(activity).toHaveBeenCalledExactlyOnceWith({ reason: 'authentication' });
-    await server.close();
+    const host = new Client({ name: 'test-host', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await server.connect(serverTransport);
+      await host.connect(clientTransport);
+      await host.listTools();
+      expect(activity).not.toHaveBeenCalled();
+      await host.callTool({ name: 'browse', arguments: toolArguments.browse });
+      await host.callTool({ name: 'save_prompt', arguments: toolArguments.save_prompt });
+      expect(activity.mock.calls.map(([value]) => value)).toEqual([
+        { reason: 'processing_intent', operation: 'browse' },
+        { reason: 'processing_intent', operation: 'save_prompt' },
+      ]);
+    } finally {
+      await host.close();
+      await server.close();
+    }
   });
 });

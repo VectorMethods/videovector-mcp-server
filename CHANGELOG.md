@@ -1,5 +1,10 @@
 # Changelog
 
+## 6.1.0
+
+- Analyze or import public HTTPS media and individual YouTube URLs using `source.urls` across hosted, OAuth, and local transports. The backend shares the existing durable import and analysis lifecycle.
+- Preserve the six conversational tools, existing resumable local uploads, bounded concurrency, and observation behavior.
+
 ## 6.0.0
 
 Breaking conversational-only release. Remove embedded Studio, picker, widget resources, six private app tools, and their build dependencies. The six public MCP tools return progress and results directly in the conversation.

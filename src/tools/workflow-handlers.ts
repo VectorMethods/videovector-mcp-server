@@ -160,8 +160,11 @@ function readFailure(name: string, error: unknown, args: Record<string, unknown>
   const observation = (name === 'get_analysis' && (ids.analysis_id || ids.video_id))
     || (name === 'import_media' && ids.import_id && args.retry !== true)
     || (name === 'search' && ids.search_id);
-  if (observation && !context.signal?.aborted && error instanceof VideoVectorApiError && ['network_error', 'timeout_error'].includes(error.code)) {
-    data.message = 'This observation was interrupted. Repeat the same read with the same identifiers and cursor; do not submit new work.';
+  if (observation && !context.signal?.aborted && record(data.next_action).type !== 'request_input' && error instanceof VideoVectorApiError && (
+    error.statusCode >= 500 || [408, 429].includes(error.statusCode)
+    || ['network_error', 'timeout_error', 'empty_response', 'invalid_json_response'].includes(error.code)
+  )) {
+    data.message = 'This observation is unavailable; it does not establish that execution stopped. Work may still be active. Repeat the same read with the same identifiers and cursor; do not submit new work.';
     data.suggestion = `Continue with ${name} using the original arguments after the indicated delay.`;
     data.next_action = { type: 'continue_polling', tool: name, after_seconds: 15 };
   }

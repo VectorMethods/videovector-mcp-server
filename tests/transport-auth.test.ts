@@ -234,7 +234,7 @@ describe('stateless HTTP transport authentication', () => {
     expect(response.headers['mcp-session-id']).toBeUndefined();
   });
 
-  it('validates read-only before signaling explicit authenticated initialization', async () => {
+  it('keeps authenticated initialization read-only', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(successfulValidation());
     vi.stubGlobal('fetch', fetchSpy);
     const { app } = createHttpApp(httpConfig);
@@ -246,11 +246,10 @@ describe('stateless HTTP transport authentication', () => {
       .send(initializeRequest('validate-path'));
 
     expect(response.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(new URL(url).pathname).toBe('/api/v2/auth/validate');
     expect(init.method).toBe('GET');
-    expect(new URL(fetchSpy.mock.calls[1]![0]).pathname).toBe('/api/v2/auth/processing-activity');
   });
 
   it('rejects invalid credentials before allocating request state', async () => {
@@ -419,7 +418,7 @@ describe('stateless HTTP transport authentication', () => {
 
     expect(initialized.status).toBe(200);
     expect(listed.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls.filter(([url]) => new URL(url).pathname.endsWith('/auth/validate'))).toHaveLength(1);
     await vi.waitFor(() => expect(context.activeRequests.size).toBe(0));
   });
@@ -437,7 +436,7 @@ describe('stateless HTTP transport authentication', () => {
         .send(initializeRequest(`tenant-${seed}`));
       expect(response.status).toBe(200);
     }
-    expect(fetchSpy).toHaveBeenCalledTimes(24);
+    expect(fetchSpy).toHaveBeenCalledTimes(12);
     expect(fetchSpy.mock.calls.filter(([url]) => new URL(url).pathname.endsWith('/auth/validate'))).toHaveLength(12);
   });
 });
@@ -557,7 +556,7 @@ describe('stateless HTTP lifecycle', () => {
     expect(initialized.status).toBe(200);
     expect(listed.status).toBe(200);
     expect(listed.body.result.tools.length).toBeGreaterThan(0);
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it('rejects stale stateful client headers explicitly', async () => {

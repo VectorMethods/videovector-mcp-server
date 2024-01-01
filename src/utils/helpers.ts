@@ -271,7 +271,7 @@ function getErrorSuggestion(
   authenticationKind?: 'api-key' | 'oauth'
 ): string {
   if (error.code === 'published_search_vectors_unavailable') {
-    return 'Use metadata filters without query or image_data, or start a new analyze configured to produce the required embeddings when the user requests new analysis. Do not automatically resubmit analysis.';
+    return 'Use metadata filters without query or image_data, or start a new analyze configured to produce the required embeddings only after the original analysis is terminal and the user explicitly requests a new paid analysis. Do not automatically resubmit analysis.';
   }
   if (['scope_too_large', 'validation_search_snapshot_too_large', 'validation_search_snapshot_result_too_large'].includes(error.code)) {
     return 'Narrow scope.video_ids, select one scope.index_id, or use more selective metadata filters before searching again. Changing page_size alone does not reduce the captured scope.';
