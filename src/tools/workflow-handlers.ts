@@ -145,10 +145,18 @@ function submissionReceipt(name: string, idempotencyKey: string): McpToolRespons
   };
   return { isError: true, structuredContent: data, content: [{ type: 'text', text: JSON.stringify(data) }] };
 }
-function readFailure(error: unknown, args: Record<string, unknown>, context: WorkflowToolContext): McpToolResponse {
+function readFailure(name: string, error: unknown, args: Record<string, unknown>, context: WorkflowToolContext): McpToolResponse {
   const formatted = formatError(error, { authenticationKind: context.authenticationKind });
   const data = record(JSON.parse(formatted.content[0]!.text));
-  const ids = Object.fromEntries(['analysis_id', 'import_id', 'search_id', 'video_id', 'cursor'].filter(key => typeof args[key] === 'string').map(key => [key, args[key]]));
+  const ids = Object.fromEntries(['analysis_id', 'import_id', 'search_id', 'video_id', 'cursor', 'outputs_cursor', 'failures_cursor'].filter(key => typeof args[key] === 'string').map(key => [key, args[key]]));
+  const observation = (name === 'get_analysis' && (ids.analysis_id || ids.video_id))
+    || (name === 'import_media' && ids.import_id && args.retry !== true)
+    || (name === 'search' && ids.search_id);
+  if (observation && !context.signal?.aborted && error instanceof VideoVectorApiError && ['network_error', 'timeout_error'].includes(error.code)) {
+    data.message = 'This observation was interrupted. Repeat the same read with the same identifiers and cursor; do not submit new work.';
+    data.suggestion = `Continue with ${name} using the original arguments after the indicated delay.`;
+    data.next_action = { type: 'continue_polling', tool: name, after_seconds: 15 };
+  }
   return { ...formatted, structuredContent: { ...data, ...ids }, content: [{ type: 'text', text: JSON.stringify({ ...data, ...ids }) }] };
 }
 async function intake(name: 'analyze' | 'import_media', args: Record<string, unknown>, client: VideoVectorClient, context: WorkflowToolContext): Promise<McpToolResponse> {
@@ -160,7 +168,7 @@ async function intake(name: 'analyze' | 'import_media', args: Record<string, unk
       return observed;
     } catch (error) {
       if (args.retry === true && uncertainSubmission(error)) return submissionReceipt(name, args.idempotency_key as string);
-      return readFailure(error, args, context);
+      return readFailure(name, error, args, context);
     }
   }
   const paths = record(args.source).file_paths as string[] | undefined;
@@ -201,7 +209,11 @@ async function intake(name: 'analyze' | 'import_media', args: Record<string, unk
       const observed = await facadeCall(client, name === 'analyze' ? 'get_analysis' : 'import_media',
         { [idField]: id, wait_seconds: waitSeconds, ...(args.detail === undefined ? {} : { detail: args.detail }) },
         { signal: context.signal, deadline: Date.now() + 30000 }, context);
-      if (!observed.isError) result = observed;
+      const observedData = payload(observed);
+      const retryableObservation = observedData[idField] === id
+        && record(observedData.next_action).type === 'continue_polling'
+        && ['observation_unavailable', 'network_error', 'timeout_error'].includes(String(observedData.code));
+      if (!observed.isError || retryableObservation) result = observed;
       else {
         result = updateResult(result, { message: 'Work was accepted, but reading its status needs attention. Retain the same task ID.', next_action: { type: 'review_error' } });
         result.isError = true;
@@ -238,7 +250,7 @@ export async function executeWorkflowTool(name: string, args: Record<string, unk
       return result;
     } catch (error) {
       if (mutation && idempotencyKey && uncertainSubmission(error)) return submissionReceipt(name, idempotencyKey);
-      return readFailure(error, args, context);
+      return readFailure(name, error, args, context);
     }
   } catch (error) { return formatError(error, { authenticationKind: context.authenticationKind }); }
 }
