@@ -190,6 +190,7 @@ function formatImageSearchResult(
   return {
     ...formatSearchResult(result, null, videoName),
     matched_image_uri: result.matched_image_uri,
+    matched_image_gcs_uri: result.matched_image_gcs_uri ?? null,
     matched_image_score: matchedImageScore,
     matched_image_timestamp: result.matched_image_timestamp,
     shot_timestamp: result.shot_timestamp,
@@ -218,6 +219,7 @@ function formatMultimodalResult(
     image_rank: result.image_rank,
     match_type: result.match_type,
     matched_image_uri: result.matched_image_uri,
+    matched_image_gcs_uri: result.matched_image_gcs_uri ?? null,
     matched_image_timestamp: result.matched_image_timestamp,
     matched_image_score: matchedImageScore,
     shot_timestamp: result.shot_timestamp ?? null,

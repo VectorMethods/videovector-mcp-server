@@ -388,6 +388,7 @@ describe('search tool handlers', () => {
         {
           ...baseSearchResult,
           matched_image_uri: null,
+          matched_image_gcs_uri: 'gs://bucket/shots/shot_1.jpg',
           matched_image_timestamp: 12.3,
           matched_image_score: 0.73,
           shot_timestamp: 12.1,
@@ -418,6 +419,7 @@ describe('search tool handlers', () => {
     const payload = parseContent(result);
     expect((payload.results as Array<Record<string, unknown>>)[0]).toMatchObject({
       matched_image_uri: null,
+      matched_image_gcs_uri: 'gs://bucket/shots/shot_1.jpg',
       matched_image_timestamp: 12.3,
       matched_image_score: 0.73,
       shot_timestamp: 12.1,
@@ -448,6 +450,7 @@ describe('search tool handlers', () => {
 
     const payload = parseContent(result);
     expect((payload.results as Array<Record<string, unknown>>)[0]).toMatchObject({
+      matched_image_gcs_uri: null,
       matched_image_score: null,
     });
   });
@@ -464,6 +467,7 @@ describe('search tool handlers', () => {
           image_rank: 2,
           match_type: 'both',
           matched_image_uri: null,
+          matched_image_gcs_uri: 'gs://bucket/shots/shot_2.jpg',
           matched_image_timestamp: 11.1,
           matched_image_score: 0.62,
           shot_timestamp: 10.9,
@@ -488,6 +492,7 @@ describe('search tool handlers', () => {
 
     expect(first.text_score).toBe(0);
     expect(first.image_score).toBe(0);
+    expect(first.matched_image_gcs_uri).toBe('gs://bucket/shots/shot_2.jpg');
     expect(first.matched_image_score).toBe(0.62);
     expect(first.shot_timestamp).toBe(10.9);
   });

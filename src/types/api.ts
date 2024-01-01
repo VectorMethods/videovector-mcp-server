@@ -210,6 +210,7 @@ export interface ImageSearchRequest {
 
 export interface ImageSearchResult extends SearchResult {
   matched_image_uri: string | null;
+  matched_image_gcs_uri?: string | null;
   matched_image_timestamp: number | null;
   matched_image_score: number | null;
   shot_timestamp: number | null;
@@ -236,6 +237,7 @@ export interface MultimodalSearchResult extends SearchResult {
   image_rank: number | null;
   match_type: MatchType;
   matched_image_uri: string | null;
+  matched_image_gcs_uri?: string | null;
   matched_image_timestamp: number | null;
   matched_image_score?: number | null;
   shot_timestamp?: number | null;
