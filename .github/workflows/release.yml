@@ -427,8 +427,10 @@ jobs:
     name: Verify MCP Registry publish
     needs:
       - guard
+      - publish-npm
+      - publish-ghcr
       - publish-mcp-registry
-    if: ${{ always() && needs.guard.result == 'success' && (needs.publish-mcp-registry.result == 'success' || needs.publish-mcp-registry.result == 'skipped') }}
+    if: ${{ always() && needs.guard.result == 'success' && needs.publish-npm.result == 'success' && needs.publish-ghcr.result == 'success' && (needs.publish-mcp-registry.result == 'success' || needs.publish-mcp-registry.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
