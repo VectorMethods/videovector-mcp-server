@@ -321,7 +321,7 @@ export function fingerprintApiKey(apiKey: string): Buffer {
   // fast: it prevents offline recovery from an in-memory fingerprint without
   // adding attacker-controlled password-KDF work to this pre-authentication path.
 
-  // codeql[js/insufficient-password-hash]
+  // lgtm[js/insufficient-password-hash]
   return createHmac('sha256', API_KEY_FINGERPRINT_SECRET).update(apiKey).digest();
 }
 
