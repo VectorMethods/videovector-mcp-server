@@ -57,6 +57,10 @@ interface QueuedValidation {
 const API_KEY_FINGERPRINT_SECRET = randomBytes(32);
 
 function cacheKeyForApiKey(apiKey: string): string {
+  // This is a process-local cache/singleflight index, not password verification.
+  // A keyed 256-bit HMAC prevents offline recovery if an in-memory key leaks,
+  // while intentionally avoiding attacker-amplifiable password-KDF work.
+  // codeql[js/insufficient-password-hash]
   return createHmac('sha256', API_KEY_FINGERPRINT_SECRET)
     .update(apiKey)
     .digest('hex');
