@@ -709,7 +709,7 @@ describe('release registry verification', () => {
     ).toThrow(ReleaseArtifactError);
   });
 
-  it('describes only the active npm and MCP Registry release with both tool contracts', () => {
+  it('describes only the active npm and MCP Registry release with the public tool contract', () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'package.json'), 'utf8'));
     const server = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'server.json'), 'utf8'));
     const provenance = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'artifacts/provenance.json'), 'utf8'));
@@ -725,8 +725,8 @@ describe('release registry verification', () => {
       'scripts/generate-contract.mjs',
       'server.json',
       'artifacts/tool-contract.json',
-      'artifacts/app-tool-contract.json',
     ]));
+    expect(provenance.release_inputs).not.toContain('artifacts/app-tool-contract.json');
     expect(validateProjectMetadata(packageJson, server)).toBeDefined();
   });
 

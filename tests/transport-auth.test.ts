@@ -122,6 +122,22 @@ describe('stateless HTTP transport authentication', () => {
     ]);
   });
 
+  it.each(['resources/list', 'resources/read'])('does not serve retired %s after authentication', async method => {
+    const fetchSpy = vi.fn().mockResolvedValue(successfulValidation());
+    vi.stubGlobal('fetch', fetchSpy);
+    const { app } = createHttpApp(httpConfig);
+    const response = await request(app as any)
+      .post('/mcp')
+      .set('X-API-Key', publicApiKey(97))
+      .set('Accept', 'application/json, text/event-stream')
+      .send({ jsonrpc: '2.0', id: 'retired-resource', method, params: { uri: 'ui://videovector/results-card-v2.html' } });
+    expect(response.status).toBe(200);
+    expect(response.body.error.code).toBe(-32601);
+    expect(response.body.result).toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(new URL(fetchSpy.mock.calls[0]![0]).pathname).toBe('/api/v2/auth/validate');
+  });
+
   it('enforces the single catalog for listings and direct tool calls', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(successfulValidation());
     vi.stubGlobal('fetch', fetchSpy);
@@ -133,15 +149,11 @@ describe('stateless HTTP transport authentication', () => {
       .set('X-API-Key', apiKey)
       .set('Accept', 'application/json, text/event-stream')
       .send(listToolsRequest('simple-tools'));
-    const names = listed.body.result.tools.filter((tool: { _meta?: { ui?: { visibility?: string[] } } }) => tool._meta?.ui?.visibility?.includes('app') !== true).map((tool: { name: string }) => tool.name);
+    const names = listed.body.result.tools.map((tool: { name: string }) => tool.name);
     expect(names).toEqual(['analyze', 'get_analysis', 'search', 'import_media', 'save_prompt', 'browse']);
-    const appTools = listed.body.result.tools.filter((tool: { _meta?: { ui?: { visibility?: string[] } } }) => tool._meta?.ui?.visibility?.includes('app') === true);
-    expect(appTools.map((tool: { name: string }) => tool.name).sort()).toEqual([
-      'download_workflow_artifact', 'get_studio_previews', 'list_studio_scope', 'play_workflow_media', 'read_analysis', 'view_workflow_results',
-    ]);
-    for (const tool of appTools) {
-      expect(tool._meta.ui.visibility).toEqual(['app']);
-      expect(tool._meta['openai/visibility']).toBe('private');
+    for (const tool of listed.body.result.tools) {
+      expect(tool._meta?.ui).toBeUndefined();
+      expect(tool._meta?.['openai/outputTemplate']).toBeUndefined();
     }
 
     const hidden = await request(app as any)

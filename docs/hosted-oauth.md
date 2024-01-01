@@ -63,8 +63,7 @@ authorize executing them.
 ## Available tools and existing API-key clients
 
 OAuth exposes the same six tools as direct integrations: `analyze`, `get_analysis`,
-`search`, `import_media`, `save_prompt`, and `browse`. Six additional Studio
-helpers are app-only. There is no profile setting. OAuth schemas omit cloud
+`search`, `import_media`, `save_prompt`, and `browse`. All interaction is conversational; there are no embedded views or private UI helpers. There is no profile setting. OAuth schemas omit cloud
 sources and credentials and webhook arguments, and execution
 rejects those options. API-key/stdio integrations can use those direct options.
 Authorized analysis and search results include one-hour JSON download grants
@@ -92,8 +91,8 @@ OAuth registration or token endpoint.
   result's `mcp/www_authenticate` metadata can prompt this flow.
 - **Billing, quota, plan, or permission denial:** resolve the reported product
   requirement; these errors do not require a new OAuth grant.
-- **Old tool list or missing result card:** refresh the client's discovered
-  tools. Available MCP Apps rendering depends on the client.
+- **Old tool list or schema:** refresh the client's discovered
+  tools. Start a new conversation after refreshing to use the current schema.
 
 Disconnect the integration in the client when it is no longer needed. Keep
 access and refresh tokens in the client's credential store, not prompts,

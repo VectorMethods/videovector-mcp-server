@@ -59,20 +59,14 @@ describe('VideoVectorClient request encoding', () => {
     ['search_snapshot', 'all'],
   ])('accepts canonical %s export status with result_scope=%s through the retained native client API', async (exportType, resultScope) => {
     const payload = exportStatusPayload({ export_type: exportType, export_params: { result_scope: resultScope } });
-    const fetchMock = vi.fn().mockImplementation(async (url: string) => new Response(JSON.stringify(
-      new URL(url).pathname.endsWith('/exports') ? [payload] : new URL(url).pathname.endsWith('/download-url') ? {export_id:'exp_1',status:'completed',destination_type:'download',destination_connector_id:null,download_url:`https://example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}`} : payload
-    ), { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify([payload]), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     const client = new VideoVectorClient({ apiKey: 'sk_test_abc', baseUrl: 'https://example.com/api/v2', maxRetries: 0 });
 
-    await expect(client.getExportStatus('exp_1')).resolves.toMatchObject({
-      export_type: exportType, export_params: { result_scope: resultScope },
-    });
     await expect(client.listExports()).resolves.toEqual([expect.objectContaining({
       export_type: exportType, export_params: { result_scope: resultScope },
     })]);
-    await expect(client.mintExportDownloadUrl('exp_1')).resolves.toMatchObject({download_url: `https://example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}`});
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('encodes export index requests as JSON bodies', async () => {
@@ -157,110 +151,14 @@ describe('VideoVectorClient request encoding', () => {
     expect(init.body).toBeUndefined();
   });
 
-  it('mints export bearer URLs through the explicit authenticated endpoint', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            export_id: 'exp/1',
-            status: 'completed',
-            destination_type: 'download',
-            destination_connector_id: null,
-            download_url:
-              `https://example.com/api/v2/exports/exp%2F1/download?token=${VALID_EXPORT_TOKEN}`,
-          }),
-          { status: 200 }
-        )
-      );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = new VideoVectorClient({
-      apiKey: 'sk_test_abc',
-      baseUrl: 'https://example.com/api/v2',
-      timeout: 1000,
-      maxRetries: 3,
-    });
-
-    const result = await client.mintExportDownloadUrl('exp/1');
-
-    expect(result.download_url).toContain('?token=');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(new URL(url).pathname).toBe('/api/v2/exports/exp%2F1/download-url');
-    expect(init.method).toBe('POST');
-    expect(init.body).toBeUndefined();
-    expect((init.headers as Record<string, string>)['X-API-Key']).toBe('sk_test_abc');
-    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBeUndefined();
-  });
-
-  it('does not retry export bearer minting after a server failure', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          error: {
-            code: 'metadata_export_token_configuration_invalid',
-            message: 'Export download token admission is unavailable',
-          },
-        }),
-        { status: 503 }
-      )
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = new VideoVectorClient({
-      apiKey: 'sk_test_abc',
-      baseUrl: 'https://example.com/api/v2',
-      timeout: 1000,
-      maxRetries: 3,
-    });
-
-    await expect(client.mintExportDownloadUrl('exp_1')).rejects.toMatchObject({
-      code: 'metadata_export_token_configuration_invalid',
-      statusCode: 503,
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects malformed export bearer mint responses', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            export_id: 'exp_1',
-            status: 'completed',
-            destination_type: 'download',
-            destination_connector_id: null,
-            download_url: '   ',
-          }),
-          { status: 200 }
-        )
-      );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = new VideoVectorClient({
-      apiKey: 'sk_test_abc',
-      baseUrl: 'https://example.com/api/v2',
-      timeout: 1000,
-      maxRetries: 3,
-    });
-
-    await expect(client.mintExportDownloadUrl('exp_1')).rejects.toMatchObject({
-      code: 'invalid_export_download_url_response',
-      statusCode: 502,
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
   it('accepts only the canonical authenticated relative route in export status', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify(
-          exportStatusPayload({
+          [exportStatusPayload({
             export_id: 'exp/1',
             download_url: '/api/v2/exports/exp%2F1/download',
-          })
+          })]
         ),
         { status: 200 }
       )
@@ -274,10 +172,10 @@ describe('VideoVectorClient request encoding', () => {
       maxRetries: 0,
     });
 
-    await expect(client.getExportStatus('exp/1')).resolves.toMatchObject({
+    await expect(client.listExports()).resolves.toMatchObject([{
       export_id: 'exp/1',
       download_url: '/api/v2/exports/exp%2F1/download',
-    });
+    }]);
   });
 
   it.each([
@@ -311,7 +209,7 @@ describe('VideoVectorClient request encoding', () => {
     ],
   ])('accepts a complete %s status contract', async (_label, payload) => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(payload), { status: 200 })
+      new Response(JSON.stringify([payload]), { status: 200 })
     );
     vi.stubGlobal('fetch', fetchMock);
 
@@ -322,12 +220,12 @@ describe('VideoVectorClient request encoding', () => {
       maxRetries: 0,
     });
 
-    await expect(client.getExportStatus('exp_1')).resolves.toMatchObject({
+    await expect(client.listExports()).resolves.toMatchObject([{
       export_id: 'exp_1',
       status: payload.status,
       destination_type: payload.destination_type,
       download_url: null,
-    });
+    }]);
   });
 
   it.each([
@@ -352,10 +250,6 @@ describe('VideoVectorClient request encoding', () => {
     [
       'a missing connector id',
       { destination_type: 'connector', destination_connector_id: null, download_url: null },
-    ],
-    [
-      'a mismatched response export id',
-      { export_id: 'response-derived-secret-id', download_url: null },
     ],
     ['a malformed timestamp', { updated_at: 'response-derived-secret-timestamp' }],
     ['a negative attempt count', { attempts: -1 }],
@@ -398,10 +292,10 @@ describe('VideoVectorClient request encoding', () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify(
-          exportStatusPayload({
+          [exportStatusPayload({
             ...overrides,
             error_message: secretMarker,
-          })
+          })]
         ),
         { status: 200 }
       )
@@ -416,7 +310,7 @@ describe('VideoVectorClient request encoding', () => {
     });
 
     try {
-      await client.getExportStatus('exp_1');
+      await client.listExports();
       throw new Error('expected status validation to fail');
     } catch (error) {
       expect(error).toMatchObject({
@@ -427,94 +321,6 @@ describe('VideoVectorClient request encoding', () => {
       expect(String(error)).not.toContain('response-derived-secret');
       expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
     }
-  });
-
-  it.each([
-    ['non-HTTPS URL', `http://example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}`],
-    ['foreign origin', `https://evil.example/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}`],
-    ['lookalike origin', `https://example.com.evil.test/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}`],
-    ['userinfo', `https://user:pass@example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}`],
-    ['wrong export', `https://example.com/api/v2/exports/exp_2/download?token=${VALID_EXPORT_TOKEN}`],
-    ['trailing slash', `https://example.com/api/v2/exports/exp_1/download/?token=${VALID_EXPORT_TOKEN}`],
-    ['fragment', `https://example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}#fragment`],
-    ['extra query', `https://example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}&next=x`],
-    ['duplicate token', `https://example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}&token=${VALID_EXPORT_TOKEN}`],
-    ['short token', 'https://example.com/api/v2/exports/exp_1/download?token=short'],
-    [
-      'an unversioned token',
-      `https://example.com/api/v2/exports/exp_1/download?token=${'a'.repeat(64)}`,
-    ],
-    [
-      'the wrong token version',
-      `https://example.com/api/v2/exports/exp_1/download?token=v2.${'a'.repeat(64)}.${'b'.repeat(43)}`,
-    ],
-    [
-      'an invalid token character',
-      `https://example.com/api/v2/exports/exp_1/download?token=${encodeURIComponent(
-        `v1.${'a'.repeat(63)}+.${'b'.repeat(43)}`
-      )}`,
-    ],
-    [
-      'oversized token',
-      `https://example.com/api/v2/exports/exp_1/download?token=${'a'.repeat(2049)}`,
-    ],
-  ])('rejects a minted URL with %s', async (_label, downloadUrl) => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          export_id: 'exp_1',
-          status: 'completed',
-          destination_type: 'download',
-          destination_connector_id: null,
-          download_url: downloadUrl,
-        }),
-        { status: 200 }
-      )
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = new VideoVectorClient({
-      apiKey: 'sk_test_abc',
-      baseUrl: 'https://example.com/api/v2',
-      timeout: 1000,
-      maxRetries: 3,
-    });
-
-    await expect(client.mintExportDownloadUrl('exp_1')).rejects.toMatchObject({
-      code: 'invalid_export_download_url_response',
-      statusCode: 502,
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects extra capability response fields', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          export_id: 'exp_1',
-          status: 'completed',
-          destination_type: 'download',
-          destination_connector_id: null,
-          download_url:
-            `https://example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}`,
-          unexpected: 'must-not-cross-the-contract',
-        }),
-        { status: 200 }
-      )
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = new VideoVectorClient({
-      apiKey: 'sk_test_abc',
-      baseUrl: 'https://example.com/api/v2',
-      timeout: 1000,
-      maxRetries: 3,
-    });
-
-    await expect(client.mintExportDownloadUrl('exp_1')).rejects.toMatchObject({
-      code: 'invalid_export_download_url_response',
-      statusCode: 502,
-    });
   });
 
   it.each([

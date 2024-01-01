@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "server": {
     "name": "videovector",
-    "version": "5.0.0",
+    "version": "6.0.0",
     "protocol": "mcp",
     "primary_transport": "stdio",
     "supported_transports": [
@@ -12,7 +12,7 @@
   },
   "package": {
     "name": "@vectormethods/videovector-mcp-server",
-    "version": "5.0.0",
+    "version": "6.0.0",
     "bin": "videovector-mcp",
     "npm_install_command": "npx -y @vectormethods/videovector-mcp-server"
   },
@@ -25,8 +25,7 @@
         "VIDEOVECTOR_TIMEOUT",
         "VIDEOVECTOR_MAX_RETRIES",
         "VIDEOVECTOR_UPLOAD_ROOTS",
-        "MCP_UPLOAD_API_BASE_URL",
-        "MCP_APP_BASE_URL"
+        "MCP_UPLOAD_API_BASE_URL"
       ]
     }
   },
@@ -34,7 +33,7 @@
     {
       "name": "analyze",
       "title": "Analyze media",
-      "description": "Analyze attached or existing media using instruction or a saved prompt. Root files are native attachments; source selects existing media or a direct import; destination is only for new media. Omit files/source to open the picker. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips directly without OAuth headers; claim a file was saved only after saving succeeds.",
+      "description": "Analyze media using exactly one of instruction or prompt_id and exactly one of files or source. Root files are native chat attachments: use the host-provided descriptors unchanged, including temporary authorized HTTPS URLs; do not ask users to publish videos. source selects existing media, a direct import, or local stdio file_paths within configured upload roots. Hosted tools cannot read local or sandbox paths. If the host has not supplied attachment descriptors, ask the user to attach files through a host that supports forwarding, or select existing VideoVector media. destination is only for new media. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips without OAuth headers; claim a file was saved only after saving succeeds.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -50,13 +49,16 @@
             "type": "array",
             "minItems": 1,
             "maxItems": 8,
-            "description": "Host-provided attachments; pass descriptors unchanged. At most eight files, each at most 2 GiB.",
+            "description": "Native chat attachments supplied by the host; pass descriptors unchanged. Their temporary authorized HTTPS URLs do not require public publishing. At most eight files, each at most 2 GiB.",
             "items": {
               "type": "object",
               "properties": {
                 "download_url": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "format": "uri",
+                  "pattern": "^https://",
+                  "description": "Host-provided temporary authorized download URL, not a local or sandbox path. Do not invent or publicly publish a URL."
                 },
                 "file_id": {
                   "type": "string",
@@ -267,86 +269,7 @@
                 "default": true
               }
             },
-            "additionalProperties": false,
-            "oneOf": [
-              {
-                "required": [
-                  "file_paths"
-                ]
-              },
-              {
-                "required": [
-                  "connector_id"
-                ]
-              },
-              {
-                "required": [
-                  "connector"
-                ]
-              },
-              {
-                "required": [
-                  "video_ids"
-                ]
-              },
-              {
-                "required": [
-                  "index_id"
-                ]
-              },
-              {
-                "required": [
-                  "index_name"
-                ]
-              },
-              {
-                "required": [
-                  "playground"
-                ]
-              },
-              {
-                "required": [
-                  "import_id"
-                ]
-              }
-            ],
-            "allOf": [
-              {
-                "if": {
-                  "anyOf": [
-                    {
-                      "required": [
-                        "prefix"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "pattern"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "recursive"
-                      ]
-                    }
-                  ]
-                },
-                "then": {
-                  "anyOf": [
-                    {
-                      "required": [
-                        "connector_id"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "connector"
-                      ]
-                    }
-                  ]
-                }
-              }
-            ]
+            "additionalProperties": false
           },
           "destination": {
             "type": "object",
@@ -361,18 +284,6 @@
               }
             },
             "additionalProperties": false,
-            "oneOf": [
-              {
-                "required": [
-                  "index_id"
-                ]
-              },
-              {
-                "required": [
-                  "index_name"
-                ]
-              }
-            ],
             "description": "Destination for new media only. Name creates or reuses an index; omit for Playground."
           },
           "execution": {
@@ -468,59 +379,6 @@
           }
         },
         "additionalProperties": false,
-        "oneOf": [
-          {
-            "required": [
-              "instruction"
-            ]
-          },
-          {
-            "required": [
-              "prompt_id"
-            ]
-          }
-        ],
-        "allOf": [
-          {
-            "not": {
-              "required": [
-                "files",
-                "source"
-              ]
-            }
-          },
-          {
-            "if": {
-              "required": [
-                "destination",
-                "source"
-              ]
-            },
-            "then": {
-              "properties": {
-                "source": {
-                  "anyOf": [
-                    {
-                      "required": [
-                        "file_paths"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "connector_id"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "connector"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          }
-        ],
         "examples": [
           {
             "instruction": "Find product demonstrations",
@@ -691,12 +549,7 @@
       "_meta": {
         "openai/fileParams": [
           "files"
-        ],
-        "ui": {
-          "resourceUri": "ui://videovector/results-card-v2.html"
-        },
-        "openai/outputTemplate": "ui://videovector/results-card-v2.html",
-        "openai/widgetAccessible": true
+        ]
       },
       "category": "Media",
       "availability": {
@@ -750,46 +603,6 @@
           }
         },
         "additionalProperties": false,
-        "anyOf": [
-          {
-            "required": [
-              "analysis_id"
-            ]
-          },
-          {
-            "required": [
-              "video_id"
-            ]
-          }
-        ],
-        "allOf": [
-          {
-            "if": {
-              "anyOf": [
-                {
-                  "required": [
-                    "cursor"
-                  ]
-                },
-                {
-                  "required": [
-                    "page_size"
-                  ]
-                }
-              ]
-            },
-            "then": {
-              "required": [
-                "detail"
-              ],
-              "properties": {
-                "detail": {
-                  "const": "full"
-                }
-              }
-            }
-          }
-        ],
         "examples": [
           {
             "analysis_id": "analysis_123"
@@ -951,13 +764,6 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "_meta": {
-        "ui": {
-          "resourceUri": "ui://videovector/results-card-v2.html"
-        },
-        "openai/outputTemplate": "ui://videovector/results-card-v2.html",
-        "openai/widgetAccessible": true
-      },
       "category": "Media",
       "availability": {
         "transports": [
@@ -1019,36 +825,7 @@
               "required": [
                 "field"
               ],
-              "additionalProperties": false,
-              "if": {
-                "required": [
-                  "operator"
-                ],
-                "properties": {
-                  "operator": {
-                    "enum": [
-                      "is_empty",
-                      "is_not_empty"
-                    ]
-                  }
-                }
-              },
-              "then": {
-                "not": {
-                  "anyOf": [
-                    {
-                      "required": [
-                        "value"
-                      ]
-                    }
-                  ]
-                }
-              },
-              "else": {
-                "required": [
-                  "value"
-                ]
-              }
+              "additionalProperties": false
             }
           },
           "scope": {
@@ -1087,34 +864,7 @@
                 "const": true
               }
             },
-            "additionalProperties": false,
-            "oneOf": [
-              {
-                "required": [
-                  "analysis_ids"
-                ]
-              },
-              {
-                "required": [
-                  "video_ids"
-                ]
-              },
-              {
-                "required": [
-                  "index_id"
-                ]
-              },
-              {
-                "required": [
-                  "index_name"
-                ]
-              },
-              {
-                "required": [
-                  "playground"
-                ]
-              }
-            ]
+            "additionalProperties": false
           },
           "text_weight": {
             "type": "number",
@@ -1170,98 +920,6 @@
           }
         },
         "additionalProperties": false,
-        "oneOf": [
-          {
-            "required": [
-              "scope"
-            ],
-            "anyOf": [
-              {
-                "required": [
-                  "query"
-                ]
-              },
-              {
-                "required": [
-                  "image_data"
-                ]
-              },
-              {
-                "required": [
-                  "filters"
-                ]
-              }
-            ],
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "search_id"
-                  ]
-                },
-                {
-                  "required": [
-                    "cursor"
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "required": [
-              "search_id"
-            ],
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "query"
-                  ]
-                },
-                {
-                  "required": [
-                    "image_data"
-                  ]
-                },
-                {
-                  "required": [
-                    "filters"
-                  ]
-                },
-                {
-                  "required": [
-                    "scope"
-                  ]
-                },
-                {
-                  "required": [
-                    "text_weight"
-                  ]
-                },
-                {
-                  "required": [
-                    "image_weight"
-                  ]
-                },
-                {
-                  "required": [
-                    "result_level"
-                  ]
-                },
-                {
-                  "required": [
-                    "max_results"
-                  ]
-                },
-                {
-                  "required": [
-                    "idempotency_key"
-                  ]
-                }
-              ]
-            }
-          }
-        ],
         "examples": [
           {
             "query": "presenter on stage",
@@ -1784,13 +1442,6 @@
         "idempotentHint": false,
         "openWorldHint": false
       },
-      "_meta": {
-        "ui": {
-          "resourceUri": "ui://videovector/results-card-v2.html"
-        },
-        "openai/outputTemplate": "ui://videovector/results-card-v2.html",
-        "openai/widgetAccessible": true
-      },
       "category": "Search",
       "availability": {
         "transports": [
@@ -1803,7 +1454,7 @@
     {
       "name": "import_media",
       "title": "Import media",
-      "description": "Import media without analysis, inspect an existing import, or retry failed files where supported. Provide root files or source for new media; omit both to open the picker. destination selects its library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry with retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.",
+      "description": "Import media without analysis, inspect an existing import, or retry failed files. New imports require exactly one of root files or source. files are native host-provided attachment descriptors with temporary authorized HTTPS URLs, not publicly published videos. Local stdio can use source.file_paths within configured upload roots; hosted tools cannot read local or sandbox paths. If no attachment descriptors are available, ask the user to attach files through a supporting host. destination selects the library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry with retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1811,13 +1462,16 @@
             "type": "array",
             "minItems": 1,
             "maxItems": 8,
-            "description": "Host-provided attachments; pass descriptors unchanged. At most eight files, each at most 2 GiB.",
+            "description": "Native chat attachments supplied by the host; pass descriptors unchanged. Their temporary authorized HTTPS URLs do not require public publishing. At most eight files, each at most 2 GiB.",
             "items": {
               "type": "object",
               "properties": {
                 "download_url": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "format": "uri",
+                  "pattern": "^https://",
+                  "description": "Host-provided temporary authorized download URL, not a local or sandbox path. Do not invent or publicly publish a URL."
                 },
                 "file_id": {
                   "type": "string",
@@ -2002,61 +1656,7 @@
                 "default": true
               }
             },
-            "additionalProperties": false,
-            "oneOf": [
-              {
-                "required": [
-                  "file_paths"
-                ]
-              },
-              {
-                "required": [
-                  "connector_id"
-                ]
-              },
-              {
-                "required": [
-                  "connector"
-                ]
-              }
-            ],
-            "allOf": [
-              {
-                "if": {
-                  "anyOf": [
-                    {
-                      "required": [
-                        "prefix"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "pattern"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "recursive"
-                      ]
-                    }
-                  ]
-                },
-                "then": {
-                  "anyOf": [
-                    {
-                      "required": [
-                        "connector_id"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "connector"
-                      ]
-                    }
-                  ]
-                }
-              }
-            ]
+            "additionalProperties": false
           },
           "destination": {
             "type": "object",
@@ -2071,18 +1671,6 @@
               }
             },
             "additionalProperties": false,
-            "oneOf": [
-              {
-                "required": [
-                  "index_id"
-                ]
-              },
-              {
-                "required": [
-                  "index_name"
-                ]
-              }
-            ],
             "description": "Destination for new media only. Name creates or reuses an index; omit for Playground."
           },
           "title": {
@@ -2159,134 +1747,6 @@
           }
         },
         "additionalProperties": false,
-        "allOf": [
-          {
-            "not": {
-              "required": [
-                "files",
-                "source"
-              ]
-            }
-          },
-          {
-            "if": {
-              "required": [
-                "title"
-              ]
-            },
-            "then": {
-              "properties": {
-                "source": {
-                  "required": [
-                    "file_paths"
-                  ]
-                }
-              }
-            }
-          },
-          {
-            "if": {
-              "required": [
-                "import_id"
-              ]
-            },
-            "then": {
-              "allOf": [
-                {
-                  "not": {
-                    "anyOf": [
-                      {
-                        "required": [
-                          "source"
-                        ]
-                      },
-                      {
-                        "required": [
-                          "destination"
-                        ]
-                      },
-                      {
-                        "required": [
-                          "title"
-                        ]
-                      },
-                      {
-                        "required": [
-                          "webhook"
-                        ]
-                      }
-                    ]
-                  }
-                },
-                {
-                  "if": {
-                    "required": [
-                      "files"
-                    ]
-                  },
-                  "then": {
-                    "required": [
-                      "retry"
-                    ]
-                  }
-                }
-              ]
-            },
-            "else": {
-              "not": {
-                "anyOf": [
-                  {
-                    "required": [
-                      "retry"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "outputs_cursor"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "failures_cursor"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "page_size"
-                    ]
-                  }
-                ]
-              }
-            }
-          },
-          {
-            "if": {
-              "required": [
-                "retry"
-              ]
-            },
-            "then": {
-              "required": [
-                "import_id",
-                "idempotency_key"
-              ],
-              "not": {
-                "anyOf": [
-                  {
-                    "required": [
-                      "outputs_cursor"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "failures_cursor"
-                    ]
-                  }
-                ]
-              }
-            }
-          }
-        ],
         "examples": [
           {
             "files": [
@@ -2381,12 +1841,7 @@
       "_meta": {
         "openai/fileParams": [
           "files"
-        ],
-        "ui": {
-          "resourceUri": "ui://videovector/results-card-v2.html"
-        },
-        "openai/outputTemplate": "ui://videovector/results-card-v2.html",
-        "openai/widgetAccessible": true
+        ]
       },
       "category": "Media",
       "availability": {
@@ -3791,18 +3246,6 @@
                 "required": [
                   "level_logic"
                 ],
-                "anyOf": [
-                  {
-                    "required": [
-                      "segment"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "video"
-                    ]
-                  }
-                ],
                 "additionalProperties": false
               }
             },
@@ -3837,18 +3280,6 @@
           }
         },
         "additionalProperties": false,
-        "oneOf": [
-          {
-            "required": [
-              "instruction"
-            ]
-          },
-          {
-            "required": [
-              "definition"
-            ]
-          }
-        ],
         "examples": [
           {
             "instruction": "Extract visible brands and confidence",
@@ -5399,186 +4830,6 @@
           "resource"
         ],
         "additionalProperties": false,
-        "oneOf": [
-          {
-            "properties": {
-              "resource": {
-                "const": "indexes"
-              }
-            },
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "index_id"
-                  ]
-                },
-                {
-                  "required": [
-                    "index_name"
-                  ]
-                },
-                {
-                  "required": [
-                    "video_ids"
-                  ]
-                },
-                {
-                  "required": [
-                    "status"
-                  ]
-                },
-                {
-                  "required": [
-                    "include_defaults"
-                  ]
-                },
-                {
-                  "required": [
-                    "active_only"
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "properties": {
-              "resource": {
-                "const": "videos"
-              }
-            },
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "video_ids"
-                  ]
-                },
-                {
-                  "required": [
-                    "status"
-                  ]
-                },
-                {
-                  "required": [
-                    "include_defaults"
-                  ]
-                },
-                {
-                  "required": [
-                    "active_only"
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "properties": {
-              "resource": {
-                "const": "analyses"
-              }
-            },
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "name"
-                  ]
-                },
-                {
-                  "required": [
-                    "include_defaults"
-                  ]
-                },
-                {
-                  "required": [
-                    "active_only"
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "properties": {
-              "resource": {
-                "const": "imports"
-              }
-            },
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "name"
-                  ]
-                },
-                {
-                  "required": [
-                    "video_ids"
-                  ]
-                },
-                {
-                  "required": [
-                    "include_defaults"
-                  ]
-                },
-                {
-                  "required": [
-                    "active_only"
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "properties": {
-              "resource": {
-                "const": "prompts"
-              }
-            },
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "index_id"
-                  ]
-                },
-                {
-                  "required": [
-                    "index_name"
-                  ]
-                },
-                {
-                  "required": [
-                    "video_ids"
-                  ]
-                },
-                {
-                  "required": [
-                    "status"
-                  ]
-                }
-              ]
-            }
-          }
-        ],
-        "allOf": [
-          {
-            "not": {
-              "required": [
-                "index_id",
-                "index_name"
-              ]
-            }
-          },
-          {
-            "not": {
-              "required": [
-                "ids",
-                "name"
-              ]
-            }
-          }
-        ],
         "examples": [
           {
             "resource": "indexes",

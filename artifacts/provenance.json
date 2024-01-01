@@ -12,8 +12,6 @@
   },
   "release_inputs": [
     "src/**",
-    "ui/**",
-    "scripts/build-picker.mjs",
     "scripts/clean-dist.mjs",
     "scripts/generate-contract.mjs",
     "package.json",
@@ -23,7 +21,6 @@
     "README.md",
     "docs/**",
     "examples/**",
-    "artifacts/tool-contract.json",
-    "artifacts/app-tool-contract.json"
+    "artifacts/tool-contract.json"
   ]
 }

@@ -1,13 +1,8 @@
 import { generateKeyPair, SignJWT, exportJWK, type CryptoKey, type JWK } from 'jose';
 import request from 'supertest';
-import { readFile } from 'node:fs/promises';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createHttpApp, type HttpConfig } from '../src/index.js';
-import { createHttpApp as createBuiltHttpApp } from '../dist/index.js';
-import { ATTACHMENT_PICKER_URI } from '../src/tools/definitions.js';
-import { RESULTS_CARD_URI } from '../src/tools/workflow-result-contract.js';
-import { LEGACY_RESULTS_CARD_URI } from '../src/apps/results-card.js';
 import { FIREBASE_UID_CLAIM } from '../src/http/oauth-token-verifier.js';
 
 const ISSUER = 'https://issuer.example.com';
@@ -151,13 +146,14 @@ describe('hosted MCP OAuth authentication', () => {
       .send(initializeRequest('anonymous-initialize'));
     expect(initialized.status).toBe(200);
     expect(initialized.body.result.serverInfo.name).toBe('videovector');
+    expect(initialized.body.result.capabilities).not.toHaveProperty('resources');
 
     const listed = await request(context.app as any)
       .post('/mcp')
       .set('Accept', 'application/json, text/event-stream')
       .send(listToolsRequest('anonymous-tools'));
     expect(listed.status).toBe(200);
-    expect(listed.body.result.tools).toHaveLength(12);
+    expect(listed.body.result.tools).toHaveLength(6);
     const names = listed.body.result.tools.map((tool: { name: string }) => tool.name);
     expect(names).toContain('get_analysis');
     for (const unpublishedTool of OAUTH_UNPUBLISHED_TOOLS) {
@@ -191,85 +187,12 @@ describe('hosted MCP OAuth authentication', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('exposes static app resources and preserves saved result-card URIs without backend access', async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal('fetch', fetchSpy);
-    // Resource HTML is a build artifact, so exercise its production loader.
-    const context = createBuiltHttpApp(oauthHttpConfig);
-    const listed = await request(context.app as any)
-      .post('/mcp')
-      .set('Accept', 'application/json, text/event-stream')
-      .send({ jsonrpc: '2.0', id: 'anonymous-resources', method: 'resources/list', params: {} });
-    expect(listed.status).toBe(200);
-    expect(listed.body.result.resources).toHaveLength(2);
-    expect(listed.body.result.resources[0]).toMatchObject({
-      uri: ATTACHMENT_PICKER_URI,
-      mimeType: 'text/html;profile=mcp-app',
-    });
-
-    const resource = await request(context.app as any)
-      .post('/mcp')
-      .set('Accept', 'application/json, text/event-stream')
-      .send({ jsonrpc: '2.0', id: 'anonymous-picker', method: 'resources/read', params: { uri: ATTACHMENT_PICKER_URI } });
-    expect(resource.status).toBe(200);
-    expect(resource.body.result.contents).toMatchObject([{
-      uri: ATTACHMENT_PICKER_URI,
-      mimeType: 'text/html;profile=mcp-app',
-      text: await readFile(new URL('../dist/ui/results-card.html', import.meta.url), 'utf8'),
-      _meta: {
-        ui: { csp: { connectDomains: ['https://api.example.com', 'https://storage.googleapis.com'] }, prefersBorder: true },
-        'openai/widgetCSP': { connect_domains: ['https://api.example.com', 'https://storage.googleapis.com'], resource_domains: ['https://storage.googleapis.com'] },
-        'openai/widgetPrefersBorder': true,
-      },
-    }]);
-
-    expect(listed.body.result.resources[1].uri).toBe(RESULTS_CARD_URI);
-    const cardHtml = await readFile(new URL('../dist/ui/results-card.html', import.meta.url), 'utf8');
-    const tools = await request(context.app as any)
-      .post('/mcp')
-      .set('Accept', 'application/json, text/event-stream')
-      .send(listToolsRequest('anonymous-result-templates'));
-    expect(tools.status).toBe(200);
-    const resultTools = tools.body.result.tools.filter((tool: { name: string }) =>
-      ['analyze', 'get_analysis', 'search'].includes(tool.name));
-    expect(resultTools).toHaveLength(3);
-    for (const tool of resultTools) {
-      expect(tool._meta.ui.resourceUri).toBe(RESULTS_CARD_URI);
-      expect(tool._meta['openai/outputTemplate']).toBe(RESULTS_CARD_URI);
-    }
-    for (const uri of [RESULTS_CARD_URI, LEGACY_RESULTS_CARD_URI]) {
-      const card = await request(context.app as any)
-        .post('/mcp')
-        .set('Accept', 'application/json, text/event-stream')
-        .send({ jsonrpc: '2.0', id: uri, method: 'resources/read', params: { uri } });
-      expect(card.status).toBe(200);
-      expect(card.body.result.contents).toMatchObject([{ uri, mimeType: 'text/html;profile=mcp-app', text: cardHtml }]);
-      const meta = card.body.result.contents[0]._meta;
-      // Assert the complete allowlists so a missing policy, extra domain, or
-      // wildcard cannot silently reappear in either metadata format.
-      expect(meta.ui.csp).toEqual({
-        resourceDomains: ['https://storage.googleapis.com'], connectDomains: ['https://api.example.com', 'https://storage.googleapis.com'],
-      });
-      expect(meta['openai/widgetCSP']).toEqual({
-        resource_domains: ['https://storage.googleapis.com'], connect_domains: ['https://api.example.com', 'https://storage.googleapis.com'],
-      });
-    }
-
-    const unknown = await request(context.app as any)
-      .post('/mcp')
-      .set('Accept', 'application/json, text/event-stream')
-      .send({ jsonrpc: '2.0', id: 'private-resource', method: 'resources/read', params: { uri: 'private://account' } });
-    expect(unknown.body.error).toMatchObject({ code: -32602, message: 'MCP error -32602: Unknown UI resource' });
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(context.activeRequests.size).toBe(0);
-  });
-
-  it('keeps a path-aware HTTP challenge for non-discovery requests before first link', async () => {
+  it.each(['resources/list', 'resources/read', 'resources/subscribe'])('keeps a path-aware HTTP challenge for retired %s requests before first link', async method => {
     const context = createHttpApp(oauthHttpConfig);
     const response = await request(context.app as any)
       .post('/mcp')
       .set('Accept', 'application/json, text/event-stream')
-      .send({ jsonrpc: '2.0', id: 'anonymous-subscription', method: 'resources/subscribe', params: { uri: 'private://account' } });
+      .send({ jsonrpc: '2.0', id: 'anonymous-subscription', method, params: { uri: 'private://account' } });
 
     expect(response.status).toBe(401);
     expect(response.body.error).toBe('invalid_token');
@@ -328,7 +251,7 @@ describe('hosted MCP OAuth authentication', () => {
       .send(listToolsRequest('oauth-tools'));
 
     expect(response.status).toBe(200);
-    expect(response.body.result.tools).toHaveLength(12);
+    expect(response.body.result.tools).toHaveLength(6);
     expect(response.body.result.tools.map((tool: { name: string }) => tool.name))
       .toContain('analyze');
     const names = response.body.result.tools.map((tool: { name: string }) => tool.name);
@@ -378,7 +301,7 @@ describe('hosted MCP OAuth authentication', () => {
 
     expect(response.status).toBe(200);
     const names = response.body.result.tools.map((tool: { name: string }) => tool.name);
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(6);
     for (const retired of OAUTH_UNPUBLISHED_TOOLS) expect(names).not.toContain(retired);
     expect(names).toContain('analyze');
     for (const tool of response.body.result.tools as Array<Record<string, any>>) {

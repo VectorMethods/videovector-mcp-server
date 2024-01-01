@@ -1,4 +1,4 @@
-/** Browser picker transport: JSON capability control, direct storage bytes. */
+/** Resumable upload transport: JSON capability control, direct storage bytes. */
 export interface UploadFile {
   name: string;
   type: string;

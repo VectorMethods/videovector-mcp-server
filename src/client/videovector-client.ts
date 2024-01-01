@@ -16,11 +16,7 @@ import { Readable } from 'node:stream';
 
 import { PACKAGE_VERSION } from '../version.js';
 import {
-  type AnalysisReadOptions,
-  type AnalysisResponse,
-  type AnalysisProgressSnapshot,
   type Index,
-  type Video,
   type Segment,
   type SearchRequest,
   type SearchResult,
@@ -36,7 +32,6 @@ import {
   type PromptRun,
   type PromptRunCostEstimate,
   type PromptRunFailedSegmentsManifest,
-  type PromptRunVideoResult,
   type ExecutePromptRequest,
   type PaginatedResponse,
   type SegmentRunResult,
@@ -59,7 +54,6 @@ import {
   type CreateIndexRequest,
   type VideoStatus,
   type ExportDestinationRequest,
-  type ExportDownloadUrlResponse,
   type ExportJob,
   type IndexExportRequest,
   type CreateWebhookRequest,
@@ -72,9 +66,6 @@ import {
   type WorkflowDefineResponse,
   type WorkflowProcessRequest,
   type WorkflowProcessResponse,
-  type WorkflowRunResultsRequest,
-  type WorkflowRunResultsResponse,
-  type WorkflowSearchRequest,
   type WorkflowSearchResponse,
   type WorkflowUploadRequest,
   type WorkflowUploadResponse,
@@ -86,9 +77,6 @@ import {
   type AttachmentUploadDescriptor,
   type AttachmentUploadSession,
   type WorkflowDeliveryResponse,
-  type WorkflowMediaGrant,
-  type PreviewGrantIdentity,
-  type PreviewGrantItem,
   VideoVectorApiError,
 } from '../types/index.js';
 
@@ -165,16 +153,6 @@ const PUBLIC_EXPORT_PARAM_FIELDS = new Set([
   'destination_base_path',
   'destination_subpath',
 ]);
-const EXPORT_DOWNLOAD_RESPONSE_FIELDS = [
-  'destination_connector_id',
-  'destination_type',
-  'download_url',
-  'export_id',
-  'status',
-] as const;
-const MIN_EXPORT_DOWNLOAD_TOKEN_LENGTH = 32;
-const MAX_EXPORT_DOWNLOAD_TOKEN_LENGTH = 2048;
-const EXPORT_DOWNLOAD_TOKEN_PATTERN = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 const WORKFLOW_MEDIA_CONTENT_TYPES: Record<string, string> = {
   '.aac': 'audio/aac',
@@ -208,17 +186,6 @@ export interface WorkflowUploadFileIdentity {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasExactFields(
-  value: Record<string, unknown>,
-  expectedFields: readonly string[]
-): boolean {
-  const actualFields = Object.keys(value).sort();
-  return (
-    actualFields.length === expectedFields.length
-    && actualFields.every((field, index) => field === expectedFields[index])
-  );
 }
 
 function canonicalExportDownloadPath(exportId: string): string {
@@ -420,7 +387,6 @@ function isRetryableResponsePayloadError(error: unknown): boolean {
 export class VideoVectorClient {
   private readonly credential: VideoVectorCredential;
   private readonly baseUrl: string;
-  private readonly apiOrigin: string;
   private readonly uploadBaseUrl: string;
   private readonly timeout: number;
   private readonly maxRetries: number;
@@ -448,7 +414,6 @@ export class VideoVectorClient {
 
     this.credential = credential;
     this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
-    this.apiOrigin = new URL(this.baseUrl).origin;
     this.uploadBaseUrl = (config.uploadBaseUrl ?? this.baseUrl).replace(/\/$/, '');
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
     this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
@@ -739,8 +704,7 @@ export class VideoVectorClient {
   }
 
   private validateExportStatus(
-    response: unknown,
-    expectedExportId?: string
+    response: unknown
   ): ExportJob {
     if (!isRecord(response)) {
       return this.invalidExportStatusResponse();
@@ -772,7 +736,6 @@ export class VideoVectorClient {
     if (
       typeof exportId !== 'string'
       || exportId.trim().length === 0
-      || (expectedExportId !== undefined && exportId !== expectedExportId)
       || typeof exportType !== 'string'
       || !EXPORT_TYPE_VALUES.has(exportType)
       || typeof targetId !== 'string'
@@ -895,57 +858,6 @@ export class VideoVectorClient {
     };
   }
 
-  private validateExportDownloadUrl(
-    downloadUrl: string,
-    exportId: string
-  ): boolean {
-    if (downloadUrl !== downloadUrl.trim()) {
-      return false;
-    }
-
-    let parsed: URL;
-    try {
-      parsed = new URL(downloadUrl);
-    } catch {
-      return false;
-    }
-
-    if (
-      parsed.protocol !== 'https:'
-      || parsed.origin !== this.apiOrigin
-      || parsed.username !== ''
-      || parsed.password !== ''
-      || parsed.hash !== ''
-      || parsed.pathname !== canonicalExportDownloadPath(exportId)
-    ) {
-      return false;
-    }
-
-    const queryFields = Array.from(parsed.searchParams.keys());
-    const tokens = parsed.searchParams.getAll('token');
-    if (
-      queryFields.length !== 1
-      || queryFields[0] !== 'token'
-      || tokens.length !== 1
-    ) {
-      return false;
-    }
-
-    const token = tokens[0];
-    if (
-      token === undefined
-      || token !== token.trim()
-      || token.length < MIN_EXPORT_DOWNLOAD_TOKEN_LENGTH
-      || token.length > MAX_EXPORT_DOWNLOAD_TOKEN_LENGTH
-      || !EXPORT_DOWNLOAD_TOKEN_PATTERN.test(token)
-      || parsed.search !== `?token=${encodeURIComponent(token)}`
-    ) {
-      return false;
-    }
-
-    return true;
-  }
-
   private calculateRetryDelay(response: Response, retryCount: number): number {
     // Check for Retry-After header
     const retryAfter = response.headers.get('Retry-After');
@@ -1036,17 +948,7 @@ export class VideoVectorClient {
     return result;
   }
 
-  async getAnalysis(analysisId: string, options: AnalysisReadOptions = {}, signal?: AbortSignal, deadline = Date.now() + 30000): Promise<AnalysisResponse> {
-    return this.request('GET', `/workflow/analyses/${encodeURIComponent(analysisId)}`, {
-      query: { ...options }, signal, deadline,
-    });
-  }
 
-  async observeAnalysis(analysisId: string, options: { after_version?: string; wait_seconds: number }, signal?: AbortSignal, deadline = Date.now() + 30000): Promise<AnalysisProgressSnapshot> {
-    return this.request('GET', `/workflow/analyses/${encodeURIComponent(analysisId)}/progress`, {
-      query: options, signal, deadline,
-    });
-  }
 
   async workflowAttachments(request: WorkflowAttachmentRequest, idempotencyKey?: string): Promise<WorkflowIntakeResponse> {
     return this.request('POST', '/workflow/attachments', {
@@ -1204,30 +1106,7 @@ export class VideoVectorClient {
     });
   }
 
-  async workflowSearchMedia(
-    request: WorkflowSearchRequest,
-    idempotencyKey?: string
-  ): Promise<WorkflowSearchResponse> {
-    const { artifact_delivery, ...body } = request;
-    return this.request<WorkflowSearchResponse>('POST', '/workflow/search', {
-      body,
-      headers: {
-        'Idempotency-Key': createIdempotencyKey('workflow-search', idempotencyKey),
-        ...(artifact_delivery === 'automatic' ? { 'X-Artifact-Delivery': artifact_delivery } : {}),
-      },
-    });
-  }
 
-  async workflowRunResults(
-    runId: string,
-    options: WorkflowRunResultsRequest = {}
-  ): Promise<WorkflowRunResultsResponse> {
-    return this.request<WorkflowRunResultsResponse>(
-      'GET',
-      `/workflow/runs/${encodeURIComponent(runId)}/results`,
-      { query: { ...options } }
-    );
-  }
 
   async workflowSearchPage(cursor: string): Promise<WorkflowSearchResponse> {
     return this.request<WorkflowSearchResponse>('GET', '/workflow/search/page', {
@@ -1235,29 +1114,14 @@ export class VideoVectorClient {
     });
   }
 
-  async workflowSearchScope(request: import('../types/api.js').WorkflowSearchScopeRequest = {}): Promise<import('../types/api.js').WorkflowSearchScopeResponse> {
-    return this.request('POST', '/workflow/search/scope', { body: request });
-  }
 
-  async getPlaygroundVideos(options: { limit?: number; cursor?: string } = {}): Promise<PaginatedResponse<Video>> {
-    return this.request('GET', '/playground/videos', { query: { limit: options.limit ?? 100, cursor: options.cursor } });
-  }
 
   async workflowDelivery(sourceKind: 'prompt_run' | 'search_snapshot', sourceId: string): Promise<WorkflowDeliveryResponse> {
     return this.request('GET', `/workflow/deliveries/${sourceKind}/${encodeURIComponent(sourceId)}`);
   }
 
-  async workflowSnapshotResults(snapshotId: string, options: { cursor?: string; limit?: number; include_download?: boolean } = {}): Promise<WorkflowSearchResponse> {
-    return this.request('GET', `/workflow/searches/${encodeURIComponent(snapshotId)}/results`, { query: { ...options } });
-  }
 
-  async workflowMediaGrant(request: { video_id: string; run_id?: string; segment_id?: string; intent?: 'playback' | 'download' }): Promise<WorkflowMediaGrant> {
-    return this.request('POST', '/workflow/media-grants', { body: request });
-  }
 
-  async getPreviewGrants(items: PreviewGrantIdentity[]): Promise<{ items: PreviewGrantItem[] }> {
-    return this.request('POST', '/media/preview-grants', { body: { items } });
-  }
 
   async listIndexes(includeDefaults: boolean = true): Promise<Index[]> {
     return this.request<Index[]>('GET', '/indexes', {
@@ -1273,25 +1137,11 @@ export class VideoVectorClient {
     return this.request<Index>('GET', `/indexes/${encodeURIComponent(indexId)}`);
   }
 
-  async getVideosInIndex(
-    indexId: string,
-    limit: number = 50,
-    cursor?: string
-  ): Promise<PaginatedResponse<Video>> {
-    return this.request<PaginatedResponse<Video>>(
-      'GET',
-      `/indexes/${encodeURIComponent(indexId)}/videos`,
-      { query: { limit, cursor } }
-    );
-  }
 
   // ==========================================================================
   // Video Operations
   // ==========================================================================
 
-  async getVideo(videoId: string): Promise<Video> {
-    return this.request<Video>('GET', `/videos/${encodeURIComponent(videoId)}`);
-  }
 
   async getVideoSegments(
     videoId: string,
@@ -1447,12 +1297,6 @@ export class VideoVectorClient {
     });
   }
 
-  async getPromptRun(runId: string): Promise<PromptRun> {
-    return this.request<PromptRun>(
-      'GET',
-      `/prompt-runs/${encodeURIComponent(runId)}`
-    );
-  }
 
   async getPromptRunResults(
     runId: string,
@@ -1484,12 +1328,6 @@ export class VideoVectorClient {
     );
   }
 
-  async getPromptRunVideoResult(runId: string, videoId: string): Promise<PromptRunVideoResult> {
-    return this.request<PromptRunVideoResult>(
-      'GET',
-      `/prompt-runs/${encodeURIComponent(runId)}/videos/${encodeURIComponent(videoId)}/video-result`
-    );
-  }
 
   async getPromptRunFailedSegments(runId: string): Promise<PromptRunFailedSegmentsManifest> {
     return this.request<PromptRunFailedSegmentsManifest>(
@@ -1775,88 +1613,6 @@ export class VideoVectorClient {
       return this.invalidExportStatusResponse();
     }
     return response.map((job) => this.validateExportStatus(job));
-  }
-
-  async getExportStatus(exportId: string): Promise<ExportJob> {
-    const response = await this.request<unknown>(
-      'GET',
-      `/exports/${encodeURIComponent(exportId)}`
-    );
-    return this.validateExportStatus(response, exportId);
-  }
-
-  async mintExportDownloadUrl(
-    exportId: string
-  ): Promise<ExportDownloadUrlResponse> {
-    // Minting creates a fresh credential, so this POST deliberately carries no
-    // idempotency key and is never retried after an ambiguous network result.
-    const response = await this.request<unknown>(
-      'POST',
-      `/exports/${encodeURIComponent(exportId)}/download-url`
-    );
-    const body = isRecord(response) ? response : null;
-    const responseExportId = body?.export_id;
-    const status = body?.status;
-    const destinationType = body?.destination_type;
-    const destinationConnectorId = body?.destination_connector_id;
-    const downloadUrl = body?.download_url;
-    const validStatus = (
-      status === 'pending'
-      || status === 'processing'
-      || status === 'completed'
-      || status === 'failed'
-    );
-    const validDestinationType = (
-      destinationType === 'download' || destinationType === 'connector'
-    );
-    const validConnectorId = (
-      destinationConnectorId === null
-      || (
-        typeof destinationConnectorId === 'string'
-        && destinationConnectorId.trim().length > 0
-      )
-    );
-    const validDownloadUrl = (
-      downloadUrl === null
-      || (
-        typeof downloadUrl === 'string'
-        && this.validateExportDownloadUrl(downloadUrl, exportId)
-      )
-    );
-    const consistentDestination = (
-      (
-        destinationType === 'download'
-        && destinationConnectorId === null
-      )
-      || (
-        destinationType === 'connector'
-        && typeof destinationConnectorId === 'string'
-        && destinationConnectorId.trim().length > 0
-        && downloadUrl === null
-      )
-    );
-    const consistentBearer = (
-      downloadUrl === null
-      || (status === 'completed' && destinationType === 'download')
-    );
-    if (
-      body === null
-      || !hasExactFields(body, EXPORT_DOWNLOAD_RESPONSE_FIELDS)
-      || responseExportId !== exportId
-      || !validStatus
-      || !validDestinationType
-      || !validConnectorId
-      || !validDownloadUrl
-      || !consistentDestination
-      || !consistentBearer
-    ) {
-      throw new VideoVectorApiError(
-        'API returned an invalid export download URL response',
-        'invalid_export_download_url_response',
-        502
-      );
-    }
-    return response as ExportDownloadUrlResponse;
   }
 
   // ==========================================================================

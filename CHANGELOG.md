@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.0.0
+
+Breaking conversational-only release. Remove embedded Studio, picker, widget resources, six private app tools, and their build dependencies. The six public MCP tools return progress and results directly in the conversation.
+
+Native ChatGPT attachments use root `files` descriptors with host-provided temporary HTTPS URLs; local stdio clients retain authorized `source.file_paths` uploads. New hosted submissions require actual media and fail before creating a job when it is missing. Published schemas expose typed root fields while preserving structured cloud configuration and filters; canonical validation retains all conditional requirements.
+
 ## 5.0.0
 
 Breaking MCP catalog release: exactly `analyze`, `get_analysis`, `search`, `import_media`, `save_prompt`, and `browse` on all transports. Profiles and retired aliases are removed; native REST APIs remain independent. Inputs use grouped source/destination/execution/scope fields with root native files, conditional schemas, and examples. OAuth excludes cloud credentials/import/retry and task webhooks at both discovery and execution.

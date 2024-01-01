@@ -41,11 +41,6 @@ const {
   getToolAvailability,
   getToolRequiredScope,
 } = await import(definitionsUrl.href);
-const { RESULTS_APP_DEFINITIONS } = await import(pathToFileURL(path.join(rootDir, 'dist', 'tools', 'workflow-result-contract.js')).href);
-const appContract = {
-  schema_version: '1.0.0',
-  tools: RESULTS_APP_DEFINITIONS.map(({ name, annotations, _meta }) => ({ name, annotations, _meta })),
-};
 
 const contract = {
   schema_version: '1.0.0',
@@ -72,7 +67,6 @@ const contract = {
         'VIDEOVECTOR_MAX_RETRIES',
         'VIDEOVECTOR_UPLOAD_ROOTS',
         'MCP_UPLOAD_API_BASE_URL',
-        'MCP_APP_BASE_URL',
       ],
     },
   },
@@ -120,8 +114,6 @@ const provenance = {
   },
   release_inputs: [
     'src/**',
-    'ui/**',
-    'scripts/build-picker.mjs',
     'scripts/clean-dist.mjs',
     'scripts/generate-contract.mjs',
     'package.json',
@@ -132,19 +124,11 @@ const provenance = {
     'docs/**',
     'examples/**',
     'artifacts/tool-contract.json',
-    'artifacts/app-tool-contract.json',
   ],
 };
 
 fs.mkdirSync(artifactsDir, { recursive: true });
 writeOrCheck('artifacts/tool-contract.json', contract);
-writeOrCheck('artifacts/app-tool-contract.json', appContract);
-// The monorepo smoke uses the same generated metadata without a Node build.
-// Standalone public package generation has no backend config directory.
-if (fs.existsSync(path.join(rootDir, '..', 'config', 'mcp', 'tool-contract.json'))) {
-  writeOrCheck('../config/mcp/app-tool-contract.json', appContract);
-}
-
 writeOrCheck('artifacts/release-metadata.json', releaseMetadata);
 writeOrCheck('artifacts/provenance.json', provenance);
 
