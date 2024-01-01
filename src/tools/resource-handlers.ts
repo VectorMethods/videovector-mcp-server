@@ -30,7 +30,6 @@
  * - list_webhook_events, test_webhook, list_webhook_deliveries
  */
 
-import { createHash } from 'node:crypto';
 
 import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
 import type { VideoVectorClient } from '../client/index.js';
@@ -67,15 +66,6 @@ import type {
 } from '../types/index.js';
 import { TOOL_NAMES } from './definitions.js';
 import { formatError, validateRequired, validateOptional, formatDuration } from '../utils/helpers.js';
-
-const multipartWriteIdempotencyCache = new Map<
-  string,
-  {
-    requestHash: string;
-    resultPromise: Promise<unknown>;
-  }
->();
-const MULTIPART_IDEMPOTENCY_CACHE_MAX_ENTRIES = 100;
 
 // ============================================================================
 // Response Formatters
@@ -642,6 +632,9 @@ function formatSegmentRunResult(result: SegmentRunResult): Record<string, unknow
     start_time: result.start_time ?? null,
     end_time: result.end_time ?? null,
     segment_uri: result.segment_uri ?? null,
+    gcs_uri: result.gcs_uri ?? null,
+    thumbnail_gcs_uri: result.thumbnail_gcs_uri ?? null,
+    gif_gcs_uri: result.gif_gcs_uri ?? null,
     thumbnail_uri: result.thumbnail_uri ?? null,
     gif_uri: result.gif_uri ?? null,
     thumbnail_available: Boolean(result.thumbnail_available),
@@ -701,6 +694,9 @@ function formatPromptRunVideoResult(result: PromptRunVideoResult): Record<string
     started_at: result.started_at,
     completed_at: result.completed_at,
     segment_uri: result.segment_uri ?? result.preview_segment_uri ?? null,
+    gcs_uri: result.gcs_uri ?? null,
+    thumbnail_gcs_uri: result.thumbnail_gcs_uri ?? null,
+    gif_gcs_uri: result.gif_gcs_uri ?? null,
     thumbnail_uri: result.thumbnail_uri ?? result.preview_thumbnail_uri ?? null,
     gif_uri: result.gif_uri ?? result.preview_gif_uri ?? null,
     thumbnail_available: Boolean(result.thumbnail_available ?? result.preview_thumbnail_uri),
@@ -1003,80 +999,12 @@ function validateOptionalIdempotencyKey(args: Record<string, unknown>): string |
   return candidate || undefined;
 }
 
-function isCanonicalEmptyValue(value: unknown): boolean {
-  if (value === undefined || value === null || value === '') {
-    return true;
-  }
-  if (Array.isArray(value)) {
-    return value.length === 0;
-  }
-  if (typeof value === 'object') {
-    return Object.keys(value as Record<string, unknown>).length === 0;
-  }
-  return false;
-}
-
-function canonicalizeIdempotentPayload(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => canonicalizeIdempotentPayload(item))
-      .filter((item) => !isCanonicalEmptyValue(item));
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([key, item]) => key !== 'idempotency_key' && item !== undefined && item !== null)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .flatMap(([key, item]) => {
-          const normalizedItem = canonicalizeIdempotentPayload(item);
-          if (isCanonicalEmptyValue(normalizedItem)) {
-            return [];
-          }
-          return [[key, normalizedItem]];
-        })
-    );
+function validateRequiredIdempotencyKey(args: Record<string, unknown>): string {
+  const value = validateOptionalIdempotencyKey(args);
+  if (!value) {
+    throw new Error('idempotency_key is required');
   }
   return value;
-}
-
-function hashIdempotentPayload(value: unknown): string {
-  return createHash('sha256')
-    .update(JSON.stringify(canonicalizeIdempotentPayload(value)))
-    .digest('hex');
-}
-
-async function executeMultipartWriteIdempotently<T>(
-  clientScope: string,
-  idempotencyKey: string | undefined,
-  requestPayload: unknown,
-  callback: () => Promise<T>
-): Promise<T> {
-  if (!idempotencyKey) {
-    return callback();
-  }
-
-  const cacheKey = `${clientScope}:${idempotencyKey}`;
-  const requestHash = hashIdempotentPayload(requestPayload);
-  const existing = multipartWriteIdempotencyCache.get(cacheKey);
-  if (existing) {
-    if (existing.requestHash !== requestHash) {
-      throw new Error('Idempotency key has already been used with a different request');
-    }
-    return existing.resultPromise as Promise<T>;
-  }
-
-  const resultPromise = callback().catch((error) => {
-    multipartWriteIdempotencyCache.delete(cacheKey);
-    throw error;
-  });
-  multipartWriteIdempotencyCache.set(cacheKey, { requestHash, resultPromise });
-  if (multipartWriteIdempotencyCache.size > MULTIPART_IDEMPOTENCY_CACHE_MAX_ENTRIES) {
-    const oldestKey = multipartWriteIdempotencyCache.keys().next().value;
-    if (oldestKey) {
-      multipartWriteIdempotencyCache.delete(oldestKey);
-    }
-  }
-  return resultPromise;
 }
 
 function parsePromptRunDuration(value: unknown, fieldName: string): number | undefined {
@@ -1726,7 +1654,7 @@ async function handleCreateGCSConnector(
   const scopes = validateConnectorScopes(args) ?? ['import'];
   const exportBasePath = args.export_base_path as string | undefined;
   const importMode = validateConnectorImportMode(args) ?? 'all';
-  const idempotencyKey = validateOptionalIdempotencyKey(args);
+  const idempotencyKey = validateRequiredIdempotencyKey(args);
 
   // Validate credentials structure - GCP service account keys require these fields
   const requiredCredentialFields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email', 'token_uri'];
@@ -1751,12 +1679,7 @@ async function handleCreateGCSConnector(
     import_mode: importMode,
   };
 
-  const connector = await executeMultipartWriteIdempotently(
-    client.getIdempotencyScope(),
-    idempotencyKey,
-    request,
-    () => client.createGCSConnector(request, idempotencyKey)
-  );
+  const connector = await client.createGCSConnector(request, idempotencyKey);
 
   return {
     content: [
@@ -1788,7 +1711,7 @@ async function handleCreateS3Connector(
   const scopes = validateConnectorScopes(args) ?? ['import'];
   const exportBasePath = args.export_base_path as string | undefined;
   const importMode = validateConnectorImportMode(args) ?? 'all';
-  const idempotencyKey = validateOptionalIdempotencyKey(args);
+  const idempotencyKey = validateRequiredIdempotencyKey(args);
 
   const connector = await client.createS3Connector(
     {
@@ -1835,7 +1758,7 @@ async function handleCreateAzureConnector(
   const scopes = validateConnectorScopes(args) ?? ['import'];
   const exportBasePath = args.export_base_path as string | undefined;
   const importMode = validateConnectorImportMode(args) ?? 'all';
-  const idempotencyKey = validateOptionalIdempotencyKey(args);
+  const idempotencyKey = validateRequiredIdempotencyKey(args);
 
   const connector = await client.createAzureConnector(
     {

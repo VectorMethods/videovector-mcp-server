@@ -318,6 +318,8 @@ describe('VideoVectorClient request encoding', () => {
     ).rejects.toMatchObject({ code: 'network_error' });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers['Idempotency-Key']).toMatch(/^connector-create-gcs:/);
   });
 
   it('does not retry multipart connector creation after a retryable server response', async () => {

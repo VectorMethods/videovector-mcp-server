@@ -714,9 +714,9 @@ export class VideoVectorClient {
   ): Promise<Connector> {
     // GCS connector uses multipart form data with file upload
     // Use a factory function to create fresh FormData for each attempt.
-    // Multipart connector creation is intentionally single-shot because backend idempotency
-    // explicitly exempts multipart/form-data requests, so retrying 5xx/transport failures can
-    // duplicate side effects even when the client never receives the original success response.
+    // The backend owns durable connector-create idempotency across every
+    // provider. A fresh FormData factory preserves the option to retry without
+    // introducing a process-local competing cache.
     const createFormData = (): FormData => {
       const formData = new FormData();
       formData.append('name', request.name);
@@ -745,9 +745,7 @@ export class VideoVectorClient {
       'POST',
       '/connectors/gcs',
       createFormData,
-      idempotencyKey
-        ? { 'Idempotency-Key': createIdempotencyKey('connector-create-gcs', idempotencyKey) }
-        : undefined
+      { 'Idempotency-Key': createIdempotencyKey('connector-create-gcs', idempotencyKey) }
     );
   }
 
@@ -978,9 +976,8 @@ export class VideoVectorClient {
 
   /**
    * Make a request with FormData body.
-   * Multipart requests intentionally do not reuse the JSON retry policy because backend
-   * idempotency excludes multipart/form-data bodies. Retrying here could duplicate connector
-   * creation after partial backend success.
+   * Multipart requests are currently single-attempt. The backend still owns
+   * the durable request identity, including response-loss recovery.
    */
   private async requestFormData<T>(
     method: string,

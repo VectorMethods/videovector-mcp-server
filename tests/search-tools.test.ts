@@ -16,17 +16,25 @@ const baseSearchResult = {
   start_time: 10,
   end_time: 20,
   text_content: 'sample',
+  metadata_text: 'sample metadata',
   similarity_score: 0.87,
+  reranked_score: 0.91,
   segment_uri: null,
+  gcs_uri: 'gs://bucket/segments/seg_1.mp4',
+  thumbnail_gcs_uri: 'gs://bucket/thumbnails/seg_1.jpg',
+  gif_gcs_uri: 'gs://bucket/gifs/seg_1.gif',
   thumbnail_uri: null,
   thumbnail_data: null,
   thumbnail_available: true,
   gif_uri: null,
   gif_data: null,
   gif_available: false,
+  media_type: 'image',
+  metadata: { summary: 'full metadata' },
   extracted_metadata: { scene: 'intro' },
   field_scores: null,
   run_id: 'run_1',
+  raw_llm_response: '{"scene":"intro"}',
   source_index_id: 'idx_1',
   marker: {
     marker_id: 'marker_1',
@@ -73,6 +81,17 @@ describe('search tool handlers', () => {
 
     const payload = parseContent(result);
     expect(payload.total_results).toBe(1);
+    expect((payload.results as Array<Record<string, unknown>>)[0]).toMatchObject({
+      gcs_uri: 'gs://bucket/segments/seg_1.mp4',
+      thumbnail_gcs_uri: 'gs://bucket/thumbnails/seg_1.jpg',
+      gif_gcs_uri: 'gs://bucket/gifs/seg_1.gif',
+      media_type: 'image',
+      metadata_text: 'sample metadata',
+      reranked_score: 0.91,
+      metadata: { summary: 'full metadata' },
+      extracted_metadata: { scene: 'intro' },
+      raw_llm_response: '{"scene":"intro"}',
+    });
     expect((payload.results as Array<Record<string, unknown>>)[0].marker).toMatchObject({
       marker_id: 'marker_1',
       color: 'green',
@@ -218,6 +237,31 @@ describe('search tool handlers', () => {
     expect(results[1].run_id).toBe('run_2');
     expect(secondSegment?.from_run_id).toBe('run_2');
     expect((payload.segment_enrichment as Record<string, unknown>).resolved_results).toBe(2);
+  });
+
+  it('search_videos preserves nullable similarity without overwriting canonical metadata', async () => {
+    const client = {
+      searchVideos: vi.fn().mockResolvedValue([
+        {
+          ...baseSearchResult,
+          similarity_score: null,
+          metadata: { summary: 'full metadata' },
+          extracted_metadata: null,
+        },
+      ]),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'search_videos',
+      { query: 'video summary', index_id: 'idx_primary' },
+      client
+    );
+    const first = (parseContent(result).results as Array<Record<string, unknown>>)[0];
+
+    expect(first.score).toBeNull();
+    expect(first.similarity_score).toBeNull();
+    expect(first.metadata).toEqual({ summary: 'full metadata' });
+    expect(first.extracted_metadata).toEqual({});
   });
 
   it('search_videos preserves video titles and field confidence payloads', async () => {
@@ -422,6 +466,7 @@ describe('search tool handlers', () => {
           matched_image_uri: null,
           matched_image_timestamp: 11.1,
           matched_image_score: 0.62,
+          shot_timestamp: 10.9,
         },
       ]),
     } as unknown as VideoVectorClient;
@@ -444,6 +489,7 @@ describe('search tool handlers', () => {
     expect(first.text_score).toBe(0);
     expect(first.image_score).toBe(0);
     expect(first.matched_image_score).toBe(0.62);
+    expect(first.shot_timestamp).toBe(10.9);
   });
 
   it('multimodal_search rejects invalid weight sums', async () => {

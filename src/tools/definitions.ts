@@ -1286,10 +1286,11 @@ After creating a connector, use test_connector to verify the connection and brow
         },
         idempotency_key: {
           type: 'string',
-          description: 'Optional idempotency key for safe retry of connector creation.',
+          minLength: 1,
+          description: 'Required stable idempotency key for safe retry of connector creation.',
         },
       },
-      required: ['name', 'bucket', 'gcp_project_id', 'credentials_json'],
+      required: ['name', 'bucket', 'gcp_project_id', 'credentials_json', 'idempotency_key'],
     },
   },
   {
@@ -1342,10 +1343,18 @@ After creating a connector, use test_connector to verify the connection and brow
         },
         idempotency_key: {
           type: 'string',
-          description: 'Optional idempotency key for safe retry of connector creation.',
+          minLength: 1,
+          description: 'Required stable idempotency key for safe retry of connector creation.',
         },
       },
-      required: ['name', 'bucket', 'region', 'aws_access_key_id', 'aws_secret_access_key'],
+      required: [
+        'name',
+        'bucket',
+        'region',
+        'aws_access_key_id',
+        'aws_secret_access_key',
+        'idempotency_key',
+      ],
     },
   },
   {
@@ -1402,10 +1411,19 @@ After creating a connector, use test_connector to verify the connection and brow
         },
         idempotency_key: {
           type: 'string',
-          description: 'Optional idempotency key for safe retry of connector creation.',
+          minLength: 1,
+          description: 'Required stable idempotency key for safe retry of connector creation.',
         },
       },
-      required: ['name', 'storage_account', 'container', 'tenant_id', 'client_id', 'client_secret'],
+      required: [
+        'name',
+        'storage_account',
+        'container',
+        'tenant_id',
+        'client_id',
+        'client_secret',
+        'idempotency_key',
+      ],
     },
   },
   {

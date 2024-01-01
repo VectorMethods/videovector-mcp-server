@@ -574,6 +574,9 @@ describe('resource tool handlers', () => {
         started_at: null,
         completed_at: null,
         segment_uri: 'gs://segments/seg_1.mp4',
+        gcs_uri: 'gs://segments/seg_1.mp4',
+        thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
+        gif_gcs_uri: 'gs://segments/seg_1.gif',
         thumbnail_uri: 'https://example.com/thumb.jpg',
         gif_uri: 'https://example.com/preview.gif',
         thumbnail_available: true,
@@ -652,6 +655,9 @@ describe('resource tool handlers', () => {
       preview_start_time: 54,
       preview_end_time: 73,
       segment_uri: 'gs://segments/seg_1.mp4',
+      gcs_uri: 'gs://segments/seg_1.mp4',
+      thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
+      gif_gcs_uri: 'gs://segments/seg_1.gif',
       thumbnail_uri: 'https://example.com/thumb.jpg',
       gif_uri: 'https://example.com/preview.gif',
     });
@@ -707,6 +713,9 @@ describe('resource tool handlers', () => {
             start_time: 54,
             end_time: 73,
             segment_uri: 'gs://segments/seg_1.mp4',
+            gcs_uri: 'gs://segments/seg_1.mp4',
+            thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
+            gif_gcs_uri: 'gs://segments/seg_1.gif',
             thumbnail_uri: 'https://example.com/thumb.jpg',
             gif_uri: 'https://example.com/preview.gif',
             thumbnail_available: true,
@@ -754,6 +763,9 @@ describe('resource tool handlers', () => {
       start_time: 54,
       end_time: 73,
       segment_uri: 'gs://segments/seg_1.mp4',
+      gcs_uri: 'gs://segments/seg_1.mp4',
+      thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
+      gif_gcs_uri: 'gs://segments/seg_1.gif',
       extracted_metadata: { summary: 'A futuristic vehicle scene.' },
       extracted_metadata_markers: {
         summary: { marker_id: 'marker-summary', color: 'green', note: null, updated_at: null },
@@ -913,6 +925,62 @@ describe('resource tool handlers', () => {
     );
   });
 
+  it('requires a caller-stable idempotency key for every connector provider', async () => {
+    const client = {
+      createGCSConnector: vi.fn(),
+      createS3Connector: vi.fn(),
+      createAzureConnector: vi.fn(),
+    } as unknown as VideoVectorClient;
+    const cases: Array<[string, Record<string, unknown>]> = [
+      [
+        'create_gcs_connector',
+        {
+          name: 'GCS',
+          bucket: 'bucket-a',
+          gcp_project_id: 'project-1',
+          credentials_json: {
+            type: 'service_account',
+            project_id: 'project-1',
+            private_key_id: 'key-1',
+            private_key: 'secret',
+            client_email: 'service@example.com',
+            token_uri: 'https://oauth2.googleapis.com/token',
+          },
+        },
+      ],
+      [
+        'create_s3_connector',
+        {
+          name: 'S3',
+          bucket: 'bucket-a',
+          region: 'us-east-1',
+          aws_access_key_id: 'A'.repeat(20),
+          aws_secret_access_key: 's'.repeat(40),
+        },
+      ],
+      [
+        'create_azure_connector',
+        {
+          name: 'Azure',
+          storage_account: 'accounta',
+          container: 'container-a',
+          tenant_id: '11111111-1111-4111-8111-111111111111',
+          client_id: '22222222-2222-4222-8222-222222222222',
+          client_secret: 'secret',
+        },
+      ],
+    ];
+
+    for (const [toolName, args] of cases) {
+      const result = await executeTool(toolName, args, client);
+      expect(result.isError).toBe(true);
+      expect(parseContent(result).message).toBe('idempotency_key is required');
+    }
+    expect((client as any).createGCSConnector).not.toHaveBeenCalled();
+    expect((client as any).createS3Connector).not.toHaveBeenCalled();
+    expect((client as any).createAzureConnector).not.toHaveBeenCalled();
+  });
+
   it('returns bounded export metadata without loading the export into MCP context', async () => {
     const client = {
       getExportStatus: vi.fn().mockResolvedValue({
@@ -938,7 +1006,7 @@ describe('resource tool handlers', () => {
     expect(String(payload.tip)).toContain('instead of loading the export into MCP context');
   });
 
-  it('deduplicates GCS connector creation retries when idempotency_key is reused', async () => {
+  it('delegates GCS connector retry replay to the durable backend boundary', async () => {
     const client = {
       getIdempotencyScope: vi.fn().mockReturnValue('scope-1'),
       createGCSConnector: vi.fn().mockResolvedValue({
@@ -990,11 +1058,13 @@ describe('resource tool handlers', () => {
       client
     );
 
-    expect((client as any).createGCSConnector).toHaveBeenCalledTimes(1);
+    expect((client as any).createGCSConnector).toHaveBeenCalledTimes(2);
+    expect((client as any).createGCSConnector.mock.calls[0][1]).toBe('gcs-dedupe-1');
+    expect((client as any).createGCSConnector.mock.calls[1][1]).toBe('gcs-dedupe-1');
     expect(parseContent(first)).toEqual(parseContent(second));
   });
 
-  it('rejects reused GCS connector idempotency keys when the request body changes', async () => {
+  it('delegates GCS connector semantic mismatch enforcement to the backend', async () => {
     const client = {
       getIdempotencyScope: vi.fn().mockReturnValue('scope-1'),
       createGCSConnector: vi.fn().mockResolvedValue({
@@ -1056,9 +1126,10 @@ describe('resource tool handlers', () => {
       client
     );
 
-    expect(result.isError).toBe(true);
-    expect(parseContent(result).message).toBe('Idempotency key has already been used with a different request');
-    expect((client as any).createGCSConnector).toHaveBeenCalledTimes(1);
+    expect(result.isError).not.toBe(true);
+    expect((client as any).createGCSConnector).toHaveBeenCalledTimes(2);
+    expect((client as any).createGCSConnector.mock.calls[1][0].bucket).toBe('bucket-b');
+    expect((client as any).createGCSConnector.mock.calls[1][1]).toBe('gcs-dedupe-2');
   });
 
   it('scopes GCS retry dedupe by client identity', async () => {

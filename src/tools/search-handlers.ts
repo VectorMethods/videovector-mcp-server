@@ -120,6 +120,11 @@ function formatSearchResult(
   videoName?: string | null
 ): Record<string, unknown> {
   const hasTiming = typeof result.start_time === 'number' && typeof result.end_time === 'number';
+  const similarityScore =
+    typeof result.similarity_score === 'number' && Number.isFinite(result.similarity_score)
+      ? result.similarity_score
+      : null;
+  const extractedMetadata = result.extracted_metadata ?? {};
   const payload: Record<string, unknown> = {
     result_type: result.result_type,
     result_id: result.result_id,
@@ -136,13 +141,15 @@ function formatSearchResult(
     preview_thumbnail_uri: result.preview_thumbnail_uri ?? null,
     preview_gif_uri: result.preview_gif_uri ?? null,
     duration: hasTiming ? Math.round(((result.end_time as number) - (result.start_time as number)) * 100) / 100 : null,
-    score: Math.round(result.similarity_score * 1000) / 1000,
-    similarity_score: result.similarity_score,
+    score: similarityScore === null ? null : Math.round(similarityScore * 1000) / 1000,
+    similarity_score: similarityScore,
     content: result.text_content,
     text_content: result.text_content,
     content_preview: result.content_preview,
-    metadata: result.extracted_metadata,
-    extracted_metadata: result.extracted_metadata,
+    metadata_text: result.metadata_text ?? null,
+    reranked_score: result.reranked_score ?? null,
+    metadata: result.metadata ?? extractedMetadata,
+    extracted_metadata: extractedMetadata,
     field_scores: result.field_scores ?? null,
     field_instance_scores: result.field_instance_scores ?? null,
     matched_field_paths: result.matched_field_paths ?? null,
@@ -153,10 +160,15 @@ function formatSearchResult(
     gif_available: result.gif_available,
     gif_uri: result.gif_uri,
     gif_data: result.gif_data,
+    media_type: result.media_type ?? null,
     segment_uri: result.segment_uri,
+    gcs_uri: result.gcs_uri,
+    thumbnail_gcs_uri: result.thumbnail_gcs_uri,
+    gif_gcs_uri: result.gif_gcs_uri,
     run_id: result.run_id,
     source_run_id: result.source_run_id ?? null,
     prompt_run_id: result.prompt_run_id ?? null,
+    raw_llm_response: result.raw_llm_response ?? null,
     source_index_id: result.source_index_id,
     marker: formatMarker(result.marker),
     extracted_metadata_markers: formatMetadataMarkers(result.extracted_metadata_markers),
@@ -208,6 +220,7 @@ function formatMultimodalResult(
     matched_image_uri: result.matched_image_uri,
     matched_image_timestamp: result.matched_image_timestamp,
     matched_image_score: matchedImageScore,
+    shot_timestamp: result.shot_timestamp ?? null,
   };
 }
 

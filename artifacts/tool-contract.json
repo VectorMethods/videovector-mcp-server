@@ -1941,14 +1941,16 @@
           },
           "idempotency_key": {
             "type": "string",
-            "description": "Optional idempotency key for safe retry of connector creation."
+            "minLength": 1,
+            "description": "Required stable idempotency key for safe retry of connector creation."
           }
         },
         "required": [
           "name",
           "bucket",
           "gcp_project_id",
-          "credentials_json"
+          "credentials_json",
+          "idempotency_key"
         ]
       },
       "annotations": {
@@ -2017,7 +2019,8 @@
           },
           "idempotency_key": {
             "type": "string",
-            "description": "Optional idempotency key for safe retry of connector creation."
+            "minLength": 1,
+            "description": "Required stable idempotency key for safe retry of connector creation."
           }
         },
         "required": [
@@ -2025,7 +2028,8 @@
           "bucket",
           "region",
           "aws_access_key_id",
-          "aws_secret_access_key"
+          "aws_secret_access_key",
+          "idempotency_key"
         ]
       },
       "annotations": {
@@ -2098,7 +2102,8 @@
           },
           "idempotency_key": {
             "type": "string",
-            "description": "Optional idempotency key for safe retry of connector creation."
+            "minLength": 1,
+            "description": "Required stable idempotency key for safe retry of connector creation."
           }
         },
         "required": [
@@ -2107,7 +2112,8 @@
           "container",
           "tenant_id",
           "client_id",
-          "client_secret"
+          "client_secret",
+          "idempotency_key"
         ]
       },
       "annotations": {
