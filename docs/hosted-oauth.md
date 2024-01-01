@@ -4,7 +4,7 @@ Connect a remote MCP client to **https://api.vectormethods.com/mcp** using
 Streamable HTTP and OAuth. The hosted service is ready for browser account
 linking; you do not need to run the npm package or paste an API key.
 This guide describes the hosted service. The runtime in this repository
-(`package.json` version `2.1.1`) supports API-key stdio and self-hosted HTTP,
+(`package.json` version `2.1.2`) supports API-key stdio and self-hosted HTTP,
 not hosted OAuth verification. See [self-hosting](self-hosting-http.md) for
 that separate runtime.
 

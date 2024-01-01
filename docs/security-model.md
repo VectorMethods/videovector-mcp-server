@@ -17,7 +17,7 @@ retry reopens the file and reuses one backend idempotency key.
 
 ## Self-hosted Streamable HTTP
 
-In this repository runtime (`package.json` version `2.1.1`), every HTTP MCP
+In this repository runtime (`package.json` version `2.1.2`), every HTTP MCP
 POST authenticates with a VideoVector API key, including initialization and
 tool discovery. OAuth authentication is not implemented by this package.
 The transport is stateless: no session identifier, API key, or server object

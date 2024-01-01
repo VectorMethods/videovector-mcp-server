@@ -1,0 +1,55 @@
+{
+  "server": {
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.VectorMethods/videovector-mcp-server",
+    "description": "Model Context Protocol server for the VectorMethods VideoVector media intelligence API.",
+    "title": "VideoVector MCP Server",
+    "version": "2.1.1",
+    "packages": [
+      {
+        "registryType": "npm",
+        "identifier": "@vectormethods/videovector-mcp-server",
+        "version": "2.1.1",
+        "transport": {
+          "type": "stdio"
+        },
+        "environmentVariables": [
+          {
+            "description": "VideoVector production API key.",
+            "isRequired": true,
+            "format": "string",
+            "isSecret": true,
+            "name": "VIDEOVECTOR_API_KEY"
+          },
+          {
+            "description": "VideoVector API base URL.",
+            "format": "string",
+            "default": "https://api.vectormethods.com/api/v2",
+            "name": "VIDEOVECTOR_BASE_URL"
+          },
+          {
+            "description": "Per-request timeout in milliseconds.",
+            "format": "number",
+            "default": "90000",
+            "name": "VIDEOVECTOR_TIMEOUT"
+          },
+          {
+            "description": "Maximum retry count for retryable API failures.",
+            "format": "number",
+            "default": "3",
+            "name": "VIDEOVECTOR_MAX_RETRIES"
+          }
+        ]
+      }
+    ]
+  },
+  "_meta": {
+    "io.modelcontextprotocol.registry/official": {
+      "status": "active",
+      "statusChangedAt": "2026-10-08T01:39:20.849448Z",
+      "publishedAt": "2026-10-08T01:39:20.849448Z",
+      "updatedAt": "2026-10-08T01:39:20.849448Z",
+      "isLatest": true
+    }
+  }
+}

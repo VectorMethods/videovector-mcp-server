@@ -184,6 +184,42 @@ def _full_bundle(root: Path) -> tuple[Path, dict[str, str]]:
 
 
 class ControllerReleaseVerifierTests(unittest.TestCase):
+    def test_actual_registry_descriptor_matches_the_strict_contract(self) -> None:
+        record = json.loads(
+            (Path(__file__).parent / "fixtures/mcp-registry-2.1.1.json").read_text()
+        )
+        actual = record["server"]
+        self.assertEqual(verifier._verify_server(actual, actual["version"]), actual)
+        descriptor = json.loads((Path(__file__).parents[1] / "server.json").read_text())
+        descriptor["version"] = actual["version"]
+        descriptor["packages"][0]["version"] = actual["version"]
+        self.assertEqual(descriptor, actual)
+
+    def test_registry_optional_fields_and_api_key_flags_remain_exact(self) -> None:
+        record = json.loads(
+            (Path(__file__).parent / "fixtures/mcp-registry-2.1.1.json").read_text()
+        )
+        for field, value in (
+            ("isRequired", True),
+            ("isSecret", True),
+            ("isSecret", False),
+            ("isRequired", "false"),
+            ("isSecret", None),
+            ("default", "different-default"),
+            ("unknownSetting", True),
+        ):
+            with self.subTest(field=field, value=value):
+                candidate = json.loads(json.dumps(record["server"]))
+                candidate["packages"][0]["environmentVariables"][1][field] = value
+                with self.assertRaises(verifier.ControllerVerificationError):
+                    verifier._verify_server(candidate, candidate["version"])
+        for field in ("isRequired", "isSecret"):
+            with self.subTest(api_key_field=field):
+                candidate = json.loads(json.dumps(record["server"]))
+                del candidate["packages"][0]["environmentVariables"][0][field]
+                with self.assertRaises(verifier.ControllerVerificationError):
+                    verifier._verify_server(candidate, candidate["version"])
+
     def test_complete_independent_bundle_verification(self) -> None:
         with tempfile.TemporaryDirectory() as raw_temp:
             bundle, identity = _full_bundle(Path(raw_temp))

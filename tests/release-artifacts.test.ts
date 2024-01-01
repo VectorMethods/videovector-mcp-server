@@ -80,24 +80,18 @@ function packageEnvironment(): Array<Record<string, boolean | string>> {
       name: 'VIDEOVECTOR_BASE_URL',
       description: 'VideoVector API base URL.',
       format: 'string',
-      isRequired: false,
-      isSecret: false,
       default: 'https://api.vectormethods.com/api/v2',
     },
     {
       name: 'VIDEOVECTOR_TIMEOUT',
       description: 'Per-request timeout in milliseconds.',
       format: 'number',
-      isRequired: false,
-      isSecret: false,
       default: '90000',
     },
     {
       name: 'VIDEOVECTOR_MAX_RETRIES',
       description: 'Maximum retry count for retryable API failures.',
       format: 'number',
-      isRequired: false,
-      isSecret: false,
       default: '3',
     },
   ];
@@ -629,6 +623,52 @@ describe('release registry verification', () => {
     expect(() =>
       verifyNpmVersion(expected, metadata, Buffer.from('different bytes'))
     ).toThrow(ReleaseArtifactError);
+  });
+
+  it('matches the actual Registry descriptor without rewriting provider metadata', () => {
+    // Captured from the official 2.1.1 Registry version after successful publication.
+    const record = JSON.parse(fs.readFileSync(
+      path.join(sourceRoot, 'tests/fixtures/mcp-registry-2.1.1.json'), 'utf8'
+    ));
+    const descriptor = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'server.json'), 'utf8'));
+    // This patch changes only the version and deletes redundant false fields.
+    descriptor.version = record.server.version;
+    descriptor.packages[0].version = record.server.version;
+    expect(mcpProjection(descriptor)).toEqual(mcpProjection(record.server));
+    expect(() => verifyMcpVersion({ server: mcpProjection(descriptor) }, record)).not.toThrow();
+    for (const variable of descriptor.packages[0].environmentVariables.slice(1)) {
+      expect(variable).not.toHaveProperty('isRequired');
+      expect(variable).not.toHaveProperty('isSecret');
+    }
+  });
+
+  it.each([
+    ['isRequired', true],
+    ['isSecret', true],
+    ['isSecret', false],
+    ['isRequired', 'false'],
+    ['isSecret', null],
+    ['default', 'different-default'],
+    ['unknownSetting', true],
+  ])('rejects noncanonical optional Registry field %s=%s', (field, value) => {
+    const record = JSON.parse(fs.readFileSync(
+      path.join(sourceRoot, 'tests/fixtures/mcp-registry-2.1.1.json'), 'utf8'
+    ));
+    const expected = { server: mcpProjection(record.server) };
+    record.server.packages[0].environmentVariables[1][field as string] = value;
+    expect(() => verifyMcpVersion(expected, record)).toThrow('MCP Registry version metadata differs');
+  });
+
+  it.each(['isRequired', 'isSecret'])('retains the API-key %s=true requirement', (field) => {
+    const record = JSON.parse(fs.readFileSync(
+      path.join(sourceRoot, 'tests/fixtures/mcp-registry-2.1.1.json'), 'utf8'
+    ));
+    const expected = { server: mcpProjection(record.server) };
+    const missing = structuredClone(record);
+    delete missing.server.packages[0].environmentVariables[0][field];
+    expect(() => verifyMcpVersion(expected, missing)).toThrow('MCP Registry version metadata differs');
+    record.server.packages[0].environmentVariables[0][field] = false;
+    expect(() => verifyMcpVersion(expected, record)).toThrow('MCP Registry version metadata differs');
   });
 
   it('compares the complete publication-owned MCP Registry projection', () => {
