@@ -4,10 +4,15 @@ Releases are orchestrated by `vectormethods-public-bot` from the private control
 repository. Do not create or push release tags from a personal workstation,
 personal GitHub account, or a manual public workflow dispatch.
 
+The active release lane publishes the npm package and its MCP Registry listing.
+The Registry entry describes a single npm stdio package. Containers are not
+release artifacts or publication targets. Docker remains available for local
+self-hosting and independent CI smoke checks.
+
 ## Normal Release
 
-1. Update `package.json`, `package-lock.json`, and `CHANGELOG.md`.
-2. Run local checks:
+1. Update `package.json`, `package-lock.json`, `server.json`, and `CHANGELOG.md`.
+2. Run the complete source checks:
 
    ```bash
    npm ci --ignore-scripts
@@ -16,150 +21,85 @@ personal GitHub account, or a manual public workflow dispatch.
    npm pack --dry-run
    ```
 
-3. Run the private `Public Repo Bot` workflow in `release` mode for this
-   repository. The tag must match `videovector-mcp-vX.Y.Z` and target public
-   `main`.
-4. The bot verifies the public graph, creates or verifies the public tag,
-   dispatches this repository's `Release` workflow on that exact annotated tag
-   with both its tag-object SHA and peeled commit SHA, waits for npm, GHCR, and
-   MCP Registry publish checks to pass, then creates the GitHub Release with
-   scanned release text and generated notes disabled.
+3. Run the private `Public Repo Bot` workflow in `release` mode. The tag must
+   match `videovector-mcp-vX.Y.Z` and target public `main`.
+4. The bot verifies the public graph and owner-approved release request, creates
+   or verifies the exact annotated tag, and creates the matching draft release.
+   It dispatches this repository's `Release` workflow with the tag-object SHA,
+   peeled commit SHA, release-body digest, operation nonce, and draft ID.
+5. The public workflow stages and attests the verified bundle, publishes npm,
+   then publishes the exact MCP Registry metadata. The private controller
+   verifies both registries, the signed assets, and the exact tag and release
+   text before finalizing the immutable GitHub Release. Generated notes remain
+   disabled.
 
 ## Immutable Release Bundle
 
-The build job creates one `mcp-release-bundle` without registry credentials.
-It has `contents: write` because recovery reads GitHub draft assets, which
-require push access. Checkout credentials are never persisted. The separate
-staging job re-verifies the exact transport and reconciles the three assets on
-the bot-owned draft GitHub Release. The bundle contains:
+The build job creates the bundle twice without registry credentials; both builds
+must be byte-for-byte identical. It contains exactly these four files:
 
-- the exact npm tarball;
-- a deterministic OCI index containing exactly `linux/amd64` and
-  `linux/arm64`;
-- the exact MCP Registry `server.json`;
+- `npm/vectormethods-videovector-mcp-server-VERSION.tgz`;
+- `mcp/server.json`;
 - `registry-metadata.json`; and
 - `release-manifest.json`.
 
-`release-manifest.json` separately binds the annotated tag-object SHA, peeled
-tag commit, source commit, exact tag/version, commit-derived
-`SOURCE_DATE_EPOCH`, release-body SHA-256, every artifact byte hash, the OCI
-index digest, both platform manifest/config digests, canonical source
-repository, registry-metadata hash, and exact tool versions. The complete
-bundle is built independently twice and must be byte-for-byte identical. Only
-the first verified bundle is retained and published. Every publication job
-downloads that bundle; it never runs `npm pack` or `docker build`.
+The schema 2.0.0 manifest binds the annotated tag object, peeled tag commit,
+source commit, exact version and source repository, commit-derived
+`SOURCE_DATE_EPOCH`, release-body SHA-256, artifact paths/sizes/hashes, registry
+metadata hash, and the exact Node 24.14.0/npm 11.15.0 build toolchain.
+`image_digest` must be null. The artifact kinds are exactly `npm-tarball` and
+`mcp-registry-metadata`; extra container descriptors or registry fields are
+rejected. The independent Python verifier streams the npm archive without
+executing its contents and enforces the same closed inventory and identities.
 
-The guard requires `expected_tag_object_sha` and `expected_target_sha` to be
-full lowercase SHAs, rejects lightweight tags, and requires the tag object,
-peeled tag commit, checkout, and workflow event to match the bot request. It
-intentionally does not compare the release tag to moving public `main`: an
-interrupted publication remains resumable from the immutable tag after newer
-changes reach `main`.
+The standalone `server.json` must match the npm package's embedded metadata.
+It contains exactly one npm package with its version, stdio transport, and four
+canonical environment settings, including the required secret-marked
+`VIDEOVECTOR_API_KEY`. The separately deployed hosted OAuth service is documented
+in [Hosted OAuth](./hosted-oauth.md); this package listing describes the npm
+runtime.
 
-Before a write, the workflow classifies the target version as either missing or
-an exact replay:
+The guard rejects lightweight tags and requires the annotated object, peeled
+commit, checkout, workflow event, and request to agree. It does not compare the
+immutable tag with moving public `main`, so an interrupted release can resume
+after later commits reach `main`.
 
-- npm requires a non-deprecated version with identical tarball bytes, package
-  identity, executable map, and engine metadata;
-- GHCR requires the exact OCI index, both platform manifests/configs, and
-  provenance labels; and
-- MCP Registry queries with `include_deleted=true` and requires the exact
+## Staging, Publication, and Recovery
+
+The build job has `contents: write` because recovery reads private draft assets.
+The separate staging job re-verifies the archive and reconciles exactly three
+bot-owned GitHub Release assets: `release-bundle.zip`, `release-manifest.json`,
+and `registry-metadata.json`. Their exact digests receive GitHub provenance
+attestations. Checkout credentials are never persisted. Publishers materialize
+the local Actions artifact and retain read-only repository access.
+
+Before each registry mutation, the publisher checks authoritative state:
+
+- npm must be absent or an exact non-deprecated version with identical tarball
+  bytes, package identity, executable map, and engine metadata.
+- MCP Registry reads include deleted versions and require the exact
   publication-owned metadata in the `active` lifecycle state.
 
-The three registries use one publication state machine. It checks authoritative
-state before any mutation, dispatches a mutation at most once, and then settles
-the exact read-after-write state. A timeout after a committed write is therefore
-an exact replay, never a second publish. npm initially publishes under a
-version-derived temporary tag, monotonically advances `latest` (or `next` for a
-prerelease), confirms the tag readback, and removes the temporary tag. Older
-resume runs never regress a newer dist-tag.
+Conflicting, deprecated, deleted, or unavailable initial state fails closed.
+Each mutation occurs at most once, followed by bounded read-only settlement.
+A lost response after a committed write is reconciled from the authoritative
+state. npm first uses a version-specific temporary dist-tag, monotonically
+advances `latest` or prerelease `next`, confirms readback, and removes the
+temporary tag. Resuming an older version cannot regress a newer dist-tag.
 
-Release verification also requires the OCI config to default to stdio and both
-Registry package entries to carry the same canonical, secret-marked
-`VIDEOVECTOR_API_KEY` input. The Registry metadata describes these distributable
-stdio packages. The
-separately deployed hosted OAuth service is documented in
-[Hosted OAuth](./hosted-oauth.md); it is not added to this package release metadata.
+The package-wide workflow lock serializes releases. MCP Registry publication
+runs only after npm succeeds. Every publisher verifies the exact bundle before
+authentication or publisher installation. A resumed workflow retrieves the exact
+draft release ID, asset ID, and SHA-256, then reruns source verification, the
+dependency audit, independent semantic checks, and the npm stdio smoke. The
+smoke compares the published server version and full tool list against the
+committed contract, including the stdio-only upload tool.
 
-An existing mismatch, deprecated/deleted version, or unavailable registry fails
-closed. GHCR absence is accepted only when Skopeo returns a known missing
-manifest response and a bounded, complete GitHub Packages census also confirms
-the tag is absent. A failed publication can be resumed without rebuilding. A
-resumed workflow downloads the exact digest-bound draft asset, but still reruns
-the complete source suite, dependency audit, independent controller-grade
-semantic verifier, and npm/OCI runtime smokes. Exact targets are reconciled and
-only confirmed-missing targets consume the tested bundle. The MCP `server.json`
-names the immutable OCI index digest rather than the mutable version tag. The
-normal GHCR publisher requires the exact organization package to already exist
-as public before registry authentication; the separately approved one-time
-bootstrap below is the only creation exception. Every path proves anonymous
-readability of the exact multi-platform digest.
-
-The workflow is serialized across the entire package, not per release tag.
-Bundle verification runs before registry authentication, registry mutation,
-or MCP publisher installation. The checksum-pinned npm toolchain is installed
-before locked dependencies in every job, but cannot authenticate until the
-publisher job receives its GitHub OIDC identity. Build and manifest tooling
-remain pinned to npm 11.15.0; after bundle verification, the npm publisher
-installs checksum-pinned npm 11.21.0 for OIDC publication and dist-tag updates.
-npm publication fails if any static token surface is present. npm and MCP publisher downloads are
-checksum-pinned, while QEMU/binfmt, Skopeo, BuildKit, Buildx, Node, and every
-GitHub Action are immutable-version pinned.
-
-The private bot must verify the same tag-object SHA, peeled commit SHA, and
-release-body hash, attach the two manifest files to the GitHub Release, and
-treat an existing release as successful only when its tag, body, and attached
-manifest bytes match. Only build/recovery and draft-staging receive
-`contents: write`; the guard and
-registry publishers retain read-only repository access. Publisher materialization
-uses the downloaded Actions artifact and does not read private draft assets.
-The npm and OCI stdio smokes compare their server version and complete tool names
-with the generated contract, including the stdio-only upload tool.
-
-## One-time GHCR Public-package Bootstrap
-
-Normal releases never create or change package visibility. They continue to
-require `ghcr.io/vectormethods/videovector-mcp-server` to exist under the exact
-VectorMethods organization identity with public visibility before registry
-authentication. This fail-closed rule prevents an ordinary release from
-silently publishing a private or mis-owned image.
-
-The first publication has one explicit convergence path. Configure the
-`ghcr-public-bootstrap` GitHub environment with:
-
-- required-reviewer approval and administrator bypass disabled;
-- a deployment tag allowlist limited to `videovector-mcp-v*`; and
-- no environment secrets.
-
-After the protected control-plane bot has verified the exact annotated tag,
-source SHA, release bundle, and provenance, an owner may approve that exact
-source/digest operation. The bot then dispatches the normal release workflow
-with the explicit `bootstrap_ghcr_public` input set to `true`. The guarded
-bundle supplies the immutable lowercase `sha256:` OCI index digest. The
-default `false` input is the normal release mode and does not enter the
-protected bootstrap environment.
-
-The bootstrap job independently materializes and verifies the immutable bundle
-before registry authentication. Its token is the ephemeral workflow token
-scoped only to `contents: read` and `packages: write`; it has no deployment,
-repository-write, or npm credential. Before the push, it proves through the
-GitHub API that the publishing repository is exactly the public
-`VectorMethods/videovector-mcp-server` repository. GitHub links a package
-created by that workflow token to the publishing repository and applies the
-public repository's inherited visibility. The job reconciles the exact
-multi-platform digest once, requires that exact inherited public package
-identity, and then reads the complete OCI index anonymously and re-verifies
-every digest and label. A push response may be lost: the mutation is dispatched
-at most once and completion is settled from authoritative readback. Re-running
-the same approved operation is therefore an exact replay. A pre-existing
-private package is never modified or overwritten by this path. A different
-digest, owner, package, source repository, media shape, tag state, or
-non-public visibility fails closed.
-
-Once the package is public, leave `bootstrap_ghcr_public` set to `false`.
-The normal GHCR publisher immediately follows the bootstrap job and applies its
-unchanged public-package preflight, so the exceptional path cannot weaken later
-releases.
+Node, npm, the MCP publisher, and GitHub Actions are pinned. Build and manifest
+tooling use npm 11.15.0. After bundle verification, the npm publisher installs
+checksum-pinned npm 11.21.0 for GitHub OIDC publication with provenance and
+OIDC dist-tag updates. Static npm tokens are rejected. The MCP publisher uses
+GitHub OIDC in an isolated temporary home that is removed after publication.
 
 ## npm Trusted Publisher Prerequisite
 

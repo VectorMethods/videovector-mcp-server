@@ -314,153 +314,83 @@ class ReleaseDraftStagingTests(unittest.TestCase):
         workflow = (
             Path(__file__).parents[1] / ".github" / "workflows" / "release.yml"
         ).read_text(encoding="utf-8")
-
         for name in (
             "draft_release_id",
             "bundle_source_release_id",
             "bundle_source_asset_id",
             "bundle_source_sha256",
-            "bootstrap_ghcr_public",
         ):
             self.assertIn(f"      {name}:", workflow)
-        self.assertIn(
-            "DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}",
-            workflow,
-        )
-        self.assertIn(
-            '--bundle-source-release-id "$BUNDLE_SOURCE_RELEASE_ID"',
-            workflow,
-        )
-        self.assertIn(
-            '--bundle-source-asset-id "$BUNDLE_SOURCE_ASSET_ID"',
-            workflow,
-        )
-        self.assertIn(
-            '--bundle-source-sha256 "$BUNDLE_SOURCE_SHA256"',
-            workflow,
-        )
+        for retired in (
+            "bootstrap_ghcr_public",
+            "publish-ghcr",
+            "packages: write",
+            "docker login",
+        ):
+            self.assertNotIn(retired, workflow)
+        for variable in ("RELEASE_ID", "ASSET_ID", "SHA256"):
+            flag = variable.lower().replace("_", "-")
+            self.assertIn(
+                f'--bundle-source-{flag} "$BUNDLE_SOURCE_{variable}"', workflow
+            )
         self.assertEqual(
-            workflow.count("if: ${{ needs.guard.outputs.resume != 'true' }}"),
-            4,
+            workflow.count("if: ${{ needs.guard.outputs.resume != 'true' }}"), 2
         )
         self.assertIn("if: ${{ needs.guard.outputs.resume == 'true' }}", workflow)
-        self.assertIn("path: release-transport/", workflow)
-        self.assertEqual(
-            workflow.count("release_draft_staging.py materialize"),
-            4,
-        )
+        self.assertEqual(workflow.count("release_draft_staging.py materialize"), 2)
         self.assertLess(
             workflow.index("Archive and independently verify the fresh bundle"),
             workflow.index("Upload immutable release bundle"),
         )
-        self.assertGreaterEqual(workflow.count("      - build"), 3)
-        self.assertGreaterEqual(workflow.count("      - stage-draft"), 3)
-        build_job = workflow[
-            workflow.index("  build:") : workflow.index("  stage-draft:")
-        ]
-        stage_job = workflow[
+        build = workflow[workflow.index("  build:") : workflow.index("  stage-draft:")]
+        stage = workflow[
             workflow.index("  stage-draft:") : workflow.index("  publish-npm:")
         ]
-        npm_job = workflow[
-            workflow.index("  publish-npm:") : workflow.index(
-                "  bootstrap-ghcr-public:"
-            )
+        npm = workflow[
+            workflow.index("  publish-npm:") : workflow.index("  publish-mcp-registry:")
         ]
-        bootstrap_job = workflow[
-            workflow.index("  bootstrap-ghcr-public:") : workflow.index(
-                "  publish-ghcr:"
-            )
-        ]
-        ghcr_job = workflow[
-            workflow.index("  publish-ghcr:") : workflow.index(
-                "  publish-mcp-registry:"
-            )
-        ]
-        mcp_job = workflow[workflow.index("  publish-mcp-registry:") :]
-        # Recovering a bundle reads private draft assets. GitHub requires push
-        # access even though the recovery operation itself is read-only.
-        self.assertIn("contents: write", build_job)
-        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", build_job)
-        self.assertIn("release_draft_staging.py prepare", build_job)
-        self.assertIn("contents: write", stage_job)
+        mcp = workflow[workflow.index("  publish-mcp-registry:") :]
+        guard = workflow[workflow.index("  guard:") : workflow.index("  build:")]
+        self.assertIn("contents: write", build)
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", build)
+        self.assertIn("release_draft_staging.py prepare", build)
+        self.assertIn("contents: write", stage)
         self.assertEqual(workflow.count("contents: write"), 2)
-        guard_job = workflow[workflow.index("  guard:") : workflow.index("  build:")]
-        self.assertNotIn("contents: write", guard_job)
-        self.assertNotIn("GITHUB_TOKEN:", guard_job)
-        for publisher in (npm_job, bootstrap_job, ghcr_job, mcp_job):
+        self.assertNotIn("contents: write", guard)
+        self.assertNotIn("GITHUB_TOKEN:", guard)
+        for publisher in (npm, mcp):
             self.assertNotIn("contents: write", publisher)
+            self.assertIn("id-token: write", publisher)
             self.assertIn("release_draft_staging.py materialize", publisher)
             self.assertNotIn("--bundle-source-release-id", publisher)
-        self.assertNotIn("id-token: write", build_job)
-        self.assertNotIn("packages: write", build_job)
-        self.assertNotIn("secrets.", build_job)
-        self.assertEqual(workflow.count("persist-credentials: false"), 7)
-        self.assertIn("release_draft_staging.py stage", stage_job)
-        self.assertNotIn("release_draft_staging.py stage", build_job)
-        self.assertNotIn("NPM_BOOTSTRAP_TOKEN", workflow)
-        self.assertIn("docker/setup-qemu-action@", build_job)
-        self.assertIn("tonistiigi/binfmt:qemu-v10.0.4@sha256:", build_job)
-        self.assertIn("    needs: guard", build_job)
-        for dependency in ("      - guard", "      - build"):
-            self.assertIn(dependency, stage_job)
-        for publisher in (npm_job, bootstrap_job, ghcr_job):
+            self.assertNotIn("if: ${{ needs.guard.outputs.resume", publisher)
             for dependency in ("      - guard", "      - build", "      - stage-draft"):
                 self.assertIn(dependency, publisher)
-        self.assertIn("      - bootstrap-ghcr-public", ghcr_job)
-        for dependency in (
-            "      - guard",
-            "      - build",
-            "      - stage-draft",
-            "      - publish-npm",
-            "      - publish-ghcr",
+        self.assertIn("      - publish-npm", mcp)
+        self.assertNotIn("id-token: write", build)
+        self.assertNotIn("secrets.", build)
+        self.assertNotIn("NPM_BOOTSTRAP_TOKEN", workflow)
+        self.assertEqual(workflow.count("persist-credentials: false"), 5)
+        self.assertIn("release_draft_staging.py stage", stage)
+        self.assertNotIn("release_draft_staging.py stage", build)
+        self.assertIn("    needs: guard", build)
+        for dependency in ("      - guard", "      - build"):
+            self.assertIn(dependency, stage)
+        for job, timeout in (
+            (guard, 5),
+            (build, 35),
+            (stage, 10),
+            (npm, 40),
+            (mcp, 10),
         ):
-            self.assertIn(dependency, mcp_job)
-
-        job_timeouts = {
-            "guard": (
-                workflow[workflow.index("  guard:") : workflow.index("  build:")],
-                5,
-            ),
-            "build": (build_job, 35),
-            "stage-draft": (stage_job, 10),
-            "publish-npm": (npm_job, 40),
-            "bootstrap-ghcr-public": (bootstrap_job, 15),
-            "publish-ghcr": (ghcr_job, 15),
-            "publish-mcp-registry": (mcp_job, 10),
-        }
-        for name, (job, timeout) in job_timeouts.items():
-            self.assertIn(
-                f"    timeout-minutes: {timeout}",
-                job,
-                f"{name} must retain its bounded timeout",
-            )
-        critical_path_minutes = 5 + 35 + 10 + max(40, 15 + 15) + 10
-        self.assertEqual(critical_path_minutes, 100)
-        self.assertLess(critical_path_minutes, 120)
-
-        self.assertEqual(workflow.count('python-version: "3.11.13"'), 6)
-        self.assertEqual(
-            workflow.count("docker/setup-docker-action@"),
-            3,
-        )
-        self.assertIn("environment:", bootstrap_job)
-        self.assertIn("name: ghcr-public-bootstrap", bootstrap_job)
-        self.assertIn("preflight-bootstrap-ghcr", bootstrap_job)
-        self.assertLess(
-            bootstrap_job.index("preflight-bootstrap-ghcr"),
-            bootstrap_job.index("docker login ghcr.io"),
-        )
-        self.assertIn("if: ${{ inputs.bootstrap_ghcr_public }}", bootstrap_job)
-        self.assertNotIn("contents: write", bootstrap_job)
-        self.assertIn("packages: write", bootstrap_job)
-        self.assertIn("preflight-ghcr", ghcr_job)
-        self.assertLess(
-            ghcr_job.index("preflight-ghcr"),
-            ghcr_job.index("docker login ghcr.io"),
-        )
-        self.assertNotIn("if: ${{ needs.guard.outputs.resume", npm_job)
-        self.assertNotIn("if: ${{ needs.guard.outputs.resume", ghcr_job)
-        self.assertNotIn("if: ${{ needs.guard.outputs.resume", mcp_job)
+            self.assertIn(f"    timeout-minutes: {timeout}", job)
+        self.assertLess(5 + 35 + 10 + 40 + 10, 120)
+        self.assertEqual(workflow.count('python-version: "3.11.13"'), 4)
+        self.assertNotIn("docker/setup-", workflow)
+        self.assertIn("Attest the exact staged release assets", stage)
+        self.assertIn("release-transport/release-bundle.zip", stage)
+        self.assertIn("release-transport/release-manifest.json", stage)
+        self.assertIn("release-transport/registry-metadata.json", stage)
 
     def test_materialize_verifies_the_inner_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as raw_temp:

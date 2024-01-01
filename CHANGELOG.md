@@ -9,8 +9,9 @@
 - Replaced stateful HTTP sessions with independent authenticated requests,
   bounded API-key validation, and safe idempotent retries.
 - Aligned publication with the company release controller: immutable annotated
-  tags, verified resumable draft bundles, reproducible npm/OCI artifacts,
-  npm provenance, and explicit secret-marked MCP Registry credential inputs.
+  tags, verified resumable draft bundles, reproducible npm artifacts,
+  npm provenance, and npm-only MCP Registry metadata with explicit
+  secret-marked credential inputs.
   The build uses pinned Node 24 and npm 11; the npm runtime requirement remains
   Node 18 or newer.
 - Added the simplified `upload_media`, `define_prompt`, `process_media`, and

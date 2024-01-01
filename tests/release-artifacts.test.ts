@@ -12,10 +12,10 @@ import {
   ReleaseArtifactError,
   mcpProjection,
   npmExpected,
+  prepareNpmExecutable,
   stableJson,
   validateProjectMetadata,
   verifyBundle,
-  verifyImageArchive,
   verifyMcpVersion,
   verifyNpmVersion,
 } from '../scripts/release-artifacts.mjs';
@@ -36,6 +36,35 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { force: true, recursive: true });
   }
+});
+
+describe('npm executable preparation', () => {
+  it('preserves clean TypeScript output bytes while adding the packaged CLI mode', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-npm-executable.'));
+    temporaryDirectories.push(root);
+    fs.mkdirSync(path.join(root, 'dist'));
+    const executable = path.join(root, 'dist', 'index.js');
+    const bytes = Buffer.from('#!/usr/bin/env node\nconsole.log("ready");\n');
+    fs.writeFileSync(executable, bytes, { mode: 0o644 });
+    expect(fs.statSync(executable).mode & 0o777).toBe(0o644);
+
+    prepareNpmExecutable(root);
+
+    expect(fs.readFileSync(executable)).toEqual(bytes);
+    expect(fs.statSync(executable).mode & 0o777).toBe(0o755);
+  });
+
+  it('rejects a linked executable without changing the link target mode', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-npm-executable.'));
+    temporaryDirectories.push(root);
+    fs.mkdirSync(path.join(root, 'dist'));
+    const target = path.join(root, 'other.js');
+    fs.writeFileSync(target, '#!/usr/bin/env node\n', { mode: 0o644 });
+    fs.symlinkSync(target, path.join(root, 'dist', 'index.js'));
+
+    expect(() => prepareNpmExecutable(root)).toThrow('must be a regular file');
+    expect(fs.statSync(target).mode & 0o777).toBe(0o644);
+  });
 });
 
 function packageEnvironment(): Array<Record<string, boolean | string>> {
@@ -78,12 +107,9 @@ function fakeBundle(): string {
   const bundle = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-release-test.'));
   temporaryDirectories.push(bundle);
   const npmDirectory = path.join(bundle, 'npm');
-  const imageDirectory = path.join(bundle, 'image');
   const mcpDirectory = path.join(bundle, 'mcp');
   fs.mkdirSync(npmDirectory);
-  fs.mkdirSync(imageDirectory);
   fs.mkdirSync(mcpDirectory);
-
   const packageJson = {
     name: '@vectormethods/videovector-mcp-server',
     version: '2.0.2',
@@ -92,169 +118,35 @@ function fakeBundle(): string {
     engines: { node: '>=18.0.0' },
     packageManager: 'npm@11.15.0',
   };
-  const tarball = path.join(
-    npmDirectory,
-    'vectormethods-videovector-mcp-server-2.0.2.tgz'
-  );
-  const npmLayout = path.join(bundle, 'npm-layout');
-  fs.mkdirSync(path.join(npmLayout, 'package'), { recursive: true });
-  fs.writeFileSync(
-    path.join(npmLayout, 'package/package.json'),
-    stableJson(packageJson)
-  );
-  fs.writeFileSync(path.join(npmLayout, 'package/index.js'), '');
-  const npmTar = spawnSync(
-    'tar',
-    ['-czf', tarball, '-C', npmLayout, 'package'],
-    { encoding: 'utf8' }
-  );
-  if (npmTar.status !== 0) {
-    throw new Error(npmTar.stderr);
-  }
-  fs.rmSync(npmLayout, { force: true, recursive: true });
   const server = {
-    $schema:
-      'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json',
-    name: 'io.github.VectorMethods/videovector-mcp-server',
+    $schema: 'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json',
+    name: packageJson.mcpName,
     title: 'VideoVector MCP Server',
     description: 'Description.',
-    version: '2.0.2',
-    packages: [
-      {
-        registryType: 'npm',
-        identifier: '@vectormethods/videovector-mcp-server',
-        version: '2.0.2',
-        environmentVariables: packageEnvironment(),
-        transport: { type: 'stdio' },
-      },
-      {
-        registryType: 'oci',
-        identifier: 'ghcr.io/vectormethods/videovector-mcp-server:2.0.2',
-        environmentVariables: packageEnvironment(),
-        transport: { type: 'stdio' },
-      },
-    ],
+    version: packageJson.version,
+    packages: [{
+      registryType: 'npm',
+      identifier: packageJson.name,
+      version: packageJson.version,
+      environmentVariables: packageEnvironment(),
+      transport: { type: 'stdio' },
+    }],
   };
-  const labels = {
-    'io.modelcontextprotocol.server.name':
-      'io.github.VectorMethods/videovector-mcp-server',
-    'org.opencontainers.image.revision': 'a'.repeat(40),
-    'org.opencontainers.image.source':
-      'https://github.com/VectorMethods/videovector-mcp-server',
-    'org.opencontainers.image.version': '2.0.2',
-  };
-  const layout = path.join(bundle, 'oci-layout-source');
-  fs.mkdirSync(path.join(layout, 'blobs', 'sha256'), { recursive: true });
-  const platforms = ['amd64', 'arm64'].map((architecture) => {
-    const config = Buffer.from(stableJson({
-      architecture,
-      os: 'linux',
-      config: {
-        Cmd: ['node', 'dist/index.js'],
-        Entrypoint: [],
-        Env: [
-          'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-          'NODE_VERSION=24.14.0',
-          'YARN_VERSION=1.22.22',
-          'NODE_ENV=production',
-          'PORT=8080',
-          'MCP_TRANSPORT_MODE=stdio',
-        ],
-        Labels: labels,
-        User: 'node',
-        WorkingDir: '/app',
-      },
-    }));
-    const configDigest = sha256(config);
-    fs.writeFileSync(path.join(layout, 'blobs', 'sha256', configDigest), config);
-    const imageManifest = Buffer.from(
-      stableJson({
-        schemaVersion: 2,
-        mediaType: 'application/vnd.oci.image.manifest.v1+json',
-        config: {
-          mediaType: 'application/vnd.oci.image.config.v1+json',
-          digest: `sha256:${configDigest}`,
-          size: config.length,
-        },
-        layers: [],
-      })
-    );
-    const manifestDigest = sha256(imageManifest);
-    fs.writeFileSync(
-      path.join(layout, 'blobs', 'sha256', manifestDigest),
-      imageManifest
-    );
-    return {
-      architecture,
-      configDigest: `sha256:${configDigest}`,
-      manifest: {
-        mediaType: 'application/vnd.oci.image.manifest.v1+json',
-        digest: `sha256:${manifestDigest}`,
-        size: imageManifest.length,
-        platform: { architecture, os: 'linux' },
-      },
-    };
-  });
-  const imageIndex = Buffer.from(stableJson({
-    schemaVersion: 2,
-    mediaType: 'application/vnd.oci.image.index.v1+json',
-    manifests: platforms.map(({ manifest }) => manifest),
-  }));
-  const imageDigest = sha256(imageIndex);
-  fs.writeFileSync(path.join(layout, 'blobs', 'sha256', imageDigest), imageIndex);
-  fs.writeFileSync(
-    path.join(layout, 'index.json'),
-    stableJson({
-      schemaVersion: 2,
-      manifests: [
-        {
-          mediaType: 'application/vnd.oci.image.index.v1+json',
-          digest: `sha256:${imageDigest}`,
-          size: imageIndex.length,
-        },
-      ],
-    })
-  );
-  fs.writeFileSync(
-    path.join(layout, 'oci-layout'),
-    stableJson({ imageLayoutVersion: '1.0.0' })
-  );
-  const imageArchive = path.join(imageDirectory, 'videovector-mcp-server.oci.tar');
-  const tar = spawnSync(
-    'tar',
-    ['-cf', imageArchive, '-C', layout, 'index.json', 'oci-layout', 'blobs'],
-    { encoding: 'utf8' }
-  );
-  if (tar.status !== 0) {
-    throw new Error(tar.stderr);
-  }
-  fs.rmSync(layout, { force: true, recursive: true });
-
-  server.packages[1].identifier =
-    `ghcr.io/vectormethods/videovector-mcp-server@sha256:${imageDigest}`;
+  const tarball = path.join(npmDirectory, 'vectormethods-videovector-mcp-server-2.0.2.tgz');
+  const npmLayout = path.join(bundle, 'npm-layout');
+  fs.mkdirSync(path.join(npmLayout, 'package/dist'), { recursive: true });
+  fs.writeFileSync(path.join(npmLayout, 'package/package.json'), stableJson(packageJson));
+  fs.writeFileSync(path.join(npmLayout, 'package/server.json'), stableJson(server));
+  fs.writeFileSync(path.join(npmLayout, 'package/dist/index.js'), '#!/usr/bin/env node\n');
+  fs.chmodSync(path.join(npmLayout, 'package/dist/index.js'), 0o755);
+  const npmTar = spawnSync('tar', ['-czf', tarball, '-C', npmLayout, 'package'], { encoding: 'utf8' });
+  if (npmTar.status !== 0) throw new Error(npmTar.stderr);
+  fs.rmSync(npmLayout, { force: true, recursive: true });
   const serverPath = path.join(mcpDirectory, 'server.json');
   fs.writeFileSync(serverPath, stableJson(server));
-
   const registryMetadata = {
     schema_version: '2.0.0',
-    npm: npmExpected({
-      packageJson,
-      tarball,
-      tarballBytes: fs.readFileSync(tarball),
-    }),
-    ghcr: {
-      image: 'ghcr.io/vectormethods/videovector-mcp-server',
-      tag: '2.0.2',
-      digest: `sha256:${imageDigest}`,
-      media_type: 'application/vnd.oci.image.index.v1+json',
-      platforms: platforms.map((platform) => ({
-        architecture: platform.architecture,
-        config_digest: platform.configDigest,
-        manifest_digest: platform.manifest.digest,
-        os: 'linux',
-      })),
-      labels,
-    },
+    npm: npmExpected({ packageJson, tarball, tarballBytes: fs.readFileSync(tarball) }),
     mcp_registry: {
       server: mcpProjection(server),
       server_json_sha256: sha256(fs.readFileSync(serverPath)),
@@ -263,47 +155,27 @@ function fakeBundle(): string {
   const registryPath = path.join(bundle, 'registry-metadata.json');
   fs.writeFileSync(registryPath, stableJson(registryMetadata));
   const descriptor = (target: string, artifactPath: string, kind: string) => ({
-    kind,
-    path: artifactPath,
-    sha256: sha256(fs.readFileSync(target)),
-    size: fs.statSync(target).size,
+    kind, path: artifactPath, sha256: sha256(fs.readFileSync(target)), size: fs.statSync(target).size,
   });
-  fs.writeFileSync(
-    path.join(bundle, 'release-manifest.json'),
-    stableJson({
-      schema_version: '2.0.0',
-      package: { name: packageJson.name, version: packageJson.version },
-      repository: 'VectorMethods/videovector-mcp-server',
-      source_sha: 'a'.repeat(40),
-      tag: 'videovector-mcp-v2.0.2',
-      tag_object_sha: 'c'.repeat(40),
-      tag_commit_sha: 'a'.repeat(40),
-      source_date_epoch: 1_700_000_000,
-      release_body_sha256: 'b'.repeat(64),
-      artifacts: [
-        descriptor(
-          tarball,
-          `npm/${path.basename(tarball)}`,
-          'npm-tarball'
-        ),
-        descriptor(
-          imageArchive,
-          'image/videovector-mcp-server.oci.tar',
-          'oci-image'
-        ),
-        descriptor(serverPath, 'mcp/server.json', 'mcp-registry-metadata'),
-      ],
-      image_digest: `sha256:${imageDigest}`,
-      registry_metadata_path: 'registry-metadata.json',
-      registry_metadata_sha256: sha256(fs.readFileSync(registryPath)),
-      tool_versions: {
-        node: '24.14.0',
-        npm: '11.15.0',
-        docker: '29.1.3',
-        docker_buildx: '0.28.0',
-      },
-    })
-  );
+  fs.writeFileSync(path.join(bundle, 'release-manifest.json'), stableJson({
+    schema_version: '2.0.0',
+    package: { name: packageJson.name, version: packageJson.version },
+    repository: 'VectorMethods/videovector-mcp-server',
+    source_sha: 'a'.repeat(40),
+    tag: 'videovector-mcp-v2.0.2',
+    tag_object_sha: 'c'.repeat(40),
+    tag_commit_sha: 'a'.repeat(40),
+    source_date_epoch: 1_700_000_000,
+    release_body_sha256: 'b'.repeat(64),
+    artifacts: [
+      descriptor(tarball, `npm/${path.basename(tarball)}`, 'npm-tarball'),
+      descriptor(serverPath, 'mcp/server.json', 'mcp-registry-metadata'),
+    ],
+    image_digest: null,
+    registry_metadata_path: 'registry-metadata.json',
+    registry_metadata_sha256: sha256(fs.readFileSync(registryPath)),
+    tool_versions: { node: '24.14.0', npm: '11.15.0' },
+  }));
   return bundle;
 }
 
@@ -397,7 +269,7 @@ function runReleaseGuard(
 }
 
 describe('release registry verification', () => {
-  it('binds package metadata and the OCI image default to stdio', () => {
+  it('binds npm metadata and the independently tested Docker default to stdio', () => {
     const packageJson = JSON.parse(
       fs.readFileSync(path.join(sourceRoot, 'package.json'), 'utf8')
     );
@@ -431,9 +303,9 @@ describe('release registry verification', () => {
       fs.readFileSync(path.join(sourceRoot, 'server.json'), 'utf8')
     );
     const missingCredential = structuredClone(serverJson);
-    missingCredential.packages[1].environmentVariables = [];
+    missingCredential.packages[0].environmentVariables = [];
     expect(() => validateProjectMetadata(packageJson, missingCredential)).toThrow(
-      'server.json OCI environment metadata is inconsistent'
+      'server.json npm environment metadata is inconsistent'
     );
 
     const unauthenticatedRemote = structuredClone(serverJson);
@@ -541,11 +413,11 @@ describe('release registry verification', () => {
     ).toHaveLength(1);
     expect(
       workflow.match(/ref: \$\{\{ needs\.guard\.outputs\.source_sha \}\}/g)
-    ).toHaveLength(6);
-    expect(workflow.match(/npm ci --ignore-scripts/g)).toHaveLength(7);
+    ).toHaveLength(4);
+    expect(workflow.match(/npm ci --ignore-scripts/g)).toHaveLength(5);
     expect(
       workflow.match(/bash scripts\/install_pinned_npm\.sh/g)
-    ).toHaveLength(8);
+    ).toHaveLength(6);
     expect(workflow).toMatch(
       /expected_target_sha:\s+description: "Exact commit SHA peeled from the immutable bot-created release tag"\s+required: true\s+type: string/
     );
@@ -577,8 +449,8 @@ describe('release registry verification', () => {
     expect(workflow).toContain('node-version: "24.14.0"');
     expect(workflow).not.toContain('node-version: "20.');
     expect(workflow).toContain('python-version: "3.11.13"');
-    expect(workflow).toContain('docker/setup-qemu-action@');
-    expect(workflow).toContain('tonistiigi/binfmt:qemu-v10.0.4@sha256:');
+    expect(workflow).not.toContain('docker/setup-qemu-action@');
+    expect(workflow).not.toContain('tonistiigi/binfmt');
     expect(workflow).not.toContain('NPM_BOOTSTRAP_TOKEN');
   });
 
@@ -642,28 +514,6 @@ describe('release registry verification', () => {
     expect(result.stderr).toContain(
       'operation_nonce must be a lowercase SHA-256 digest'
     );
-  });
-
-  it.each(['TRUE', '1', 'yes'])(
-    'rejects malformed GHCR bootstrap mode %s',
-    (mode) => {
-    const { environment, root } = releaseGuardFixture();
-    environment.BOOTSTRAP_GHCR_PUBLIC = mode;
-
-    const result = runReleaseGuard(root, environment);
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(
-      'bootstrap_ghcr_public must be an exact boolean'
-    );
-    }
-  );
-
-  it('accepts only the explicit true GHCR bootstrap mode', () => {
-    const { environment, root } = releaseGuardFixture();
-    environment.BOOTSTRAP_GHCR_PUBLIC = 'true';
-
-    expect(runReleaseGuard(root, environment).status).toBe(0);
   });
 
   it.each([
@@ -794,11 +644,6 @@ describe('release registry verification', () => {
           version: '2.0.2',
           transport: { type: 'stdio' },
         },
-        {
-          registryType: 'oci',
-          identifier: 'ghcr.io/vectormethods/videovector-mcp-server:2.0.2',
-          transport: { type: 'stdio' },
-        },
       ],
     };
     const expected = { server: mcpProjection(server) };
@@ -824,45 +669,43 @@ describe('release registry verification', () => {
     ).toThrow(ReleaseArtifactError);
   });
 
-  it('accepts a GHCR version only at every attested platform descriptor', () => {
-    const bundle = fakeBundle();
-    const expected = JSON.parse(
-      fs.readFileSync(path.join(bundle, 'registry-metadata.json'), 'utf8')
-    ).ghcr;
-    const archive = path.join(
-      bundle,
-      'image/videovector-mcp-server.oci.tar'
-    );
+  it('rejects retired container metadata and binds the registry file to the npm package', () => {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'package.json'), 'utf8'));
+    const server = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'server.json'), 'utf8'));
+    server.packages.push({ registryType: 'oci', identifier: 'ghcr.io/example/retired:1.0.0', transport: { type: 'stdio' } });
+    expect(() => validateProjectMetadata(packageJson, server)).toThrow(/exactly one npm/);
 
-    expect(() => verifyImageArchive(expected, archive)).not.toThrow();
-    const conflicting = structuredClone(expected);
-    conflicting.platforms[0].config_digest = `sha256:${'f'.repeat(64)}`;
-    expect(() => verifyImageArchive(conflicting, archive)).toThrow(
-      ReleaseArtifactError
-    );
+    const bundle = fakeBundle();
+    const serverPath = path.join(bundle, 'mcp/server.json');
+    const altered = JSON.parse(fs.readFileSync(serverPath, 'utf8'));
+    altered.description = 'Changed registry-only metadata.';
+    fs.writeFileSync(serverPath, stableJson(altered));
+    const manifestPath = path.join(bundle, 'release-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const descriptor = manifest.artifacts.find((artifact: { kind: string }) => artifact.kind === 'mcp-registry-metadata');
+    descriptor.sha256 = sha256(fs.readFileSync(serverPath));
+    descriptor.size = fs.statSync(serverPath).size;
+    fs.writeFileSync(manifestPath, stableJson(manifest));
+    expect(() => verifyBundle(bundle)).toThrow(/Packaged server.json differs/);
   });
 
-  it('produces stable MCP metadata independent of package ordering', () => {
-    const left = mcpProjection({
-      name: 'server',
-      version: '1.0.0',
-      packages: [
-        { registryType: 'oci', identifier: 'image', transport: { type: 'stdio' } },
-        {
-          registryType: 'npm',
-          identifier: 'package',
-          version: '1.0.0',
-          transport: { type: 'stdio' },
-        },
-      ],
-    });
-    const right = mcpProjection({
-      name: 'server',
-      version: '1.0.0',
-      packages: [...left.packages].reverse(),
-    });
-
-    expect(right).toEqual(left);
+  it.each(['image_digest', 'ghcr', 'oci-artifact'])('rejects retired bundle field %s', (field) => {
+    const bundle = fakeBundle();
+    const manifestPath = path.join(bundle, 'release-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (field === 'image_digest') {
+      manifest.image_digest = `sha256:${'a'.repeat(64)}`;
+    } else if (field === 'oci-artifact') {
+      manifest.artifacts.push({ kind: 'oci-image', path: 'image/container.tar', size: 1, sha256: 'a'.repeat(64) });
+    } else {
+      const metadataPath = path.join(bundle, 'registry-metadata.json');
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+      metadata.ghcr = { image: 'retired' };
+      fs.writeFileSync(metadataPath, stableJson(metadata));
+      manifest.registry_metadata_sha256 = sha256(fs.readFileSync(metadataPath));
+    }
+    fs.writeFileSync(manifestPath, stableJson(manifest));
+    expect(() => verifyBundle(bundle)).toThrow(ReleaseArtifactError);
   });
 
   it('fails closed after an attested bundle artifact is modified', () => {

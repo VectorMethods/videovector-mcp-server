@@ -8,19 +8,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   PublicationError,
-  classifyGhcrAbsence,
-  classifyGhcrBootstrapVisibility,
   compareSemver,
   mcpVersionUrl,
   npmReleaseTags,
   reconcileNpmDistTags,
-  requireExactPublicSourceRepository,
   requireOidcOnlyNpmEnvironment,
   requireNpmPublisherVersion,
-  requirePublicGhcrPackage,
   requireSafeNpmTarballUrl,
   runResult,
-  skopeoCopyArguments,
   settleNpmPublication,
   settlePublication,
 } from '../scripts/release-publication.mjs';
@@ -228,124 +223,6 @@ describe('release publication state machines', () => {
         'https://registry.npmjs.org',
         expected
       )).toThrow();
-    }
-  });
-
-  it('fails closed unless the exact GHCR package is already public', async () => {
-    const exact = {
-      name: 'videovector-mcp-server',
-      package_type: 'container',
-      owner: { login: 'VectorMethods', type: 'Organization' },
-      visibility: 'public',
-    };
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(exact), {
-        headers: { 'content-type': 'application/json' },
-        status: 200,
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        ...exact,
-        visibility: 'private',
-      }), {
-        headers: { 'content-type': 'application/json' },
-        status: 200,
-      }));
-    vi.stubGlobal('fetch', fetchMock);
-    try {
-      await expect(requirePublicGhcrPackage(
-        { image: 'ghcr.io/vectormethods/videovector-mcp-server' },
-        'github-token'
-      )).resolves.toBeUndefined();
-      await expect(requirePublicGhcrPackage(
-        { image: 'ghcr.io/vectormethods/videovector-mcp-server' },
-        'github-token'
-      )).rejects.toThrow(/must already exist/);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('classifies only the exact GHCR package as bootstrap-convergent', async () => {
-    const exact = {
-      name: 'videovector-mcp-server',
-      package_type: 'container',
-      owner: { login: 'VectorMethods', type: 'Organization' },
-      visibility: 'private',
-    };
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response('', { status: 404 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(exact), {
-        headers: { 'content-type': 'application/json' },
-        status: 200,
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        ...exact,
-        visibility: 'public',
-      }), {
-        headers: { 'content-type': 'application/json' },
-        status: 200,
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        ...exact,
-        owner: { login: 'attacker', type: 'Organization' },
-      }), {
-        headers: { 'content-type': 'application/json' },
-        status: 200,
-      }));
-    vi.stubGlobal('fetch', fetchMock);
-    const expected = {
-      image: 'ghcr.io/vectormethods/videovector-mcp-server',
-    };
-    try {
-      await expect(classifyGhcrBootstrapVisibility(expected, 'token'))
-        .resolves.toMatchObject({ state: 'missing' });
-      await expect(classifyGhcrBootstrapVisibility(expected, 'token'))
-        .resolves.toMatchObject({ state: 'conflict' });
-      await expect(classifyGhcrBootstrapVisibility(expected, 'token'))
-        .resolves.toMatchObject({ state: 'exact' });
-      await expect(classifyGhcrBootstrapVisibility(expected, 'token'))
-        .resolves.toMatchObject({ state: 'conflict' });
-      await expect(classifyGhcrBootstrapVisibility(
-        { image: 'ghcr.io/attacker/videovector-mcp-server' },
-        'token'
-      )).resolves.toMatchObject({ state: 'conflict' });
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('requires the exact public repository before GHCR bootstrap', async () => {
-    const exact = {
-      full_name: 'VectorMethods/videovector-mcp-server',
-      name: 'videovector-mcp-server',
-      owner: { login: 'VectorMethods', type: 'Organization' },
-      private: false,
-      visibility: 'public',
-    };
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(exact), {
-        headers: { 'content-type': 'application/json' },
-        status: 200,
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        ...exact,
-        private: true,
-        visibility: 'private',
-      }), {
-        headers: { 'content-type': 'application/json' },
-        status: 200,
-      }));
-    vi.stubGlobal('fetch', fetchMock);
-    try {
-      await expect(requireExactPublicSourceRepository('token'))
-        .resolves.toBeUndefined();
-      await expect(requireExactPublicSourceRepository('token'))
-        .rejects.toThrow(/exact public source repository/);
-      expect(fetchMock.mock.calls[0][0]).toBe(
-        'https://api.github.com/repos/VectorMethods/videovector-mcp-server'
-      );
-    } finally {
-      vi.unstubAllGlobals();
     }
   });
 
@@ -561,38 +438,6 @@ describe('release publication state machines', () => {
     expect(removeTag).toHaveBeenCalledTimes(1);
   });
 
-  it('requires both a known missing registry response and a complete GHCR census', () => {
-    expect(classifyGhcrAbsence(
-      { status: 1, stderr: 'manifest unknown: requested image not found' },
-      { state: 'missing', detail: 'complete census' }
-    )).toMatchObject({ state: 'missing' });
-    expect(classifyGhcrAbsence(
-      { status: 1, stderr: 'manifest unknown' },
-      { state: 'conflict', detail: 'tag exists' }
-    )).toMatchObject({ state: 'conflict' });
-    expect(classifyGhcrAbsence(
-      { status: 1, stderr: 'unauthorized: token expired' },
-      { state: 'missing', detail: 'complete census' }
-    )).toMatchObject({ state: 'unavailable' });
-  });
-
-  it('builds one canonical bounded Skopeo copy operation', () => {
-    expect(skopeoCopyArguments(
-      'docker://ghcr.io/vectormethods/videovector-mcp-server:2.0.2',
-      'oci-archive:/workspace/remote.oci.tar'
-    )).toEqual([
-      'copy',
-      '--all',
-      '--preserve-digests',
-      '--retry-times',
-      '3',
-      'docker://ghcr.io/vectormethods/videovector-mcp-server:2.0.2',
-      'oci-archive:/workspace/remote.oci.tar',
-    ]);
-    expect(() => skopeoCopyArguments('', 'oci-archive:/workspace/image.tar'))
-      .toThrow(/exact source and destination/);
-  });
-
   it('always includes deleted MCP versions in authoritative lifecycle reads', () => {
     expect(mcpVersionUrl(
       {
@@ -615,13 +460,9 @@ describe('release publication state machines', () => {
     expect(workflow).toContain('group: release-videovector-mcp-server');
     expect(workflow).not.toMatch(/\bnpm publish\b/);
     expect(workflow).not.toMatch(/\bskopeo\s+copy\b/);
-    expect(workflow.match(/release-publication\.mjs publish-/g)).toHaveLength(3);
+    expect(workflow.match(/release-publication\.mjs publish-/g)).toHaveLength(2);
 
     const npmJob = workflow.split('\n  publish-npm:')[1]
-      .split('\n  bootstrap-ghcr-public:')[0];
-    const bootstrapJob = workflow.split('\n  bootstrap-ghcr-public:')[1]
-      .split('\n  publish-ghcr:')[0];
-    const ghcrJob = workflow.split('\n  publish-ghcr:')[1]
       .split('\n  publish-mcp-registry:')[0];
     const mcpJob = workflow.split('\n  publish-mcp-registry:')[1];
     expect(npmJob.indexOf('Verify request-bound bundle')).toBeLessThan(
@@ -632,46 +473,18 @@ describe('release publication state machines', () => {
     );
     expect(npmJob).toContain('bash scripts/install_pinned_npm.sh publisher');
     expect(npmJob).toContain('timeout-minutes: 40');
-    expect(ghcrJob.indexOf('Verify request-bound bundle')).toBeLessThan(
-      ghcrJob.indexOf('Authenticate to GHCR')
-    );
-    expect(ghcrJob.indexOf('Require the exact existing public GHCR package'))
-      .toBeLessThan(ghcrJob.indexOf('Authenticate to GHCR'));
-    expect(bootstrapJob).toContain('environment:');
-    expect(bootstrapJob).toContain('name: ghcr-public-bootstrap');
-    expect(bootstrapJob).toContain('packages: write');
-    expect(bootstrapJob).not.toContain('contents: write');
-    expect(bootstrapJob).toContain(
-      'DOCKER_CONFIG: ${{ runner.temp }}/ghcr-bootstrap-docker'
-    );
-    expect(bootstrapJob).toContain('chmod 0600 "$DOCKER_CONFIG/config.json"');
-    expect(bootstrapJob).toContain('rm -rf "$DOCKER_CONFIG"');
-    expect(bootstrapJob).toContain('preflight-bootstrap-ghcr');
-    expect(bootstrapJob).toContain('bootstrap-ghcr');
-    expect(bootstrapJob.indexOf('preflight-bootstrap-ghcr'))
-      .toBeLessThan(bootstrapJob.indexOf('docker login ghcr.io'));
-    expect(bootstrapJob).not.toContain('NPM_TOKEN');
-    expect(fs.readFileSync(
-      path.join(sourceRoot, 'scripts/release-publication.mjs'),
-      'utf8'
-    )).not.toContain("method: 'PATCH'");
-    expect(workflow).toContain(
-      'if: ${{ inputs.bootstrap_ghcr_public }}'
-    );
-    expect(ghcrJob).toContain("needs.bootstrap-ghcr-public.result == 'skipped'");
-    expect(ghcrJob).toContain(
-      'DOCKER_CONFIG: ${{ runner.temp }}/ghcr-publisher-docker'
-    );
+    expect(workflow).not.toMatch(/ghcr|oci-archive|packages: write|docker login|bootstrap_ghcr/i);
+    expect(mcpJob).toContain('      - publish-npm');
     expect(mcpJob.indexOf('Verify request-bound bundle')).toBeLessThan(
       mcpJob.indexOf('Install checksum-pinned MCP publisher')
     );
     expect(
       workflow.match(/bash scripts\/install_pinned_npm\.sh/g)
-    ).toHaveLength(8);
+    ).toHaveLength(6);
     expect(workflow).toContain('MCP_PUBLISHER_SHA256:');
-    expect(workflow.match(/timeout 20s/g).length).toBeGreaterThanOrEqual(2);
-    expect(workflow.match(/scripts\/validate-stdio-smoke\.mjs/g)).toHaveLength(2);
-    expect(workflow.match(/artifacts\/tool-contract\.json/g)).toHaveLength(2);
+    expect(workflow.match(/timeout 20s/g).length).toBeGreaterThanOrEqual(1);
+    expect(workflow.match(/scripts\/validate-stdio-smoke\.mjs/g)).toHaveLength(1);
+    expect(workflow.match(/artifacts\/tool-contract\.json/g)).toHaveLength(1);
     expect(workflow).not.toMatch(/tools\.result\.tools\.length\s*!==\s*48/);
     const npmInstaller = fs.readFileSync(
       path.join(sourceRoot, 'scripts/install_pinned_npm.sh'),

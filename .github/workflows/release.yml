@@ -42,30 +42,21 @@ on:
         required: false
         default: ""
         type: string
-      bootstrap_ghcr_public:
-        description: "Explicitly enter the protected one-time GHCR public-package bootstrap"
-        required: false
-        default: false
-        type: boolean
 
 run-name: Release ${{ inputs.release_tag }} [${{ inputs.operation_nonce }}]
 
 permissions:
   contents: read
 
-# One package version can affect latest/next tags and the MCP Registry latest
-# pointer even when two different release tags are dispatched. Serialize the
-# complete package publication domain, never only a tag-specific workflow.
+# Serialize npm dist-tags and the MCP Registry listing across all release tags.
 concurrency:
   group: release-videovector-mcp-server
   cancel-in-progress: false
 
 env:
-  GHCR_IMAGE: ghcr.io/vectormethods/videovector-mcp-server
   MCP_PUBLISHER_SHA256: ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac
   MCP_PUBLISHER_URL: https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz
   NPM_PACKAGE: "@vectormethods/videovector-mcp-server"
-  SKOPEO_IMAGE: quay.io/skopeo/stable@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4
 
 jobs:
   guard:
@@ -107,7 +98,6 @@ jobs:
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           EXPECTED_TAG_OBJECT_SHA: ${{ inputs.expected_tag_object_sha }}
           EXPECTED_TARGET_SHA: ${{ inputs.expected_target_sha }}
-          BOOTSTRAP_GHCR_PUBLIC: ${{ inputs.bootstrap_ghcr_public }}
           OPERATION_NONCE: ${{ inputs.operation_nonce }}
           RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -154,25 +144,6 @@ jobs:
 
       - name: Install checksum-pinned npm toolchain
         run: bash scripts/install_pinned_npm.sh
-
-      - name: Setup pinned Docker Engine and CLI
-        uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
-        with:
-          version: v29.1.3
-
-      - name: Setup pinned QEMU and binfmt
-        if: ${{ needs.guard.outputs.resume != 'true' }}
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-        with:
-          image: tonistiigi/binfmt:qemu-v10.0.4@sha256:8f58e6214f4cc9dc83ce8f5acad1ece508eb6b20e696a8c1e9f274481982c541
-          platforms: arm64
-
-      - name: Setup pinned Buildx and BuildKit
-        if: ${{ needs.guard.outputs.resume != 'true' }}
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-        with:
-          version: v0.28.0
-          driver-opts: image=moby/buildkit:v0.28.0@sha256:37539dd4d60fc70968d164d3850d903a2c56f6402214a1953fbf9fcb81ada731
 
       - name: Install locked verifier dependencies
         run: npm ci --ignore-scripts
@@ -277,49 +248,6 @@ jobs:
           RESPONSE="$response" node \
             "$GITHUB_WORKSPACE/scripts/validate-stdio-smoke.mjs" \
             "$GITHUB_WORKSPACE/artifacts/tool-contract.json"
-
-      - name: Smoke the exact amd64 OCI image with bounded stdio
-        run: |
-          set -euo pipefail
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "${GITHUB_WORKSPACE}/release-bundle:/bundle:ro" \
-            "$SKOPEO_IMAGE" \
-            copy --override-os linux --override-arch amd64 --format v2s2 \
-            oci-archive:/bundle/image/videovector-mcp-server.oci.tar \
-            docker-daemon:videovector-mcp-release:local
-          if timeout 10s docker run --rm -i videovector-mcp-release:local \
-            </dev/null >/tmp/oci-no-key.stdout 2>/tmp/oci-no-key.stderr; then
-            echo "OCI stdio server started without its required API key." >&2
-            exit 1
-          fi
-          grep -Fq 'VIDEOVECTOR_API_KEY environment variable is required' \
-            /tmp/oci-no-key.stderr
-          api_key="sk_live_$(printf '0%.0s' {1..48})"
-          response="$(
-            {
-              printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"oci-release-smoke","version":"1.0.0"}}}'
-              printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-              printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-            } |
-              timeout 20s docker run --rm -i \
-                -e VIDEOVECTOR_API_KEY="$api_key" \
-                videovector-mcp-release:local
-          )"
-          RESPONSE="$response" node \
-            "$GITHUB_WORKSPACE/scripts/validate-stdio-smoke.mjs" \
-            "$GITHUB_WORKSPACE/artifacts/tool-contract.json"
-          container_id="$(
-            docker run -d -p 8080:8080 -e MCP_TRANSPORT_MODE=http \
-              videovector-mcp-release:local
-          )"
-          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
-          timeout 60s bash -c '
-            until curl -fsS http://127.0.0.1:8080/health > /tmp/mcp-health.json; do
-              sleep 2
-            done
-          '
-          grep -q '"status":"ok"' /tmp/mcp-health.json
 
       - name: Archive and independently verify the fresh bundle
         if: ${{ needs.guard.outputs.resume != 'true' }}
@@ -536,271 +464,6 @@ jobs:
           done
           exit 1
 
-  bootstrap-ghcr-public:
-    name: Bootstrap the exact GHCR package as public
-    if: ${{ inputs.bootstrap_ghcr_public }}
-    needs:
-      - guard
-      - build
-      - stage-draft
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment:
-      name: ghcr-public-bootstrap
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout guarded bootstrap verifier
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ needs.guard.outputs.source_sha }}
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: "24.14.0"
-          package-manager-cache: false
-
-      - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.11.13"
-
-      - name: Install checksum-pinned npm toolchain
-        run: bash scripts/install_pinned_npm.sh
-
-      - name: Setup pinned Docker Engine and CLI
-        uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
-        with:
-          version: v29.1.3
-
-      - name: Install locked verifier dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Download immutable release bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: mcp-release-bundle
-          path: release-transport
-
-      - name: Materialize the exact bootstrap bundle
-        env:
-          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
-          TAG_OBJECT_SHA: ${{ needs.guard.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          python scripts/release_draft_staging.py materialize \
-            --kind mcp \
-            --release-tag "$RELEASE_TAG" \
-            --expected-target-sha "$SOURCE_SHA" \
-            --expected-tag-object-sha "$TAG_OBJECT_SHA" \
-            --release-body-sha256 "$RELEASE_BODY_SHA256" \
-            --archive release-transport/release-bundle.zip \
-            --bundle release-bundle
-
-      - name: Verify exact digest and package identity before authentication
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
-          TAG_OBJECT_SHA: ${{ needs.guard.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          node scripts/release-publication.mjs preflight-bootstrap-ghcr \
-            --bundle release-bundle \
-            --tag "$RELEASE_TAG" \
-            --tag-object-sha "$TAG_OBJECT_SHA" \
-            --tag-commit-sha "$SOURCE_SHA" \
-            --source-sha "$SOURCE_SHA" \
-            --release-body-sha256 "$RELEASE_BODY_SHA256"
-
-      - name: Authenticate narrowly to GHCR after approval and verification
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-bootstrap-docker
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          install -d -m 0700 "$DOCKER_CONFIG"
-          echo "$GITHUB_TOKEN" |
-            docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          chmod 0600 "$DOCKER_CONFIG/config.json"
-
-      - name: Reconcile bootstrap image and inherited public visibility
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-bootstrap-docker
-          GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
-          TAG_OBJECT_SHA: ${{ needs.guard.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          node scripts/release-publication.mjs bootstrap-ghcr \
-            --bundle release-bundle \
-            --tag "$RELEASE_TAG" \
-            --tag-object-sha "$TAG_OBJECT_SHA" \
-            --tag-commit-sha "$SOURCE_SHA" \
-            --source-sha "$SOURCE_SHA" \
-            --release-body-sha256 "$RELEASE_BODY_SHA256" \
-            --skopeo-image "$SKOPEO_IMAGE"
-
-      - name: Remove ephemeral GHCR credentials
-        if: always()
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-bootstrap-docker
-        run: |
-          docker logout ghcr.io >/dev/null 2>&1 || true
-          rm -rf "$DOCKER_CONFIG"
-
-  publish-ghcr:
-    name: Reconcile exact GHCR multi-platform image
-    if: >-
-      ${{ !cancelled()
-          && needs.guard.result == 'success'
-          && needs.build.result == 'success'
-          && needs.stage-draft.result == 'success'
-          && (needs.bootstrap-ghcr-public.result == 'success'
-              || needs.bootstrap-ghcr-public.result == 'skipped') }}
-    needs:
-      - guard
-      - build
-      - stage-draft
-      - bootstrap-ghcr-public
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout guarded release verifier
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ needs.guard.outputs.source_sha }}
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: "24.14.0"
-          package-manager-cache: false
-
-      - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.11.13"
-
-      - name: Install checksum-pinned npm toolchain
-        run: bash scripts/install_pinned_npm.sh
-
-      - name: Setup pinned Docker Engine and CLI
-        uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
-        with:
-          version: v29.1.3
-
-      - name: Install locked verifier dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Download immutable release bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: mcp-release-bundle
-          path: release-transport
-
-      - name: Materialize and verify the exact staged bundle
-        env:
-          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
-          TAG_OBJECT_SHA: ${{ needs.guard.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          python scripts/release_draft_staging.py materialize \
-            --kind mcp \
-            --release-tag "$RELEASE_TAG" \
-            --expected-target-sha "$SOURCE_SHA" \
-            --expected-tag-object-sha "$TAG_OBJECT_SHA" \
-            --release-body-sha256 "$RELEASE_BODY_SHA256" \
-            --archive release-transport/release-bundle.zip \
-            --bundle release-bundle
-
-      - name: Verify request-bound bundle before registry authentication
-        env:
-          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
-          TAG_OBJECT_SHA: ${{ needs.guard.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          node scripts/release-artifacts.mjs verify-bundle \
-            --bundle release-bundle \
-            --tag "$RELEASE_TAG" \
-            --tag-object-sha "$TAG_OBJECT_SHA" \
-            --tag-commit-sha "$SOURCE_SHA" \
-            --source-sha "$SOURCE_SHA" \
-            --release-body-sha256 "$RELEASE_BODY_SHA256"
-
-      - name: Require the exact existing public GHCR package
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
-          TAG_OBJECT_SHA: ${{ needs.guard.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          node scripts/release-publication.mjs preflight-ghcr \
-            --bundle release-bundle \
-            --tag "$RELEASE_TAG" \
-            --tag-object-sha "$TAG_OBJECT_SHA" \
-            --tag-commit-sha "$SOURCE_SHA" \
-            --source-sha "$SOURCE_SHA" \
-            --release-body-sha256 "$RELEASE_BODY_SHA256"
-
-      - name: Authenticate to GHCR after verification
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-publisher-docker
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          install -d -m 0700 "$DOCKER_CONFIG"
-          echo "$GITHUB_TOKEN" |
-            docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          chmod 0600 "$DOCKER_CONFIG/config.json"
-
-      - name: Reconcile exact tested OCI index
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-publisher-docker
-          GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
-          TAG_OBJECT_SHA: ${{ needs.guard.outputs.tag_object_sha }}
-        run: |
-          set -euo pipefail
-          node scripts/release-publication.mjs publish-ghcr \
-            --bundle release-bundle \
-            --tag "$RELEASE_TAG" \
-            --tag-object-sha "$TAG_OBJECT_SHA" \
-            --tag-commit-sha "$SOURCE_SHA" \
-            --source-sha "$SOURCE_SHA" \
-            --release-body-sha256 "$RELEASE_BODY_SHA256" \
-            --skopeo-image "$SKOPEO_IMAGE"
-
-      - name: Remove ephemeral GHCR credentials
-        if: always()
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/ghcr-publisher-docker
-        run: |
-          docker logout ghcr.io >/dev/null 2>&1 || true
-          rm -rf "$DOCKER_CONFIG"
-
   publish-mcp-registry:
     name: Reconcile exact active MCP Registry version
     needs:
@@ -808,7 +471,6 @@ jobs:
       - build
       - stage-draft
       - publish-npm
-      - publish-ghcr
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
