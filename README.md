@@ -113,6 +113,13 @@ The server exposes tools for:
 
 The machine-readable tool contract is generated at [artifacts/tool-contract.json](artifacts/tool-contract.json). Private backend and website releases should vendor this artifact for MCP helper endpoints and documentation updates.
 
+`get_export_status` is side-effect free: its `download_url` is only the
+authenticated API endpoint and it never mints a bearer credential. Use the
+separate `get_export_download_url` tool only when a header-free client
+explicitly needs a short-lived bounded URL. Connector-delivered, processing,
+failed, and otherwise unavailable exports return `download_url: null`. Treat
+any non-null minted URL as a credential and do not log or persist it.
+
 ## Development
 
 ```bash

@@ -17,9 +17,9 @@ Endpoints:
 - `DELETE /mcp`
 
 Every `/mcp` request must include `Authorization: Bearer <key>` or `X-API-Key:
-<key>`. HTTP mode accepts a canonical production API key: `sk_live_` followed
-by exactly 48 lowercase hexadecimal characters. The local stdio transport
-continues to support development keys.
+<key>`. Both HTTP and stdio modes accept canonical production API keys only:
+`sk_live_` followed by exactly 48 lowercase hexadecimal characters. The server
+rejects development-key formats before normal API use.
 
 Recommended hardening:
 

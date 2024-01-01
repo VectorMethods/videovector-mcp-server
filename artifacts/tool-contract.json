@@ -2508,7 +2508,7 @@
     },
     {
       "name": "get_export_status",
-      "description": "Get the status and bounded download URL of an export job.\n\nReturns:\n- status: processing, completed, or failed\n- download_url: short-lived first-party URL for the completed exported file\n- file_size_bytes: size of the exported file\n- error_message: details if the export failed\n\nThe first-party download URL is a temporary bearer credential fixed to this\nexport. Treat it as sensitive and do not log or share it. It expires shortly\nand is subject to request and byte ceilings. Do not load a large export into\nMCP context; use the VideoVector SDK/API streaming download or a connector\ndestination instead.",
+      "description": "Get the status and delivery details of an export job.\n\nReturns:\n- status: processing, completed, or failed\n- destination_type: direct download or connector delivery\n- destination_connector_id and destination_uri: connector delivery details when applicable\n- download_url: authenticated API download endpoint for a completed direct export\n- file_size_bytes: size of the exported file\n- error_message: details if the export failed\n\nThis tool is side-effect free and never creates or returns a bearer capability.\nUse the authenticated VideoVector SDK/API streaming download for large files.\nCall get_export_download_url only when a separate header-free client explicitly\nneeds a short-lived bounded bearer URL.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2525,6 +2525,30 @@
         "readOnlyHint": true,
         "destructiveHint": false,
         "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "category": "Exports",
+      "required_scope": "read"
+    },
+    {
+      "name": "get_export_download_url",
+      "description": "Explicitly mint a bounded bearer URL for one owned export.\n\nReturns exactly:\n- export_id\n- status\n- destination_type: download or connector\n- destination_connector_id\n- download_url: short-lived bearer URL, or null when not downloadable\n\nThis operation creates a fresh bearer capability and is not idempotent. It\nreturns download_url=null for processing, failed, connector-delivered, and\notherwise unavailable exports. Treat any non-null URL as sensitive: do not log,\npersist, or share it beyond the intended client. Prefer authenticated SDK/API\nstreaming for large files instead of loading export content into MCP context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "export_id": {
+            "type": "string",
+            "description": "ID of the owned export for which to mint a bounded URL"
+          }
+        },
+        "required": [
+          "export_id"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
         "openWorldHint": true
       },
       "category": "Exports",

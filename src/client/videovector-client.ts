@@ -52,6 +52,7 @@ import {
   type CreateIndexRequest,
   type VideoStatus,
   type ExportDestinationRequest,
+  type ExportDownloadUrlResponse,
   type ExportJob,
   type IndexExportRequest,
   type CreateWebhookRequest,
@@ -80,6 +81,117 @@ const DEFAULT_MAX_RETRIES = 3;
 const RETRY_STATUS_CODES = [429, 500, 502, 503, 504];
 const INITIAL_RETRY_DELAY_MS = 1000;
 const AUTOMATIC_RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const EXPORT_STATUS_VALUES = new Set(['pending', 'processing', 'completed', 'failed']);
+const EXPORT_TYPE_VALUES = new Set(['index', 'prompt_run']);
+const EXPORT_DESTINATION_VALUES = new Set(['download', 'connector']);
+const EXPORT_QUEUE_STATUS_VALUES = new Set([
+  'queued',
+  'leased',
+  'running',
+  'failed',
+  'succeeded',
+  'dead_letter',
+]);
+const PUBLIC_EXPORT_PARAM_FIELDS = new Set([
+  'prompt_run_ids',
+  'destination_connector_id',
+  'destination_base_path',
+  'destination_subpath',
+]);
+const EXPORT_DOWNLOAD_RESPONSE_FIELDS = [
+  'destination_connector_id',
+  'destination_type',
+  'download_url',
+  'export_id',
+  'status',
+] as const;
+const MIN_EXPORT_DOWNLOAD_TOKEN_LENGTH = 32;
+const MAX_EXPORT_DOWNLOAD_TOKEN_LENGTH = 2048;
+const EXPORT_DOWNLOAD_TOKEN_PATTERN = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactFields(
+  value: Record<string, unknown>,
+  expectedFields: readonly string[]
+): boolean {
+  const actualFields = Object.keys(value).sort();
+  return (
+    actualFields.length === expectedFields.length
+    && actualFields.every((field, index) => field === expectedFields[index])
+  );
+}
+
+function canonicalExportDownloadPath(exportId: string): string {
+  return `/api/v2/exports/${encodeURIComponent(exportId)}/download`;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isNullableNonEmptyString(value: unknown): value is string | null {
+  return (
+    value === null
+    || (typeof value === 'string' && value.trim().length > 0)
+  );
+}
+
+function isNullableTimestamp(value: unknown): value is string | null {
+  return (
+    value === null
+    || (
+      typeof value === 'string'
+      && value.trim().length > 0
+      && Number.isFinite(Date.parse(value))
+    )
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0;
+}
+
+function isNullableNonNegativeInteger(value: unknown): value is number | null {
+  return value === null || isNonNegativeInteger(value);
+}
+
+function isPublicExportParams(value: unknown): value is Record<string, unknown> | null {
+  if (value === null) {
+    return true;
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (Object.keys(value).some((field) => !PUBLIC_EXPORT_PARAM_FIELDS.has(field))) {
+    return false;
+  }
+
+  const promptRunIds = value.prompt_run_ids;
+  if (
+    promptRunIds !== undefined
+    && promptRunIds !== null
+    && (
+      !Array.isArray(promptRunIds)
+      || promptRunIds.some(
+        (runId) => typeof runId !== 'string' || runId.trim().length === 0
+      )
+    )
+  ) {
+    return false;
+  }
+
+  return (
+    (value.destination_connector_id === undefined
+      || isNullableNonEmptyString(value.destination_connector_id))
+    && (value.destination_base_path === undefined
+      || isNullableString(value.destination_base_path))
+    && (value.destination_subpath === undefined
+      || isNullableString(value.destination_subpath))
+  );
+}
 
 function createIdempotencyKey(prefix: string, providedKey?: string): string {
   const candidate = providedKey?.trim();
@@ -141,6 +253,7 @@ function isAutomaticRetryAllowed(
 export class VideoVectorClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly apiOrigin: string;
   private readonly timeout: number;
   private readonly maxRetries: number;
 
@@ -151,6 +264,7 @@ export class VideoVectorClient {
 
     this.apiKey = config.apiKey;
     this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
+    this.apiOrigin = new URL(this.baseUrl).origin;
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
     this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
   }
@@ -264,7 +378,7 @@ export class VideoVectorClient {
           { url: url.toString(), method }
         );
       }
-      return JSON.parse(text) as T;
+      return this.parseSuccessfulJson<T>(text);
     } catch (error) {
       clearTimeout(timeoutId);
 
@@ -310,6 +424,21 @@ export class VideoVectorClient {
     }
   }
 
+  private parseSuccessfulJson<T>(text: string): T {
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      // Never surface JSON parser diagnostics. Modern runtimes may include a
+      // fragment of the response body, which can contain a freshly minted
+      // bearer capability or another credential.
+      throw new VideoVectorApiError(
+        'API returned malformed JSON',
+        'invalid_json_response',
+        502
+      );
+    }
+  }
+
   private async parseErrorResponse(response: Response): Promise<{
     message: string;
     code: string;
@@ -341,15 +470,231 @@ export class VideoVectorClient {
 
       // Fallback
       return {
-        message: JSON.stringify(body),
+        message: `API request failed with HTTP ${response.status}`,
         code: `http_${response.status}`,
       };
     } catch {
       return {
-        message: `HTTP ${response.status}: ${response.statusText}`,
+        message: `API request failed with HTTP ${response.status}`,
         code: `http_${response.status}`,
       };
     }
+  }
+
+  private invalidExportStatusResponse(): never {
+    throw new VideoVectorApiError(
+      'API returned an invalid export status response',
+      'invalid_export_status_response',
+      502
+    );
+  }
+
+  private validateExportStatus(
+    response: unknown,
+    expectedExportId?: string
+  ): ExportJob {
+    if (!isRecord(response)) {
+      return this.invalidExportStatusResponse();
+    }
+
+    const exportId = response.export_id;
+    const exportType = response.export_type;
+    const targetId = response.target_id;
+    const createdAt = response.created_at;
+    const status = response.status;
+    const queueStatus = response.queue_status;
+    const attempts = response.attempts;
+    const maxAttempts = response.max_attempts;
+    const availableAt = response.available_at;
+    const startedAt = response.started_at;
+    const completedAt = response.completed_at;
+    const updatedAt = response.updated_at;
+    const destinationType = response.destination_type;
+    const destinationConnectorId = response.destination_connector_id;
+    const downloadUrl = response.download_url;
+    const fileSizeBytes = response.file_size_bytes;
+    const errorMessage = response.error_message;
+    const lastError = response.last_error;
+    const destinationBasePath = response.destination_base_path;
+    const destinationSubpath = response.destination_subpath;
+    const destinationUri = response.destination_uri;
+    const gcsUri = response.gcs_uri;
+    const exportParams = response.export_params;
+    if (
+      typeof exportId !== 'string'
+      || exportId.trim().length === 0
+      || (expectedExportId !== undefined && exportId !== expectedExportId)
+      || typeof exportType !== 'string'
+      || !EXPORT_TYPE_VALUES.has(exportType)
+      || typeof targetId !== 'string'
+      || targetId.trim().length === 0
+      || !isNullableTimestamp(createdAt)
+      || typeof status !== 'string'
+      || !EXPORT_STATUS_VALUES.has(status)
+      || !(
+        queueStatus === null
+        || (
+          typeof queueStatus === 'string'
+          && EXPORT_QUEUE_STATUS_VALUES.has(queueStatus)
+        )
+      )
+      || !isNonNegativeInteger(attempts)
+      || !Number.isInteger(maxAttempts)
+      || Number(maxAttempts) < 1
+      || !isNullableTimestamp(availableAt)
+      || !isNullableTimestamp(startedAt)
+      || !isNullableTimestamp(completedAt)
+      || !isNullableTimestamp(updatedAt)
+      || typeof destinationType !== 'string'
+      || !EXPORT_DESTINATION_VALUES.has(destinationType)
+      || !(
+        destinationConnectorId === null
+        || (
+          typeof destinationConnectorId === 'string'
+          && destinationConnectorId.trim().length > 0
+        )
+      )
+      || !(downloadUrl === null || typeof downloadUrl === 'string')
+      || !isNullableNonNegativeInteger(fileSizeBytes)
+      || !isNullableString(errorMessage)
+      || !isNullableString(lastError)
+      || !isNullableString(destinationBasePath)
+      || !isNullableString(destinationSubpath)
+      || !isNullableNonEmptyString(destinationUri)
+      || !isNullableNonEmptyString(gcsUri)
+      || !isPublicExportParams(exportParams)
+    ) {
+      return this.invalidExportStatusResponse();
+    }
+
+    const directDestinationIsConsistent = (
+      destinationType !== 'download' || destinationConnectorId === null
+    );
+    const connectorDestinationIsConsistent = (
+      destinationType !== 'connector'
+      || (
+        typeof destinationConnectorId === 'string'
+        && destinationConnectorId.trim().length > 0
+      )
+    );
+    const expectedDownloadUrl = canonicalExportDownloadPath(exportId);
+    const authenticatedDownloadIsConsistent = (
+      downloadUrl === null
+      || (
+        status === 'completed'
+        && queueStatus === 'succeeded'
+        && destinationType === 'download'
+        && gcsUri !== null
+        && downloadUrl === expectedDownloadUrl
+      )
+    );
+    const unavailableDownloadIsNull = (
+      (status === 'completed' && destinationType === 'download')
+      || downloadUrl === null
+    );
+    const destinationUriIsConsistent = (
+      destinationType === 'download'
+        ? destinationUri === null
+        : destinationUri === gcsUri
+    );
+    const exportParamProjectionIsConsistent = (
+      !isRecord(exportParams)
+      || (
+        (exportParams.destination_connector_id === undefined
+          || exportParams.destination_connector_id === destinationConnectorId)
+        && (exportParams.destination_base_path === undefined
+          || exportParams.destination_base_path === destinationBasePath)
+        && (exportParams.destination_subpath === undefined
+          || exportParams.destination_subpath === destinationSubpath)
+      )
+    );
+    if (
+      !directDestinationIsConsistent
+      || !connectorDestinationIsConsistent
+      || !authenticatedDownloadIsConsistent
+      || !unavailableDownloadIsNull
+      || !destinationUriIsConsistent
+      || !exportParamProjectionIsConsistent
+    ) {
+      return this.invalidExportStatusResponse();
+    }
+
+    return {
+      export_id: exportId,
+      export_type: exportType as ExportJob['export_type'],
+      target_id: targetId,
+      created_at: createdAt,
+      status: status as ExportJob['status'],
+      queue_status: queueStatus,
+      attempts,
+      max_attempts: maxAttempts as number,
+      available_at: availableAt,
+      started_at: startedAt,
+      completed_at: completedAt,
+      updated_at: updatedAt,
+      download_url: downloadUrl,
+      file_size_bytes: fileSizeBytes,
+      error_message: errorMessage,
+      last_error: lastError,
+      destination_type: destinationType as ExportJob['destination_type'],
+      destination_connector_id: destinationConnectorId,
+      destination_base_path: destinationBasePath,
+      destination_subpath: destinationSubpath,
+      destination_uri: destinationUri,
+      gcs_uri: gcsUri,
+      export_params: exportParams,
+    };
+  }
+
+  private validateExportDownloadUrl(
+    downloadUrl: string,
+    exportId: string
+  ): boolean {
+    if (downloadUrl !== downloadUrl.trim()) {
+      return false;
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(downloadUrl);
+    } catch {
+      return false;
+    }
+
+    if (
+      parsed.protocol !== 'https:'
+      || parsed.origin !== this.apiOrigin
+      || parsed.username !== ''
+      || parsed.password !== ''
+      || parsed.hash !== ''
+      || parsed.pathname !== canonicalExportDownloadPath(exportId)
+    ) {
+      return false;
+    }
+
+    const queryFields = Array.from(parsed.searchParams.keys());
+    const tokens = parsed.searchParams.getAll('token');
+    if (
+      queryFields.length !== 1
+      || queryFields[0] !== 'token'
+      || tokens.length !== 1
+    ) {
+      return false;
+    }
+
+    const token = tokens[0];
+    if (
+      token === undefined
+      || token !== token.trim()
+      || token.length < MIN_EXPORT_DOWNLOAD_TOKEN_LENGTH
+      || token.length > MAX_EXPORT_DOWNLOAD_TOKEN_LENGTH
+      || !EXPORT_DOWNLOAD_TOKEN_PATTERN.test(token)
+      || parsed.search !== `?token=${encodeURIComponent(token)}`
+    ) {
+      return false;
+    }
+
+    return true;
   }
 
   private calculateRetryDelay(response: Response, retryCount: number): number {
@@ -892,16 +1237,95 @@ export class VideoVectorClient {
   }
 
   async listExports(limit: number = 50): Promise<ExportJob[]> {
-    return this.request<ExportJob[]>('GET', '/exports', {
+    const response = await this.request<unknown>('GET', '/exports', {
       query: { limit },
     });
+    if (!Array.isArray(response)) {
+      return this.invalidExportStatusResponse();
+    }
+    return response.map((job) => this.validateExportStatus(job));
   }
 
   async getExportStatus(exportId: string): Promise<ExportJob> {
-    return this.request<ExportJob>(
+    const response = await this.request<unknown>(
       'GET',
       `/exports/${encodeURIComponent(exportId)}`
     );
+    return this.validateExportStatus(response, exportId);
+  }
+
+  async mintExportDownloadUrl(
+    exportId: string
+  ): Promise<ExportDownloadUrlResponse> {
+    // Minting creates a fresh credential, so this POST deliberately carries no
+    // idempotency key and is never retried after an ambiguous network result.
+    const response = await this.request<unknown>(
+      'POST',
+      `/exports/${encodeURIComponent(exportId)}/download-url`
+    );
+    const body = isRecord(response) ? response : null;
+    const responseExportId = body?.export_id;
+    const status = body?.status;
+    const destinationType = body?.destination_type;
+    const destinationConnectorId = body?.destination_connector_id;
+    const downloadUrl = body?.download_url;
+    const validStatus = (
+      status === 'pending'
+      || status === 'processing'
+      || status === 'completed'
+      || status === 'failed'
+    );
+    const validDestinationType = (
+      destinationType === 'download' || destinationType === 'connector'
+    );
+    const validConnectorId = (
+      destinationConnectorId === null
+      || (
+        typeof destinationConnectorId === 'string'
+        && destinationConnectorId.trim().length > 0
+      )
+    );
+    const validDownloadUrl = (
+      downloadUrl === null
+      || (
+        typeof downloadUrl === 'string'
+        && this.validateExportDownloadUrl(downloadUrl, exportId)
+      )
+    );
+    const consistentDestination = (
+      (
+        destinationType === 'download'
+        && destinationConnectorId === null
+      )
+      || (
+        destinationType === 'connector'
+        && typeof destinationConnectorId === 'string'
+        && destinationConnectorId.trim().length > 0
+        && downloadUrl === null
+      )
+    );
+    const consistentBearer = (
+      downloadUrl === null
+      || (status === 'completed' && destinationType === 'download')
+    );
+    if (
+      body === null
+      || !hasExactFields(body, EXPORT_DOWNLOAD_RESPONSE_FIELDS)
+      || responseExportId !== exportId
+      || !validStatus
+      || !validDestinationType
+      || !validConnectorId
+      || !validDownloadUrl
+      || !consistentDestination
+      || !consistentBearer
+    ) {
+      throw new VideoVectorApiError(
+        'API returned an invalid export download URL response',
+        'invalid_export_download_url_response',
+        502
+      );
+    }
+    return response as ExportDownloadUrlResponse;
   }
 
   // ==========================================================================
@@ -1033,7 +1457,7 @@ export class VideoVectorClient {
           { url: url.toString(), method }
         );
       }
-      return JSON.parse(text) as T;
+      return this.parseSuccessfulJson<T>(text);
     } catch (error) {
       clearTimeout(timeoutId);
 

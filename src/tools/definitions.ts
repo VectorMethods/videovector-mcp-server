@@ -71,6 +71,7 @@ export const TOOL_NAMES = {
   EXPORT_INDEX_METADATA: 'export_index_metadata',
   EXPORT_PROMPT_RUN: 'export_prompt_run',
   GET_EXPORT_STATUS: 'get_export_status',
+  GET_EXPORT_DOWNLOAD_URL: 'get_export_download_url',
 
   // Webhook Tools
   CREATE_WEBHOOK: 'create_webhook',
@@ -126,6 +127,7 @@ export const TOOL_CATEGORIES: Record<ToolName, string> = {
   [TOOL_NAMES.EXPORT_INDEX_METADATA]: 'Exports',
   [TOOL_NAMES.EXPORT_PROMPT_RUN]: 'Exports',
   [TOOL_NAMES.GET_EXPORT_STATUS]: 'Exports',
+  [TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL]: 'Exports',
   [TOOL_NAMES.CREATE_WEBHOOK]: 'Webhooks',
   [TOOL_NAMES.LIST_WEBHOOKS]: 'Webhooks',
   [TOOL_NAMES.GET_WEBHOOK]: 'Webhooks',
@@ -268,6 +270,12 @@ const WRITE_SCOPE_READ_ONLY_TOOLS = new Set<ToolName>([
   TOOL_NAMES.TEST_PROMPT_SCHEMA,
 ]);
 
+// This explicit capability mint uses backend read scope even though it is not
+// operationally read-only and must not be advertised as idempotent.
+const READ_SCOPE_NON_READ_ONLY_TOOLS = new Set<ToolName>([
+  TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL,
+]);
+
 const DESTRUCTIVE_TOOLS = new Set<ToolName>([
   TOOL_NAMES.CANCEL_PROMPT_RUN,
   TOOL_NAMES.RETRY_PROMPT_RUN_SEGMENT,
@@ -284,7 +292,10 @@ export function getToolRequiredScope(name: string): ToolRequiredScope {
   if (WRITE_SCOPE_READ_ONLY_TOOLS.has(name as ToolName)) {
     return 'write';
   }
-  return READ_ONLY_TOOLS.has(name as ToolName) ? 'read' : 'write';
+  return (
+    READ_ONLY_TOOLS.has(name as ToolName)
+    || READ_SCOPE_NON_READ_ONLY_TOOLS.has(name as ToolName)
+  ) ? 'read' : 'write';
 }
 
 export function getToolAnnotations(name: string): NonNullable<Tool['annotations']> {
@@ -1744,25 +1755,53 @@ Creates an asynchronous export job for the results of a single prompt execution.
   },
   {
     name: TOOL_NAMES.GET_EXPORT_STATUS,
-    description: `Get the status and bounded download URL of an export job.
+    description: `Get the status and delivery details of an export job.
 
 Returns:
 - status: processing, completed, or failed
-- download_url: short-lived first-party URL for the completed exported file
+- destination_type: direct download or connector delivery
+- destination_connector_id and destination_uri: connector delivery details when applicable
+- download_url: authenticated API download endpoint for a completed direct export
 - file_size_bytes: size of the exported file
 - error_message: details if the export failed
 
-The first-party download URL is a temporary bearer credential fixed to this
-export. Treat it as sensitive and do not log or share it. It expires shortly
-and is subject to request and byte ceilings. Do not load a large export into
-MCP context; use the VideoVector SDK/API streaming download or a connector
-destination instead.`,
+This tool is side-effect free and never creates or returns a bearer capability.
+Use the authenticated VideoVector SDK/API streaming download for large files.
+Call get_export_download_url only when a separate header-free client explicitly
+needs a short-lived bounded bearer URL.`,
     inputSchema: {
       type: 'object',
       properties: {
         export_id: {
           type: 'string',
           description: 'ID of the export job to check',
+        },
+      },
+      required: ['export_id'],
+    },
+  },
+  {
+    name: TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL,
+    description: `Explicitly mint a bounded bearer URL for one owned export.
+
+Returns exactly:
+- export_id
+- status
+- destination_type: download or connector
+- destination_connector_id
+- download_url: short-lived bearer URL, or null when not downloadable
+
+This operation creates a fresh bearer capability and is not idempotent. It
+returns download_url=null for processing, failed, connector-delivered, and
+otherwise unavailable exports. Treat any non-null URL as sensitive: do not log,
+persist, or share it beyond the intended client. Prefer authenticated SDK/API
+streaming for large files instead of loading export content into MCP context.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        export_id: {
+          type: 'string',
+          description: 'ID of the owned export for which to mint a bounded URL',
         },
       },
       required: ['export_id'],

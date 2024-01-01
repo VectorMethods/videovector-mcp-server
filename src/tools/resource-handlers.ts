@@ -24,6 +24,7 @@
  *
  * Export Tools:
  * - export_index_metadata, export_prompt_run, get_export_status
+ * - get_export_download_url
  *
  * Webhook Tools:
  * - create_webhook, list_webhooks, get_webhook, update_webhook
@@ -2257,11 +2258,27 @@ function formatExportJob(job: ExportJob): Record<string, unknown> {
     export_type: job.export_type,
     target_id: job.target_id,
     status: job.status,
+    queue_status: job.queue_status,
+    attempts: job.attempts,
+    max_attempts: job.max_attempts,
     created_at: job.created_at,
+    available_at: job.available_at,
+    started_at: job.started_at,
+    completed_at: job.completed_at,
+    updated_at: job.updated_at,
     download_url: job.download_url,
     file_size_bytes: job.file_size_bytes,
-    file_size_human: job.file_size_bytes ? formatFileSize(job.file_size_bytes) : null,
+    file_size_human:
+      job.file_size_bytes !== null ? formatFileSize(job.file_size_bytes) : null,
     error_message: job.error_message,
+    last_error: job.last_error,
+    destination_type: job.destination_type,
+    destination_connector_id: job.destination_connector_id,
+    destination_base_path: job.destination_base_path,
+    destination_subpath: job.destination_subpath,
+    destination_uri: job.destination_uri,
+    gcs_uri: job.gcs_uri,
+    export_params: job.export_params,
   };
 }
 
@@ -2355,7 +2372,6 @@ async function handleGetExportStatus(
   const exportId = validateRequired<string>(args, 'export_id', 'string');
 
   const job = await client.getExportStatus(exportId);
-
   const result = formatExportJob(job);
 
   // Add contextual tip based on status
@@ -2364,12 +2380,22 @@ async function handleGetExportStatus(
     tip = 'Export job is queued and will start processing shortly. Check again in a few moments.';
   } else if (job.status === 'processing') {
     tip = 'Export is still processing. Check again in a few moments.';
-  } else if (job.status === 'completed' && job.download_url) {
+  } else if (
+    job.status === 'completed'
+    && job.destination_type === 'download'
+    && job.download_url
+  ) {
     tip =
-      'Export is ready through a short-lived, byte-bounded first-party bearer URL. ' +
-      'Treat the URL as sensitive and do not log or share it. ' +
-      'For large files, use the authenticated VideoVector SDK/API streaming download ' +
-      'or a connector destination instead of loading the export into MCP context.';
+      'Export is ready at the authenticated download endpoint. ' +
+      'Use the VideoVector SDK/API for bounded streaming. Call get_export_download_url ' +
+      'only when another header-free client explicitly needs a short-lived bearer URL.';
+  } else if (job.status === 'completed' && job.destination_type === 'connector') {
+    tip =
+      'Export completed to the configured connector destination. ' +
+      'No bearer download URL is created for connector-delivered exports.';
+  } else if (job.status === 'completed') {
+    tip =
+      'Export completed, but no authenticated direct-download endpoint is available.';
   } else if (job.status === 'failed') {
     tip = 'Export failed. Check error_message for details.';
   }
@@ -2392,6 +2418,33 @@ async function handleGetExportStatus(
       },
     ],
     isError,
+  };
+}
+
+async function handleGetExportDownloadUrl(
+  args: Record<string, unknown>,
+  client: VideoVectorClient
+): Promise<ToolHandlerResult> {
+  const exportId = validateRequired<string>(args, 'export_id', 'string');
+  const result = await client.mintExportDownloadUrl(exportId);
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(
+          {
+            export_id: result.export_id,
+            status: result.status,
+            destination_type: result.destination_type,
+            destination_connector_id: result.destination_connector_id,
+            download_url: result.download_url,
+          },
+          null,
+          2
+        ),
+      },
+    ],
   };
 }
 
@@ -2778,6 +2831,7 @@ export const RESOURCE_HANDLERS: Record<string, ToolHandler> = {
   [TOOL_NAMES.EXPORT_INDEX_METADATA]: handleExportIndexMetadata,
   [TOOL_NAMES.EXPORT_PROMPT_RUN]: handleExportPromptRun,
   [TOOL_NAMES.GET_EXPORT_STATUS]: handleGetExportStatus,
+  [TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL]: handleGetExportDownloadUrl,
   // Webhooks
   [TOOL_NAMES.CREATE_WEBHOOK]: handleCreateWebhook,
   [TOOL_NAMES.LIST_WEBHOOKS]: handleListWebhooks,

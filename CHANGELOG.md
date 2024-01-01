@@ -9,6 +9,16 @@
 - Clarified that first-party metadata export bearer URLs are short-lived,
   byte-bounded credentials, and direct large exports to the authenticated
   SDK/API streaming path or connector delivery instead of MCP context.
+- Split export status from bearer minting: `get_export_status` is now a
+  side-effect-free durable status read with authenticated download metadata,
+  while the separate `get_export_download_url` capability tool invokes the
+  explicit `/download-url` endpoint. Connector and unavailable exports retain
+  `download_url: null`, while mint failures remain structured MCP errors.
+- Validate export delivery responses before they cross the MCP boundary:
+  status accepts only the canonical authenticated relative route, while minted
+  capabilities require HTTPS, the configured API origin, the exact export
+  path, and one bounded token query. Malformed JSON failures never include
+  response or parser fragments.
 - Hardened Streamable HTTP admission with canonical public-key validation,
   hash-only positive/negative caches and singleflight, bounded direct-peer and
   process candidate checks, and response-safe verification logging.

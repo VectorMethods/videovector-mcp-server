@@ -796,6 +796,7 @@ export interface VideoStatus {
 
 export type ExportStatus = 'pending' | 'processing' | 'completed' | 'failed';
 export type ExportType = 'index' | 'prompt_run';
+export type ExportDestinationType = 'download' | 'connector';
 
 export interface ExportDestinationRequest {
   destination_connector_id?: string | null;
@@ -812,10 +813,37 @@ export interface ExportJob {
   target_id: string;
   created_at: string | null;
   status: ExportStatus;
+  queue_status: string | null;
+  attempts: number;
+  max_attempts: number;
+  available_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string | null;
+  /**
+   * Authenticated first-party download endpoint from the REST status response.
+   * This field is never a bearer credential.
+   */
   download_url: string | null;
   file_size_bytes: number | null;
   error_message: string | null;
-  export_params?: Record<string, unknown>;
+  last_error: string | null;
+  destination_type: ExportDestinationType;
+  destination_connector_id: string | null;
+  destination_base_path: string | null;
+  destination_subpath: string | null;
+  destination_uri: string | null;
+  gcs_uri: string | null;
+  export_params: Record<string, unknown> | null;
+}
+
+export interface ExportDownloadUrlResponse {
+  export_id: string;
+  status: ExportStatus;
+  destination_type: ExportDestinationType;
+  destination_connector_id: string | null;
+  /** Short-lived bounded bearer URL, or null when direct download is unavailable. */
+  download_url: string | null;
 }
 
 // ============================================================================
