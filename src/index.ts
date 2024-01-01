@@ -14,6 +14,12 @@
  *   MCP_HTTP_ALLOWED_ORIGINS - Optional: comma-separated allowed origins
  *   MCP_HTTP_ENABLE_JSON_RESPONSE - Optional: true|false (default: false)
  *   MCP_HTTP_SHUTDOWN_DRAIN_SECONDS - Optional: graceful drain timeout (default: 25)
+ *   MCP_OAUTH_ENABLED - Optional: true|false (default: false)
+ *   MCP_OAUTH_METADATA_ENABLED - Optional: advertise OAuth metadata (default: false)
+ *   MCP_OAUTH_ISSUER - Required when OAuth is enabled
+ *   MCP_OAUTH_JWKS_URL - Required when OAuth is enabled
+ *   MCP_OAUTH_RESOURCE - Required when OAuth is enabled
+ *   MCP_OAUTH_CLOCK_SKEW_SECONDS - Optional: JWT clock skew (default: 60)
  */
 
 import { randomUUID } from 'node:crypto';
@@ -24,30 +30,48 @@ import type {
   ServerResponse,
 } from 'node:http';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import { getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
+  InitializeRequestSchema,
+  InitializedNotificationSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  McpError,
+  ErrorCode,
   type CallToolRequest,
   type CallToolResult,
   type ListToolsRequest,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { VideoVectorClient } from './client/index.js';
+import {
+  VideoVectorClient,
+  type VideoVectorCredential,
+  type VideoVectorOAuthCredential,
+} from './client/index.js';
 import { ApiKeyVerifier } from './http/api-key-verifier.js';
+import { dispatchHttpCredential } from './http/credential-dispatch.js';
+import { WorkOSOAuthTokenVerifier } from './http/oauth-token-verifier.js';
 import {
   executeTool,
   getToolDefinitions,
   type ToolProfile,
 } from './tools/index.js';
 import { PACKAGE_VERSION } from './version.js';
+import { attachmentPickerResource, readAttachmentPicker } from './apps/attachment-picker.js';
+import { resultsCardResource, readResultsCard, LEGACY_RESULTS_CARD_URI } from './apps/results-card.js';
 
 type TransportMode = 'stdio' | 'http';
 
 export interface BaseConfig {
   baseUrl: string;
+  uploadBaseUrl?: string;
   timeout: number;
   maxRetries: number;
   toolProfile?: ToolProfile;
@@ -67,6 +91,12 @@ export interface HttpConfig extends BaseConfig {
   allowedOrigins: string[];
   enableJsonResponse: boolean;
   shutdownDrainTimeoutMs: number;
+  oauthEnabled: boolean;
+  oauthMetadataEnabled: boolean;
+  oauthIssuer: string;
+  oauthJwksUrl: string;
+  oauthResource: string;
+  oauthClockSkewSeconds: number;
 }
 
 interface ActiveRequestContext {
@@ -85,6 +115,7 @@ export interface HttpAppContext {
 }
 
 type HttpRequest = IncomingMessage & {
+  auth?: AuthInfo;
   body?: unknown;
   headers: IncomingHttpHeaders;
 };
@@ -96,6 +127,7 @@ type HttpNext = () => void;
 
 const DEFAULT_BASE_URL = 'https://api.vectormethods.com/api/v2';
 const PUBLIC_API_KEY_PATTERN = /^sk_live_[0-9a-f]{48}$/;
+const MAX_OAUTH_CLOCK_SKEW_SECONDS = 300;
 
 export function readTransportMode(): TransportMode {
   const mode = (process.env.MCP_TRANSPORT_MODE ?? 'stdio').trim().toLowerCase();
@@ -168,6 +200,7 @@ export function readToolProfile(): ToolProfile {
 export function loadBaseConfig(): BaseConfig {
   return {
     baseUrl: process.env.VIDEOVECTOR_BASE_URL ?? DEFAULT_BASE_URL,
+    uploadBaseUrl: process.env.MCP_UPLOAD_API_BASE_URL,
     timeout: readPositiveInteger('VIDEOVECTOR_TIMEOUT', 90_000),
     maxRetries: readNonNegativeInteger('VIDEOVECTOR_MAX_RETRIES', 3),
     toolProfile: readToolProfile(),
@@ -205,7 +238,93 @@ export function loadStdioConfig(baseConfig: BaseConfig): StdioConfig {
   };
 }
 
+function exitWithConfigurationError(message: string): never {
+  console.error(`Error: ${message}`);
+  process.exit(1);
+}
+
+function validateOAuthUrl(name: string, value: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return exitWithConfigurationError(`${name} must be an absolute HTTPS URL`);
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username.length > 0
+    || parsed.password.length > 0
+    || parsed.hash.length > 0
+  ) {
+    return exitWithConfigurationError(
+      `${name} must be an absolute HTTPS URL without credentials or a fragment`
+    );
+  }
+  return parsed;
+}
+
 export function loadHttpConfig(baseConfig: BaseConfig): HttpConfig {
+  const oauthEnabled = readBoolean('MCP_OAUTH_ENABLED', false);
+  const oauthMetadataEnabled = readBoolean('MCP_OAUTH_METADATA_ENABLED', false);
+  let oauthIssuer = (process.env.MCP_OAUTH_ISSUER ?? '').trim();
+  const oauthJwksUrl = (process.env.MCP_OAUTH_JWKS_URL ?? '').trim();
+  const oauthResource = (process.env.MCP_OAUTH_RESOURCE ?? '').trim();
+  const oauthClockSkewSeconds = readNonNegativeInteger(
+    'MCP_OAUTH_CLOCK_SKEW_SECONDS',
+    60
+  );
+  if (oauthMetadataEnabled && !oauthEnabled) {
+    exitWithConfigurationError(
+      'MCP_OAUTH_METADATA_ENABLED requires MCP_OAUTH_ENABLED=true'
+    );
+  }
+  if (oauthClockSkewSeconds > MAX_OAUTH_CLOCK_SKEW_SECONDS) {
+    exitWithConfigurationError(
+      `MCP_OAUTH_CLOCK_SKEW_SECONDS must not exceed ${MAX_OAUTH_CLOCK_SKEW_SECONDS}`
+    );
+  }
+  if (oauthEnabled) {
+    if (!oauthIssuer || !oauthJwksUrl || !oauthResource) {
+      exitWithConfigurationError(
+        'MCP_OAUTH_ISSUER, MCP_OAUTH_JWKS_URL, and MCP_OAUTH_RESOURCE are required when OAuth is enabled'
+      );
+    }
+    const issuerUrl = validateOAuthUrl('MCP_OAUTH_ISSUER', oauthIssuer);
+    const jwksUrl = validateOAuthUrl('MCP_OAUTH_JWKS_URL', oauthJwksUrl);
+    const resourceUrl = validateOAuthUrl('MCP_OAUTH_RESOURCE', oauthResource);
+    if (
+      issuerUrl.pathname !== '/'
+      || issuerUrl.search.length > 0
+      || ![issuerUrl.origin, `${issuerUrl.origin}/`].includes(oauthIssuer)
+    ) {
+      exitWithConfigurationError(
+        'MCP_OAUTH_ISSUER must be a canonical HTTPS origin'
+      );
+    }
+    if (
+      oauthMetadataEnabled
+      && issuerUrl.hostname.toLowerCase().endsWith('-staging.authkit.app')
+    ) {
+      exitWithConfigurationError(
+        'MCP OAuth metadata cannot advertise a WorkOS staging issuer'
+      );
+    }
+    if (
+      resourceUrl.search.length > 0
+      || resourceUrl.href !== oauthResource
+      || oauthResource.slice(resourceUrl.origin.length).length === 0
+    ) {
+      exitWithConfigurationError(
+        'MCP_OAUTH_RESOURCE must be a canonical HTTPS URL with a path'
+      );
+    }
+    if (jwksUrl.href !== `${issuerUrl.origin}/oauth2/jwks`) {
+      exitWithConfigurationError(
+        'MCP_OAUTH_JWKS_URL must be the issuer HTTPS /oauth2/jwks endpoint'
+      );
+    }
+    oauthIssuer = issuerUrl.origin;
+  }
   return {
     mode: 'http',
     port: readPositiveInteger('PORT', 8080),
@@ -215,37 +334,36 @@ export function loadHttpConfig(baseConfig: BaseConfig): HttpConfig {
     enableJsonResponse: readBoolean('MCP_HTTP_ENABLE_JSON_RESPONSE', false),
     shutdownDrainTimeoutMs:
       readPositiveInteger('MCP_HTTP_SHUTDOWN_DRAIN_SECONDS', 25) * 1_000,
+    oauthEnabled,
+    oauthMetadataEnabled,
+    oauthIssuer,
+    oauthJwksUrl,
+    oauthResource,
+    oauthClockSkewSeconds,
     ...baseConfig,
   };
 }
 
-function createClient(apiKey: string, config: BaseConfig): VideoVectorClient {
+function createClient(
+  credential: VideoVectorCredential,
+  config: BaseConfig
+): VideoVectorClient {
   return new VideoVectorClient({
-    apiKey,
+    credential,
     baseUrl: config.baseUrl,
+    uploadBaseUrl: config.uploadBaseUrl,
     timeout: config.timeout,
     maxRetries: config.maxRetries,
   });
 }
 
 export function extractApiKeyFromHeaders(headers: IncomingHttpHeaders): string | null {
-  // Match backend authentication precedence: an explicit API key wins over an
-  // ambient browser bearer token.
-  const xApiKey = headers['x-api-key'];
-  const headerValue = Array.isArray(xApiKey) ? xApiKey[0] : xApiKey;
-  if (typeof headerValue === 'string' && headerValue.trim().length > 0) {
-    return headerValue.trim();
-  }
-
-  const authorization = headers.authorization;
-  const authValue = Array.isArray(authorization) ? authorization[0] : authorization;
-  if (typeof authValue === 'string') {
-    const match = authValue.match(/^Bearer\s+(.+)$/i);
-    if (match?.[1]) {
-      return match[1].trim();
-    }
-  }
-  return null;
+  const credential = dispatchHttpCredential(headers, {
+    oauthEnabled: false,
+    oauthMetadataEnabled: false,
+    isValidApiKey: isValidPublicApiKeyFormat,
+  });
+  return credential.kind === 'api-key' ? credential.apiKey : null;
 }
 
 function acceptsStreamableHttpResponse(headers: IncomingHttpHeaders): boolean {
@@ -291,17 +409,70 @@ function writeProtocolError(
   });
 }
 
-function createMcpServer(
-  client: VideoVectorClient,
+function escapeWwwAuthenticateValue(value: string): string {
+  return Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127 ? ' ' : character;
+  })
+    .join('')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"');
+}
+
+export function buildOAuthChallenge(
+  resourceMetadataUrl: string,
+  description: string = 'Access token is invalid'
+): string {
+  return [
+    'Bearer error="invalid_token"',
+    `error_description="${escapeWwwAuthenticateValue(description)}"`,
+    `resource_metadata="${escapeWwwAuthenticateValue(resourceMetadataUrl)}"`,
+  ].join(', ');
+}
+
+function oauthCredentialFromAuthInfo(authInfo: AuthInfo | undefined): VideoVectorOAuthCredential {
+  const issuer = authInfo?.extra?.issuer;
+  const subject = authInfo?.extra?.subject;
+  const resource = authInfo?.extra?.resource;
+  if (
+    !authInfo
+    || typeof issuer !== 'string'
+    || typeof subject !== 'string'
+    || typeof resource !== 'string'
+  ) {
+    throw new Error('Validated OAuth principal is incomplete');
+  }
+  return {
+    kind: 'oauth',
+    accessToken: authInfo.token,
+    issuer,
+    subject,
+    resource,
+  };
+}
+
+export function createMcpServer(
+  client: VideoVectorClient | undefined,
   runtime: {
     mode: TransportMode;
     toolProfile?: ToolProfile;
     uploadRoots?: string[];
+    uploadBaseUrl?: string;
+    authenticationKind: 'api-key' | 'oauth' | 'unauthenticated';
+    advertiseOAuth?: boolean;
+    oauthResourceMetadataUrl?: string;
   }
 ): Server {
   const toolDefinitions = getToolDefinitions(
     runtime.toolProfile ?? 'full',
-    runtime.mode === 'stdio'
+    runtime.mode === 'stdio',
+    {
+      includeAppTools: true,
+      advertiseOAuth:
+        runtime.mode === 'http'
+        && runtime.advertiseOAuth === true
+        && runtime.authenticationKind !== 'api-key',
+    }
   );
   const availableToolNames = new Set(toolDefinitions.map((tool) => tool.name));
   const server = new Server(
@@ -312,13 +483,32 @@ function createMcpServer(
     {
       capabilities: {
         tools: {},
+        resources: {},
       },
     }
   );
+  let initializationReadiness: Promise<void> | undefined;
+  if (client && runtime.mode === 'stdio') {
+    // One genuine protocol session, not process construction or credential
+    // refresh. Tools wait for this bounded advisory request before API work.
+    server.oninitialized = () => {
+      initializationReadiness ??= client.recordProcessingActivity({ reason: 'authentication' });
+    };
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async (_request: ListToolsRequest) => ({
     tools: toolDefinitions,
   }));
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [attachmentPickerResource, resultsCardResource] }));
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri === resultsCardResource.uri || request.params.uri === LEGACY_RESULTS_CARD_URI) {
+      return readResultsCard(request.params.uri);
+    }
+    if (request.params.uri !== attachmentPickerResource.uri) {
+      throw new McpError(ErrorCode.InvalidParams, 'Unknown UI resource');
+    }
+    return readAttachmentPicker(runtime.uploadBaseUrl ?? DEFAULT_BASE_URL);
+  });
 
   server.setRequestHandler(
     CallToolRequestSchema,
@@ -339,6 +529,18 @@ function createMcpServer(
           isError: true,
         };
       }
+      if (!client || runtime.authenticationKind === 'unauthenticated') {
+        throw new Error('Authenticated VideoVector client is unavailable');
+      }
+      await initializationReadiness;
+      if (
+        name === 'upload_media'
+        || name === 'process_media'
+        || name === 'find'
+        || name === 'retry_prompt_run_segment'
+      ) {
+        await client.recordProcessingActivity({ reason: 'processing_intent', operation: name });
+      }
       const result = await executeTool(
         name,
         (args ?? {}) as Record<string, unknown>,
@@ -346,13 +548,29 @@ function createMcpServer(
         {
           transportMode: runtime.mode,
           uploadRoots: runtime.uploadRoots,
+          authenticationKind: runtime.authenticationKind,
         }
       );
-      return {
+      const response: CallToolResult = {
         content: result.content,
         structuredContent: result.structuredContent,
         isError: result.isError,
+        _meta: result._meta,
       };
+      if (
+        result.oauthAuthenticationFailure
+        && runtime.authenticationKind === 'oauth'
+        && runtime.oauthResourceMetadataUrl
+      ) {
+        response._meta = {
+          ...response._meta,
+          'mcp/www_authenticate': buildOAuthChallenge(
+            runtime.oauthResourceMetadataUrl,
+            'Reconnect the VideoVector account before retrying'
+          ),
+        };
+      }
+      return response;
     }
   );
 
@@ -362,13 +580,25 @@ function createMcpServer(
   return server;
 }
 
+function isUnauthenticatedOAuthProtocolRequest(body: unknown): boolean {
+  return (
+    InitializeRequestSchema.safeParse(body).success
+    || InitializedNotificationSchema.safeParse(body).success
+    || ListToolsRequestSchema.safeParse(body).success
+    || ListResourcesRequestSchema.safeParse(body).success
+    || ReadResourceRequestSchema.safeParse(body).success
+  );
+}
+
 async function runStdioServer(config: StdioConfig): Promise<void> {
-  const client = createClient(config.apiKey, config);
+  const client = createClient({ kind: 'api-key', apiKey: config.apiKey }, config);
   const toolDefinitions = getToolDefinitions(config.toolProfile ?? 'full', true);
   const server = createMcpServer(client, {
     mode: 'stdio',
     toolProfile: config.toolProfile,
     uploadRoots: config.uploadRoots,
+    uploadBaseUrl: config.uploadBaseUrl ?? config.baseUrl,
+    authenticationKind: 'api-key',
   });
   let isShuttingDown = false;
 
@@ -407,20 +637,24 @@ async function runStdioServer(config: StdioConfig): Promise<void> {
 export function authenticateRequestHeaders(
   headers: IncomingHttpHeaders
 ): { apiKey: string } | { error: string; message: string } {
-  const apiKey = extractApiKeyFromHeaders(headers);
-  if (!apiKey) {
-    return {
-      error: 'missing_api_key',
-      message: 'Provide Authorization: Bearer <key> or X-API-Key header.',
-    };
+  const credential = dispatchHttpCredential(headers, {
+    oauthEnabled: false,
+    oauthMetadataEnabled: false,
+    isValidApiKey: isValidPublicApiKeyFormat,
+  });
+  if (credential.kind === 'api-key') {
+    return { apiKey: credential.apiKey };
   }
-  if (!isValidPublicApiKeyFormat(apiKey)) {
+  if (credential.kind === 'oauth') {
     return {
       error: 'invalid_api_key',
       message: 'API key must use the canonical public sk_live_ format.',
     };
   }
-  return { apiKey };
+  return {
+    error: credential.error,
+    message: credential.message,
+  };
 }
 
 export function createHttpApp(config: HttpConfig): HttpAppContext {
@@ -428,7 +662,30 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
     host: config.host,
     allowedHosts: config.allowedHosts.length > 0 ? config.allowedHosts : undefined,
   });
-  const verifier = new ApiKeyVerifier(config);
+  if (config.oauthMetadataEnabled && !config.oauthEnabled) {
+    throw new Error('OAuth metadata cannot be enabled while OAuth verification is disabled');
+  }
+  const apiKeyVerifier = new ApiKeyVerifier(config);
+  const oauthVerifier = config.oauthEnabled
+    ? new WorkOSOAuthTokenVerifier({
+        issuer: config.oauthIssuer,
+        jwksUrl: config.oauthJwksUrl,
+        resource: config.oauthResource,
+        clockSkewSeconds: config.oauthClockSkewSeconds,
+      })
+    : undefined;
+  const oauthResourceMetadataUrl = config.oauthEnabled
+    ? getOAuthProtectedResourceMetadataUrl(new URL(config.oauthResource))
+    : undefined;
+  const oauthMiddleware = oauthVerifier
+    ? requireBearerAuth({
+        verifier: oauthVerifier,
+        requiredScopes: [],
+        resourceMetadataUrl: config.oauthMetadataEnabled
+          ? oauthResourceMetadataUrl
+          : undefined,
+      })
+    : undefined;
   const activeRequests = new Map<string, ActiveRequestContext>();
   let isDraining = false;
 
@@ -492,7 +749,10 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Headers', allowedHeaders);
       res.setHeader('Access-Control-Allow-Methods', allowedMethods);
-      res.setHeader('Access-Control-Expose-Headers', 'Mcp-Protocol-Version');
+      res.setHeader(
+        'Access-Control-Expose-Headers',
+        'Mcp-Protocol-Version, WWW-Authenticate'
+      );
       res.setHeader('Access-Control-Max-Age', '600');
       appendVaryHeader(res, 'Origin');
       if (req.method === 'OPTIONS') {
@@ -518,9 +778,42 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       return;
     }
 
-    const auth = authenticateRequestHeaders(req.headers);
-    if ('error' in auth) {
-      res.status(401).json(auth);
+    const hasCredentialHeader = (
+      req.headers.authorization !== undefined
+      || req.headers['x-api-key'] !== undefined
+    );
+    const allowUnauthenticatedOAuthProtocol = (
+      config.oauthMetadataEnabled
+      && !hasCredentialHeader
+      && isUnauthenticatedOAuthProtocolRequest(req.body)
+    );
+    const credential = allowUnauthenticatedOAuthProtocol
+      ? undefined
+      : dispatchHttpCredential(req.headers, {
+          oauthEnabled: config.oauthEnabled,
+          oauthMetadataEnabled: config.oauthMetadataEnabled,
+          isValidApiKey: isValidPublicApiKeyFormat,
+        });
+    if (credential?.kind === 'error') {
+      if (
+        credential.oauthChallenge
+        && config.oauthMetadataEnabled
+        && oauthResourceMetadataUrl
+      ) {
+        res.setHeader(
+          'WWW-Authenticate',
+          buildOAuthChallenge(oauthResourceMetadataUrl, credential.message)
+        );
+        res.status(credential.status).json({
+          error: credential.error,
+          error_description: credential.message,
+        });
+        return;
+      }
+      res.status(credential.status).json({
+        error: credential.error,
+        message: credential.message,
+      });
       return;
     }
     if (!acceptsStreamableHttpResponse(req.headers)) {
@@ -538,16 +831,56 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       return;
     }
 
-    const authCheck = await verifier.verify(auth.apiKey);
-    if (!authCheck.ok) {
-      if (authCheck.retryAfterSeconds !== undefined) {
-        res.setHeader('Retry-After', String(authCheck.retryAfterSeconds));
+    let clientCredential: VideoVectorCredential | undefined;
+    if (!credential) {
+      // OAuth publication requires tool metadata to be discoverable before the
+      // first link. Protected tool calls use the transport's HTTP 401 challenge
+      // so native clients can start OAuth. This branch never creates a backend
+      // client or executes a tool; supplied credentials use the strict paths below.
+    } else if (credential.kind === 'api-key') {
+      const authCheck = await apiKeyVerifier.verify(credential.apiKey);
+      if (!authCheck.ok) {
+        if (authCheck.retryAfterSeconds !== undefined) {
+          res.setHeader('Retry-After', String(authCheck.retryAfterSeconds));
+        }
+        res.status(authCheck.status).json({
+          error: authCheck.error,
+          message: authCheck.message,
+        });
+        return;
       }
-      res.status(authCheck.status).json({
-        error: authCheck.error,
-        message: authCheck.message,
-      });
-      return;
+      clientCredential = { kind: 'api-key', apiKey: credential.apiKey };
+    } else {
+      if (!oauthMiddleware) {
+        writeProtocolError(res, 500, -32603, 'OAuth authentication is unavailable.');
+        return;
+      }
+      // The SDK middleware currently tokenizes on one ASCII space. Normalize
+      // already-strictly-parsed RFC bearer whitespace before delegating.
+      req.headers.authorization = `Bearer ${credential.token}`;
+      let authenticated = false;
+      await Promise.resolve(
+        oauthMiddleware(req as never, res as never, (() => {
+          authenticated = true;
+        }) as never)
+      );
+      if (!authenticated) {
+        return;
+      }
+      try {
+        clientCredential = oauthCredentialFromAuthInfo(req.auth);
+      } catch {
+        writeProtocolError(res, 500, -32603, 'OAuth authentication is unavailable.');
+        return;
+      }
+    }
+    const client = clientCredential
+      ? createClient(clientCredential, config)
+      : undefined;
+    if (client && InitializeRequestSchema.safeParse(req.body).success) {
+      // API-key and OAuth verification above are already complete. The same
+      // canonical credentials are revalidated by the lightweight control route.
+      await client.recordProcessingActivity({ reason: 'authentication' });
     }
     if (isDraining) {
       res.setHeader('Retry-After', '5');
@@ -556,10 +889,15 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
     }
 
     const requestId = randomUUID();
-    const client = createClient(auth.apiKey, config);
     const server = createMcpServer(client, {
       mode: 'http',
       toolProfile: config.toolProfile,
+      uploadBaseUrl: config.uploadBaseUrl ?? config.baseUrl,
+      authenticationKind: clientCredential?.kind ?? 'unauthenticated',
+      advertiseOAuth: config.oauthMetadataEnabled,
+      oauthResourceMetadataUrl: config.oauthMetadataEnabled
+        ? oauthResourceMetadataUrl
+        : undefined,
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Upload videos</title>
+  <style>
+    /* WIDGET_STYLES */
+    main { max-width: 580px; margin: auto; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    p { margin: 8px 0; }
+    form { margin-top: 16px; padding: 20px; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 12px; }
+    label { display: block; font-weight: 600; margin-bottom: 10px; }
+    input { display: block; max-width: 100%; }
+    button { margin-top: 16px; }
+    #message { overflow-wrap: anywhere; }
+    #selection { font-size: 13px; opacity: .8; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="heading">VideoVector</h1>
+    <p id="message" role="status" aria-live="polite">Connecting…</p>
+    <form id="upload-form" hidden>
+      <label for="files">Choose the files for this request</label>
+      <input id="files" type="file" multiple required>
+      <p id="selection"></p>
+      <button id="submit" type="submit">Upload and continue</button>
+    </form>
+  </main>
+  <script type="module">/* PICKER_SCRIPT */</script>
+</body>
+</html>

@@ -23,6 +23,26 @@ afterEach(() => {
 });
 
 describe('simplified workflow tool surface', () => {
+  it('keeps legacy process/search bytes and identity when enabling automatic artifacts', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', { headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new VideoVectorClient({ apiKey: 'account-key', baseUrl: 'https://example.com/api/v2', maxRetries: 0 });
+    const process = { prompt_id: 'prompt-1', video_ids: ['video-1'], enable_transcription: false };
+    const search = { query: 'visible scene', result_level: 'segment' as const, prompt_run_ids: ['run-1'], limit: 1 };
+    await client.workflowProcessMedia(process, 'same-process');
+    await client.workflowProcessMedia({ ...process, artifact_delivery: 'automatic' }, 'same-process');
+    await client.workflowSearchMedia(search, 'same-search');
+    await client.workflowSearchMedia({ artifact_delivery: 'automatic', ...search }, 'same-search');
+    for (const [before, after] of [[0, 1], [2, 3]]) {
+      const original = fetchMock.mock.calls[before]![1] as RequestInit;
+      const upgraded = fetchMock.mock.calls[after]![1] as RequestInit;
+      expect(upgraded.body).toBe(original.body);
+      expect((upgraded.headers as Record<string, string>)['Idempotency-Key']).toBe((original.headers as Record<string, string>)['Idempotency-Key']);
+      expect((upgraded.headers as Record<string, string>)['X-Artifact-Delivery']).toBe('automatic');
+      expect((original.headers as Record<string, string>)['X-Artifact-Delivery']).toBeUndefined();
+    }
+  });
+
   it('encodes JSON workflow calls on canonical paths with durable identities', async () => {
     const fetchMock = vi.fn().mockImplementation(async () =>
       new Response(JSON.stringify({ data: [] }), {
@@ -121,27 +141,20 @@ describe('simplified workflow tool surface', () => {
     expect(keys[0]).toMatch(/^workflow-define:/);
   });
 
-  it('keeps full as the compatibility profile and exposes four focused simple tools', () => {
+  it('keeps full as the compatibility profile and includes status and results in the simple profile', () => {
     const fullNames = getToolDefinitions('full', true).map((tool) => tool.name);
     const simpleNames = getToolDefinitions('simple', true).map((tool) => tool.name);
     const hostedSimpleNames = getToolDefinitions('simple', false).map((tool) => tool.name);
 
-    expect(fullNames).toHaveLength(52);
+    expect(fullNames).toHaveLength(53);
     expect(fullNames).toContain('search_videos');
     expect(simpleNames).toEqual([
-      'upload_media',
-      'define_prompt',
-      'process_media',
-      'search_media',
+      'find', 'upload_media', 'define_prompt', 'process_media', 'search_media',
+      'get_prompt_run_status', 'get_prompt_run_results', 'get_import_job', 'retry_import_job',
     ]);
-    expect(hostedSimpleNames).toEqual([
-      'define_prompt',
-      'process_media',
-      'search_media',
-    ]);
+    expect(hostedSimpleNames).toEqual(simpleNames);
     expect(getToolAvailability('upload_media')).toEqual({
-      profiles: ['simple', 'full'],
-      transports: ['stdio'],
+      profiles: ['simple', 'full'], transports: ['stdio', 'streamable-http'],
     });
     expect(getToolAvailability('define_prompt')).toEqual({
       profiles: ['simple', 'full'],
@@ -156,6 +169,7 @@ describe('simplified workflow tool surface', () => {
     )?.annotations).toMatchObject({
       readOnlyHint: false,
       idempotentHint: false,
+      openWorldHint: false,
     });
   });
 
@@ -235,7 +249,7 @@ describe('simplified workflow tool surface', () => {
     expect((client as any).workflowSearchMedia).not.toHaveBeenCalled();
   });
 
-  it('preserves backend and saved prompt defaults when processing settings are omitted', async () => {
+  it('preserves saved processing defaults by omitting every unsupplied override', async () => {
     const client = {
       workflowProcessMedia: vi.fn().mockResolvedValue({ run_id: 'run_1' }),
     } as unknown as VideoVectorClient;
@@ -251,6 +265,7 @@ describe('simplified workflow tool surface', () => {
 
     expect((client as any).workflowProcessMedia).toHaveBeenCalledWith(
       {
+        artifact_delivery: 'automatic',
         prompt_id: 'prompt_1',
         video_ids: ['video_1', 'video_2'],
       },
@@ -258,93 +273,44 @@ describe('simplified workflow tool surface', () => {
     );
   });
 
-  it('leaves omitted fixed duration to the backend default', async () => {
-    const client = {
-      workflowProcessMedia: vi.fn().mockResolvedValue({ run_id: 'run_2' }),
-    } as unknown as VideoVectorClient;
-
-    await executeTool(
-      'process_media',
-      {
-        prompt_instruction: 'Describe the scene',
-        segmentation_mode: 'fixed',
-        advanced_transcription: true,
-        create_image_embeddings: true,
-      },
-      client
-    );
-
-    expect((client as any).workflowProcessMedia).toHaveBeenCalledWith(
-      {
-        prompt_instruction: 'Describe the scene',
-        segmentation_mode: 'fixed',
-        advanced_transcription: true,
-        create_image_embeddings: true,
-      },
-      undefined
-    );
-  });
-
-  it.each(['content_aware', 'fixed'] as const)('forwards explicit %s settings and false toggles', async (mode) => {
-    const client = {
-      workflowProcessMedia: vi.fn().mockResolvedValue({ run_id: 'run_3' }),
-    } as unknown as VideoVectorClient;
-    const options = {
-      prompt_id: 'prompt_1',
-      segmentation_mode: mode,
-      ...(mode === 'fixed' ? { fixed_segment_duration_seconds: 15 } : {}),
-      advanced_transcription: false,
-      create_image_embeddings: false,
+  it('forwards explicit per-media execution overrides including false', async () => {
+    const client = { workflowProcessMedia: vi.fn().mockResolvedValue({ run_id: 'run_2' }) } as unknown as VideoVectorClient;
+    const args = {
+      prompt_instruction: 'Shortlist the scenes with a red car',
+      video_segmentation_type: 'fixed', video_segment_duration: 12,
+      audio_segmentation_type: 'content_aware', processing_model: 'gemini-model',
+      enable_transcription: false, enable_image_embedding: true,
     };
-
-    const response = await executeTool('process_media', options, client);
-
-    expect(response.isError).toBeUndefined();
-    expect((client as any).workflowProcessMedia).toHaveBeenCalledWith(options, undefined);
+    await executeTool('process_media', args, client);
+    expect((client as any).workflowProcessMedia).toHaveBeenCalledWith({ ...args, artifact_delivery: 'automatic' }, undefined);
   });
 
-  it('rejects retired smart segmentation before making a paid submission', async () => {
+  it('rejects retired process shortcuts before calling the API', async () => {
     const client = { workflowProcessMedia: vi.fn() } as unknown as VideoVectorClient;
     const response = await executeTool('process_media', {
-      prompt_id: 'prompt_1', segmentation_mode: 'smart',
+      prompt_id: 'prompt_1', segmentation_mode: 'content_aware',
     }, client);
-
     expect(response.isError).toBe(true);
-    expect(String(parseContent(response).message)).toContain('content_aware, fixed');
     expect((client as any).workflowProcessMedia).not.toHaveBeenCalled();
   });
 
-  it('advertises only canonical segmentation without injecting optional execution defaults', () => {
-    for (const name of ['process_media', 'estimate_prompt_run', 'execute_prompt']) {
-      const definition = getToolDefinitions('full', true).find((tool) => tool.name === name);
-      const properties = definition?.inputSchema.properties as Record<string, Record<string, unknown>>;
-      const segmentation = properties[name === 'process_media' ? 'segmentation_mode' : 'video_segmentation_type'];
-      expect(segmentation.enum).toEqual(expect.arrayContaining(['content_aware', 'fixed']));
-      expect(segmentation.enum).not.toContain('smart');
-      for (const field of ['segmentation_mode', 'video_segmentation_type', 'audio_segmentation_type',
-        'advanced_transcription', 'create_image_embeddings', 'enable_transcription', 'enable_image_embedding']) {
-        if (properties[field]) expect(properties[field]).not.toHaveProperty('default');
-      }
+  it('advertises exactly fixed and content-aware across execution and engine configuration', () => {
+    const definitions = getToolDefinitions('full', true);
+    for (const name of ['process_media', 'estimate_prompt_run', 'create_prompt', 'update_prompt']) {
+      const properties = definitions.find((tool) => tool.name === name)!.inputSchema.properties as any;
+      const config = name.endsWith('_prompt') && name !== 'estimate_prompt_run' ? properties.execution_config.properties : properties;
+      expect(config.video_segmentation_type.enum).toEqual(['fixed', 'content_aware']);
+      expect(config).not.toHaveProperty('video_segment_min_duration');
+      expect(config).not.toHaveProperty('video_segment_max_duration');
     }
   });
 
-  it('rejects fixed duration outside fixed mode before calling the API', async () => {
-    const client = {
-      workflowProcessMedia: vi.fn(),
-    } as unknown as VideoVectorClient;
-
-    const response = await executeTool(
-      'process_media',
-      {
-        prompt_id: 'prompt_1',
-        segmentation_mode: 'content_aware',
-        fixed_segment_duration_seconds: 12,
-      },
-      client
-    );
-
-    expect(response.isError).toBe(true);
-    expect(String(parseContent(response).message)).toContain('only valid');
+  it('rejects unsupported modes and unknown duration controls before dispatch', async () => {
+    const client = { workflowProcessMedia: vi.fn() } as unknown as VideoVectorClient;
+    for (const overrides of [{ video_segmentation_type: 'unsupported' }, { video_segment_min_duration: 15 }]) {
+      const response = await executeTool('process_media', { prompt_id: 'prompt_1', ...overrides }, client);
+      expect(response.isError).toBe(true);
+    }
     expect((client as any).workflowProcessMedia).not.toHaveBeenCalled();
   });
 
@@ -369,6 +335,7 @@ describe('simplified workflow tool surface', () => {
 
     expect((client as any).workflowSearchMedia).toHaveBeenCalledWith(
       {
+        artifact_delivery: 'automatic',
         query: 'red car',
         result_level: 'segment',
         limit: 10,
@@ -404,6 +371,7 @@ describe('simplified workflow tool surface', () => {
 
     expect((client as any).workflowSearchMedia).toHaveBeenCalledWith(
       {
+        artifact_delivery: 'automatic',
         filters: [
           { field: 'brand', operator: 'equals', value: 'Acme' },
           { field: 'topics', operator: 'is_not_empty' },
@@ -437,9 +405,9 @@ describe('simplified workflow tool surface', () => {
     expect((client as any).workflowSearchMedia).not.toHaveBeenCalled();
   });
 
-  it('rejects mixed search modes and cursor parameters', async () => {
+  it('combines semantic queries and conditions in one canonical search and rejects mixed cursor parameters', async () => {
     const client = {
-      workflowSearchMedia: vi.fn(),
+      workflowSearchMedia: vi.fn().mockResolvedValue({ data: [], mode: 'vector', result_level: 'segment', pagination: {} }),
       workflowSearchPage: vi.fn(),
     } as unknown as VideoVectorClient;
 
@@ -454,9 +422,9 @@ describe('simplified workflow tool surface', () => {
       client
     );
 
-    expect(hybrid.isError).toBe(true);
+    expect(hybrid.isError).not.toBe(true);
     expect(cursor.isError).toBe(true);
-    expect((client as any).workflowSearchMedia).not.toHaveBeenCalled();
+    expect((client as any).workflowSearchMedia).toHaveBeenCalledWith({ artifact_delivery: 'automatic', query: 'car', filters: [{ field: 'brand', operator: 'equals', value: 'Acme' }], result_level: 'segment', limit: 10 }, undefined);
     expect((client as any).workflowSearchPage).not.toHaveBeenCalled();
   });
 
@@ -565,12 +533,7 @@ describe('local workflow uploads', () => {
     });
 
     try {
-      const response = await executeTool(
-        'upload_media',
-        { file_path: mediaPath, idempotency_key: 'upload-1' },
-        client,
-        { transportMode: 'stdio', uploadRoots: [root] }
-      );
+      const response = await client.workflowUploadMedia({ file_path: mediaPath }, 'upload-1');
 
       expect(response.isError).not.toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -692,4 +655,13 @@ describe('local workflow uploads', () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+});
+
+it('processes every published import part through the server manifest selector', async () => {
+  const client = { workflowProcessMedia: vi.fn().mockResolvedValue({ run_id: 'run', status: 'pending' }) } as unknown as VideoVectorClient;
+  await executeTool('process_media', { prompt_id: 'p', import_job_id: 'job' }, client);
+  expect(client.workflowProcessMedia).toHaveBeenCalledWith(expect.objectContaining({ prompt_id: 'p', import_job_id: 'job' }), undefined);
+  const invalid = await executeTool('process_media', { prompt_id: 'p', import_job_id: 'job', video_ids: ['first-page-only'] }, client);
+  expect(invalid.isError).toBe(true);
+  expect(client.workflowProcessMedia).toHaveBeenCalledTimes(1);
 });

@@ -12,6 +12,8 @@ RUN npm ci --ignore-scripts
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY scripts/build-picker.mjs ./scripts/build-picker.mjs
+COPY ui ./ui
 RUN npm run build
 RUN npm prune --omit=dev --ignore-scripts
 

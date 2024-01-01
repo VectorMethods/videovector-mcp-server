@@ -2,14 +2,10 @@
 
 HTTP mode exposes the MCP server over Streamable HTTP for private network or self-hosted deployments.
 
-To use VectorMethods' existing OAuth service instead, connect to
-`https://api.vectormethods.com/mcp` as described in
-[hosted setup](hosted-oauth.md).
-
-The runtime in this repository (`package.json` version `2.1.2`) uses API-key
-authentication for self-hosted HTTP. It does not implement the hosted
-service's OAuth verifier or protected-resource discovery. The configuration below describes this package;
-adding `MCP_OAUTH_*` environment variables does not add OAuth support.
+To use VectorMethods' existing service instead, connect to
+`https://api.vectormethods.com/mcp` with OAuth as described in
+[hosted setup](hosted-oauth.md). The environment variables below are for
+operators running their own server.
 
 ```bash
 npm run build
@@ -28,22 +24,42 @@ server/transport context. Follow-up requests can be routed to a different
 instance without affinity. `GET /mcp` and `DELETE /mcp` intentionally return a
 protocol-shaped `405`.
 
-Every `/mcp` request must include `Authorization: Bearer <key>` or `X-API-Key:
-<key>`. Both HTTP and stdio modes accept canonical production API keys only:
+Protected `/mcp` tool calls must include exactly one credential: `Authorization:
+Bearer <key>` or `X-API-Key: <key>`, or an OAuth bearer token when enabled.
+API-key authentication in both HTTP and stdio modes accepts canonical production API keys only:
 `sk_live_` followed by exactly 48 lowercase hexadecimal characters. The server
-rejects development-key formats before normal API use. Send one authentication
-header. This package gives `X-API-Key` precedence if both are supplied; the
-hosted service rejects mixed credentials.
+rejects development-key formats before normal API use. Combining the two
+headers is an ambiguous request and is rejected.
 
-Clients must send `Accept: application/json, text/event-stream` and omit
-`MCP-Session-Id`. In this package, every MCP POST requires an API key,
-including initialization and tool discovery. The hosted OAuth service allows
-those discovery requests before sign-in and protects actual tool calls.
+Hosted deployments may additionally accept WorkOS OAuth bearer tokens:
 
-Any future self-hosted OAuth integration must also match the backend's
-supported issuer, resource audience, and signed identity claims. Changing a
-Node server's authentication settings alone does not add another OAuth
-provider to the VectorMethods-hosted API.
+```bash
+MCP_TRANSPORT_MODE=http \
+MCP_OAUTH_ENABLED=true \
+MCP_OAUTH_METADATA_ENABLED=false \
+MCP_OAUTH_ISSUER=https://your-environment.authkit.app \
+MCP_OAUTH_JWKS_URL=https://your-environment.authkit.app/oauth2/jwks \
+MCP_OAUTH_RESOURCE=https://api.example.com/mcp \
+MCP_OAUTH_CLOCK_SKEW_SECONDS=60 \
+node dist/index.js
+```
+
+The issuer must be a canonical HTTPS origin, the JWKS URL must be its exact
+`/oauth2/jwks` endpoint without a query or fragment, and the resource must be a
+canonical HTTPS URL with a path and no query or fragment.
+The API also verifies the forwarded bearer token. OAuth configuration must
+match that backend's supported WorkOS issuer, resource audience, and signed
+Firebase identity claims. Setting Node environment variables alone does not
+add a different OAuth provider to the VectorMethods-hosted API.
+OAuth is disabled and unadvertised by default. Deploy verification first, then
+serve protected-resource metadata from the public resource origin at
+`/.well-known/oauth-protected-resource/mcp`, and enable
+`MCP_OAUTH_METADATA_ENABLED` last. The Node service intentionally does not
+serve authorization-server endpoints, call UserInfo, or introspect tokens.
+When metadata is enabled, initialization and tool discovery can run without a
+credential so clients can discover OAuth; protected tool calls still require
+authentication. Clients must accept both `application/json` and
+`text/event-stream` and omit `MCP-Session-Id`.
 
 Recommended hardening:
 
@@ -58,4 +74,18 @@ Recommended hardening:
 - Keep `MCP_HTTP_SHUTDOWN_DRAIN_SECONDS` below the platform termination grace
   period so in-flight requests settle before the instance exits.
 - Keep service deployment secrets, service accounts, and cloud project IDs outside this public repo.
-- Do not publish a hosted remote MCP endpoint until OAuth and MCP protected-resource metadata are implemented for that deployment.
+- Do not publish a hosted remote MCP endpoint until OAuth verification and MCP protected-resource metadata are enabled for that deployment.
+
+For the VectorMethods-hosted stage service, the direct Cloud Run origin is
+not a public ingress path. Cloud Run uses
+`internal-and-cloud-load-balancing` ingress and an external HTTPS load
+balancer with a serverless NEG. The service may remain unauthenticated at
+Cloud Run IAM because protected MCP tool calls authenticate an API key or OAuth token, but unrestricted
+Cloud Run ingress is forbidden.
+
+The hosted load-balancer backend is attached to a Cloud Armor source-IP
+throttle (600 requests per minute by default). It is a coarse capacity
+boundary only; per-key verification bounds, backend fingerprint controls, and
+global service capacity remain authoritative. Operators may tune
+`MCP_CLOUD_ARMOR_RATE_LIMIT_RPM`, but must keep the policy attached and verify
+that the public Internet cannot reach the `run.app` origin.

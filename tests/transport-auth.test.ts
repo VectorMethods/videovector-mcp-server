@@ -72,6 +72,12 @@ const httpConfig: HttpConfig = {
   allowedOrigins: [],
   enableJsonResponse: true,
   shutdownDrainTimeoutMs: 25_000,
+  oauthEnabled: false,
+  oauthMetadataEnabled: false,
+  oauthIssuer: '',
+  oauthJwksUrl: '',
+  oauthResource: '',
+  oauthClockSkewSeconds: 60,
 };
 
 afterEach(() => {
@@ -80,7 +86,7 @@ afterEach(() => {
 });
 
 describe('stateless HTTP transport authentication', () => {
-  it('omits local upload from the hosted tool list', async () => {
+  it('advertises hosted uploads without local path inputs', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successfulValidation()));
     const { app } = createHttpApp(httpConfig);
     const response = await request(app as any)
@@ -94,10 +100,10 @@ describe('stateless HTTP transport authentication', () => {
     expect(names).toContain('define_prompt');
     expect(names).toContain('process_media');
     expect(names).toContain('search_media');
-    expect(names).not.toContain('upload_media');
+    expect(names).toContain('upload_media');
   });
 
-  it('rejects direct invocation of a transport-hidden local upload tool', async () => {
+  it('rejects local paths through hosted upload', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(successfulValidation());
     vi.stubGlobal('fetch', fetchSpy);
     const { app } = createHttpApp(httpConfig);
@@ -105,12 +111,16 @@ describe('stateless HTTP transport authentication', () => {
       .post('/mcp')
       .set('X-API-Key', publicApiKey(98))
       .set('Accept', 'application/json, text/event-stream')
-      .send(callToolRequest('hidden-upload', 'upload_media'));
+      .send({ ...callToolRequest('hidden-upload', 'upload_media'), params: { name: 'upload_media', arguments: { file_path: '/tmp/private.mp4' } } });
 
     expect(response.status).toBe(200);
     expect(response.body.result.isError).toBe(true);
-    expect(response.body.result.content[0].text).toContain('not available');
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(response.body.result.content[0].text).toContain('local stdio');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
+      '/api/v2/auth/validate',
+      '/api/v2/auth/processing-activity',
+    ]);
   });
 
   it('enforces the simple profile for listings and direct tool calls', async () => {
@@ -124,8 +134,16 @@ describe('stateless HTTP transport authentication', () => {
       .set('X-API-Key', apiKey)
       .set('Accept', 'application/json, text/event-stream')
       .send(listToolsRequest('simple-tools'));
-    const names = listed.body.result.tools.map((tool: { name: string }) => tool.name);
-    expect(names).toEqual(['define_prompt', 'process_media', 'search_media']);
+    const names = listed.body.result.tools.filter((tool: { _meta?: { ui?: { visibility?: string[] } } }) => tool._meta?.ui?.visibility?.includes('app') !== true).map((tool: { name: string }) => tool.name);
+    expect(names).toEqual(['find', 'upload_media', 'define_prompt', 'process_media', 'search_media', 'get_prompt_run_status', 'get_prompt_run_results', 'get_import_job', 'retry_import_job']);
+    const appTools = listed.body.result.tools.filter((tool: { _meta?: { ui?: { visibility?: string[] } } }) => tool._meta?.ui?.visibility?.includes('app') === true);
+    expect(appTools.map((tool: { name: string }) => tool.name).sort()).toEqual([
+      'download_workflow_artifact', 'get_studio_previews', 'list_studio_scope', 'play_workflow_media', 'view_workflow_results',
+    ]);
+    for (const tool of appTools) {
+      expect(tool._meta.ui.visibility).toEqual(['app']);
+      expect(tool._meta['openai/visibility']).toBe('private');
+    }
 
     const hidden = await request(app as any)
       .post('/mcp')
@@ -179,14 +197,17 @@ describe('stateless HTTP transport authentication', () => {
     expect(JSON.stringify(response.body)).not.toContain(candidate);
   });
 
-  it('gives explicit X-API-Key precedence over an ambient bearer token', () => {
+  it('rejects X-API-Key combined with an ambient bearer token', () => {
     const apiKey = publicApiKey(43);
     const auth = authenticateRequestHeaders({
       authorization: 'Bearer firebase-jwt-from-browser-session',
       'x-api-key': apiKey,
     });
 
-    expect(auth).toEqual({ apiKey });
+    expect(auth).toEqual({
+      error: 'ambiguous_credentials',
+      message: 'Send exactly one credential: X-API-Key or Authorization bearer.',
+    });
   });
 
   it('accepts canonical bearer authentication on a stateless POST', async () => {
@@ -202,7 +223,7 @@ describe('stateless HTTP transport authentication', () => {
     expect(response.headers['mcp-session-id']).toBeUndefined();
   });
 
-  it('validates against the side-effect-free auth endpoint', async () => {
+  it('validates read-only before signaling explicit authenticated initialization', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(successfulValidation());
     vi.stubGlobal('fetch', fetchSpy);
     const { app } = createHttpApp(httpConfig);
@@ -214,10 +235,11 @@ describe('stateless HTTP transport authentication', () => {
       .send(initializeRequest('validate-path'));
 
     expect(response.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(new URL(url).pathname).toBe('/api/v2/auth/validate');
     expect(init.method).toBe('GET');
+    expect(new URL(fetchSpy.mock.calls[1]![0]).pathname).toBe('/api/v2/auth/processing-activity');
   });
 
   it('rejects invalid credentials before allocating request state', async () => {
@@ -386,7 +408,8 @@ describe('stateless HTTP transport authentication', () => {
 
     expect(initialized.status).toBe(200);
     expect(listed.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls.filter(([url]) => new URL(url).pathname.endsWith('/auth/validate'))).toHaveLength(1);
     await vi.waitFor(() => expect(context.activeRequests.size).toBe(0));
   });
 
@@ -403,7 +426,8 @@ describe('stateless HTTP transport authentication', () => {
         .send(initializeRequest(`tenant-${seed}`));
       expect(response.status).toBe(200);
     }
-    expect(fetchSpy).toHaveBeenCalledTimes(12);
+    expect(fetchSpy).toHaveBeenCalledTimes(24);
+    expect(fetchSpy.mock.calls.filter(([url]) => new URL(url).pathname.endsWith('/auth/validate'))).toHaveLength(12);
   });
 });
 
@@ -522,7 +546,7 @@ describe('stateless HTTP lifecycle', () => {
     expect(initialized.status).toBe(200);
     expect(listed.status).toBe(200);
     expect(listed.body.result.tools.length).toBeGreaterThan(0);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it('rejects stale stateful client headers explicitly', async () => {
@@ -794,6 +818,37 @@ describe('bounded API-key verifier', () => {
 });
 
 describe('stateless HTTP configuration', () => {
+  const oauthEnvironmentNames = [
+    'MCP_OAUTH_ENABLED',
+    'MCP_OAUTH_METADATA_ENABLED',
+    'MCP_OAUTH_ISSUER',
+    'MCP_OAUTH_JWKS_URL',
+    'MCP_OAUTH_RESOURCE',
+    'MCP_OAUTH_CLOCK_SKEW_SECONDS',
+  ] as const;
+
+  function withOauthEnvironment(
+    values: Partial<Record<(typeof oauthEnvironmentNames)[number], string>>,
+    callback: () => void
+  ): void {
+    const previous = Object.fromEntries(
+      oauthEnvironmentNames.map((name) => [name, process.env[name]])
+    );
+    for (const name of oauthEnvironmentNames) {
+      delete process.env[name];
+    }
+    Object.assign(process.env, values);
+    try {
+      callback();
+    } finally {
+      for (const name of oauthEnvironmentNames) {
+        const prior = previous[name];
+        if (prior === undefined) delete process.env[name];
+        else process.env[name] = prior;
+      }
+    }
+  }
+
   it('ignores obsolete session controls instead of retaining hidden state', () => {
     const obsolete = {
       MCP_HTTP_MAX_SESSIONS: process.env.MCP_HTTP_MAX_SESSIONS,
@@ -821,6 +876,120 @@ describe('stateless HTTP configuration', () => {
       }
     }
   });
+
+  it('keeps OAuth verification and advertising disabled by default', () => {
+    withOauthEnvironment({}, () => {
+      expect(loadHttpConfig(baseConfig)).toMatchObject({
+        oauthEnabled: false,
+        oauthMetadataEnabled: false,
+        oauthIssuer: '',
+        oauthJwksUrl: '',
+        oauthResource: '',
+        oauthClockSkewSeconds: 60,
+      });
+    });
+  });
+
+  it('fails closed when metadata is advertised before verification', () => {
+    withOauthEnvironment({ MCP_OAUTH_METADATA_ENABLED: 'true' }, () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit:${code ?? 0}`);
+      }) as never);
+      expect(() => loadHttpConfig(baseConfig)).toThrow('process.exit:1');
+    });
+  });
+
+  it('loads the validated staging OAuth contract without enabling metadata', () => {
+    withOauthEnvironment({
+      MCP_OAUTH_ENABLED: 'true',
+      MCP_OAUTH_METADATA_ENABLED: 'false',
+      MCP_OAUTH_ISSUER: 'https://prompt-stone-38-staging.authkit.app',
+      MCP_OAUTH_JWKS_URL:
+        'https://prompt-stone-38-staging.authkit.app/oauth2/jwks',
+      MCP_OAUTH_RESOURCE: 'https://api.vectormethods.com/mcp',
+      MCP_OAUTH_CLOCK_SKEW_SECONDS: '60',
+    }, () => {
+      expect(loadHttpConfig(baseConfig)).toMatchObject({
+        oauthEnabled: true,
+        oauthMetadataEnabled: false,
+        oauthIssuer: 'https://prompt-stone-38-staging.authkit.app',
+        oauthJwksUrl:
+          'https://prompt-stone-38-staging.authkit.app/oauth2/jwks',
+        oauthResource: 'https://api.vectormethods.com/mcp',
+        oauthClockSkewSeconds: 60,
+      });
+    });
+  });
+
+  it('refuses to advertise a WorkOS staging issuer at runtime', () => {
+    withOauthEnvironment({
+      MCP_OAUTH_ENABLED: 'true',
+      MCP_OAUTH_METADATA_ENABLED: 'true',
+      MCP_OAUTH_ISSUER: 'https://prompt-stone-38-staging.authkit.app',
+      MCP_OAUTH_JWKS_URL:
+        'https://prompt-stone-38-staging.authkit.app/oauth2/jwks',
+      MCP_OAUTH_RESOURCE: 'https://api.vectormethods.com/mcp',
+    }, () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit:${code ?? 0}`);
+      }) as never);
+      expect(() => loadHttpConfig(baseConfig)).toThrow('process.exit:1');
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('cannot advertise a WorkOS staging issuer')
+      );
+    });
+  });
+
+  it.each([
+    {
+      MCP_OAUTH_ISSUER: 'https://issuer.example.com?tenant=1',
+      MCP_OAUTH_JWKS_URL: 'https://issuer.example.com/oauth2/jwks',
+      MCP_OAUTH_RESOURCE: 'https://api.example.com/mcp',
+    },
+    {
+      MCP_OAUTH_ISSUER: 'https://issuer.example.com/tenant',
+      MCP_OAUTH_JWKS_URL: 'https://issuer.example.com/oauth2/jwks',
+      MCP_OAUTH_RESOURCE: 'https://api.example.com/mcp',
+    },
+    {
+      MCP_OAUTH_ISSUER: 'https://issuer.example.com',
+      MCP_OAUTH_JWKS_URL: 'https://keys.example.net/oauth2/jwks',
+      MCP_OAUTH_RESOURCE: 'https://api.example.com/mcp',
+    },
+    {
+      MCP_OAUTH_ISSUER: 'https://issuer.example.com',
+      MCP_OAUTH_JWKS_URL: 'https://issuer.example.com/oauth2/jwks?tenant=1',
+      MCP_OAUTH_RESOURCE: 'https://api.example.com/mcp',
+    },
+    {
+      MCP_OAUTH_ISSUER: 'https://issuer.example.com',
+      MCP_OAUTH_JWKS_URL: 'https://issuer.example.com/keys',
+      MCP_OAUTH_RESOURCE: 'https://api.example.com/mcp',
+    },
+    {
+      MCP_OAUTH_ISSUER: 'https://issuer.example.com',
+      MCP_OAUTH_JWKS_URL: 'https://issuer.example.com/oauth2/jwks',
+      MCP_OAUTH_RESOURCE: 'https://api.example.com/mcp?tenant=1',
+    },
+    {
+      MCP_OAUTH_ISSUER: 'https://issuer.example.com',
+      MCP_OAUTH_JWKS_URL: 'https://issuer.example.com/oauth2/jwks',
+      MCP_OAUTH_RESOURCE: 'https://api.example.com',
+    },
+  ])('rejects an unsafe OAuth URL contract', (values) => {
+    withOauthEnvironment({
+      MCP_OAUTH_ENABLED: 'true',
+      ...values,
+    }, () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit:${code ?? 0}`);
+      }) as never);
+      expect(() => loadHttpConfig(baseConfig)).toThrow('process.exit:1');
+    });
+  });
 });
 
 describe('HTTP CORS policy', () => {
@@ -840,7 +1009,7 @@ describe('HTTP CORS policy', () => {
       'https://allowed.example'
     );
     expect(response.headers['access-control-expose-headers']).toBe(
-      'Mcp-Protocol-Version'
+      'Mcp-Protocol-Version, WWW-Authenticate'
     );
     expect(response.headers['access-control-expose-headers']).not.toContain(
       'Session'

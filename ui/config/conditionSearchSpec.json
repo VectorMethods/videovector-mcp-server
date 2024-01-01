@@ -1,0 +1,40 @@
+{
+  "maxConditions": 4,
+  "supportedFieldTypes": ["string", "integer", "number", "boolean", "array"],
+  "operatorsByType": {
+    "string": [
+      { "value": "equals", "label": "Equals", "requiresValue": true },
+      { "value": "contains", "label": "Contains", "requiresValue": true },
+      { "value": "starts_with", "label": "Starts with", "requiresValue": true },
+      { "value": "ends_with", "label": "Ends with", "requiresValue": true },
+      { "value": "is_empty", "label": "Is empty", "requiresValue": false },
+      { "value": "is_not_empty", "label": "Is not empty", "requiresValue": false }
+    ],
+    "integer": [
+      { "value": "equals", "label": "Equals", "requiresValue": true },
+      { "value": "greater_than", "label": "Greater than", "requiresValue": true },
+      { "value": "greater_equal", "label": "Greater or equal", "requiresValue": true },
+      { "value": "less_than", "label": "Less than", "requiresValue": true },
+      { "value": "less_equal", "label": "Less or equal", "requiresValue": true }
+    ],
+    "number": [
+      { "value": "equals", "label": "Equals", "requiresValue": true },
+      { "value": "greater_than", "label": "Greater than", "requiresValue": true },
+      { "value": "greater_equal", "label": "Greater or equal", "requiresValue": true },
+      { "value": "less_than", "label": "Less than", "requiresValue": true },
+      { "value": "less_equal", "label": "Less or equal", "requiresValue": true }
+    ],
+    "boolean": [
+      { "value": "equals", "label": "Is", "requiresValue": true }
+    ],
+    "array": [
+      { "value": "item_equals", "label": "Has item equal to", "requiresValue": true },
+      { "value": "item_contains", "label": "Has item containing", "requiresValue": true },
+      { "value": "length_equals", "label": "Length equals", "requiresValue": true },
+      { "value": "length_greater", "label": "Length greater than", "requiresValue": true },
+      { "value": "length_less", "label": "Length less than", "requiresValue": true },
+      { "value": "is_empty", "label": "Is empty", "requiresValue": false },
+      { "value": "is_not_empty", "label": "Is not empty", "requiresValue": false }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+.studio-video-rail { display: flex; flex-direction: column; gap: 8px; min-width: 0; width: 100%; }
+.studio-video-rail__search,.studio-video-rail__action { display: inline-flex; align-items: center; justify-content: flex-start; gap: 7px; min-width: 0; padding: 8px 9px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.studio-video-rail__search:hover,.studio-video-rail__search[aria-pressed="true"] { color: var(--accent-color); border-color: var(--accent-color); }
+.studio-video-rail__search:focus-visible,.studio-video-rail__action:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
+.studio-video-rail__action { justify-content: center; border-color: transparent; background: transparent; padding: 5px 2px; }
+.studio-video-rail__action:hover { color: var(--accent-color); }
+.studio-video-rail__action:disabled { opacity: .6; cursor: default; }
+.studio-video-rail__videos { display: grid; grid-template-columns: minmax(0,1fr); gap: 6px; min-width: 0; max-height: min(70vh,720px); overflow: auto; padding: 2px; scrollbar-width: thin; }
+.studio-video-rail__videos .preview-viewport-tile-shell { min-width: 0; margin: 0; aspect-ratio: auto; background: transparent; }
+.studio-video-rail__videos .preview-viewport-tile-placeholder { aspect-ratio: 4/3; }
+.studio-video-rail__video { position: relative; min-width: 0; }
+.studio-video-rail__video > .segment-run-stack { left: 5px; right: 5px; bottom: 24px; padding: 3px; }
+.studio-video-rail__videos .index-gallery-card { flex-direction: column; align-items: stretch; gap: 6px; width: 100%; height: auto; padding: 5px; }
+.studio-video-rail__videos .index-gallery-preview { flex: none; width: 100%; height: auto; aspect-ratio: 16/9; }
+.studio-video-rail__videos .index-gallery-caption { gap: 0; }
+.studio-video-rail__videos .index-gallery-caption strong { font-size: 11px; -webkit-line-clamp: 1; }
+.studio-video-rail__videos .index-gallery-selected { top: 8px; right: 8px; padding: 2px; border-radius: 50%; background: var(--bg-primary); }
+.studio-video-rail__empty { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; padding: 14px 8px; color: var(--text-muted); text-align: center; font-size: 12px; }
+.studio-video-rail__notice { margin: 0; color: var(--text-secondary); font-size: 11px; overflow-wrap: anywhere; }
+.studio-video-rail__spinner { animation: studio-video-rail-spin 1s linear infinite; }
+@keyframes studio-video-rail-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .studio-video-rail__spinner { animation: none; } }

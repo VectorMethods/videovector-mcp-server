@@ -43,6 +43,39 @@ afterEach(() => {
 });
 
 describe('VideoVectorClient request encoding', () => {
+  it.each([
+    ['index', 'all'],
+    ['index', 'matches'],
+    ['prompt_run', 'all'],
+    ['prompt_run', 'matches'],
+    ['search_snapshot', 'all'],
+  ])('accepts canonical %s export status with result_scope=%s through the OAuth tool', async (exportType, resultScope) => {
+    const payload = exportStatusPayload({ export_type: exportType, export_params: { result_scope: resultScope } });
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => new Response(JSON.stringify(
+      new URL(url).pathname.endsWith('/exports') ? [payload] : payload
+    ), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new VideoVectorClient({ apiKey: 'sk_test_abc', baseUrl: 'https://example.com/api/v2', maxRetries: 0 });
+
+    await expect(client.getExportStatus('exp_1')).resolves.toMatchObject({
+      export_type: exportType, export_params: { result_scope: resultScope },
+    });
+    await expect(client.listExports()).resolves.toEqual([expect.objectContaining({
+      export_type: exportType, export_params: { result_scope: resultScope },
+    })]);
+    const result = await executeTool('get_export_status', { export_id: 'exp_1' }, client, { authenticationKind: 'oauth' });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ export_id: 'exp_1', export_type: exportType, status: 'completed', download_url: '/api/v2/exports/exp_1/download' });
+    const scope = exportType === 'search_snapshot' ? 'search_results' : resultScope;
+    const source = exportType === 'index' ? '' : `&source_kind=${exportType}&source_id=idx_1`;
+    const appLink = `https://app.vectormethods.com/jobs?tab=exports&export=exp_1${source}&scope=${scope}`;
+    expect(result.structuredContent?.links).toEqual({ open_in_app: appLink, download_json: `${appLink}&action=download` });
+    expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
+    expect(result.structuredContent).not.toHaveProperty('export_params');
+    expect(result.structuredContent).not.toHaveProperty('gcs_uri');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('encodes export index requests as JSON bodies', async () => {
     const fetchMock = vi
       .fn()
@@ -248,25 +281,6 @@ describe('VideoVectorClient request encoding', () => {
     });
   });
 
-  it.each(['all', 'matches'])('preserves the deployed %s export result scope in status and lists', async (resultScope) => {
-    const payload = exportStatusPayload({ export_params: { result_scope: resultScope } });
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(payload), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([payload]), { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-    const client = new VideoVectorClient({
-      apiKey: 'sk_test_abc', baseUrl: 'https://example.com/api/v2', maxRetries: 0,
-    });
-
-    await expect(client.getExportStatus('exp_1')).resolves.toMatchObject({
-      export_params: { result_scope: resultScope },
-      download_url: '/api/v2/exports/exp_1/download',
-    });
-    await expect(client.listExports()).resolves.toEqual([payload]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes('download-url'))).toBe(true);
-  });
-
   it.each([
     [
       'processing direct export',
@@ -352,7 +366,9 @@ describe('VideoVectorClient request encoding', () => {
     ['an unknown export type', { export_type: 'response-derived-secret-type' }],
     ['an empty target id', { target_id: '' }],
     ['a nonobject export_params', { export_params: ['response-derived-secret-param'] }],
-    ['an invalid export result scope', { export_params: { result_scope: 'response-derived-secret-scope' } }],
+    ['an unknown result_scope', { export_params: { result_scope: 'search_results' } }],
+    ['a null result_scope', { export_params: { result_scope: null } }],
+    ['a nonstring result_scope', { export_params: { result_scope: ['all'] } }],
     [
       'an internal export_params field',
       { export_params: { billing_account_id: 'response-derived-secret-account' } },
@@ -517,12 +533,12 @@ describe('VideoVectorClient request encoding', () => {
         `{"error":{"message":"https://example.com/download?token=${VALID_EXPORT_TOKEN}"`,
         { status: 502, statusText: `secret-${VALID_EXPORT_TOKEN}` }
       ),
-      'http_502',
+      'service_error',
     ],
     [
       'noncanonical error JSON',
       new Response(JSON.stringify({ credential: VALID_EXPORT_TOKEN }), { status: 400 }),
-      'http_400',
+      'validation_error',
     ],
   ])('keeps %s credential-safe in MCP error output', async (_label, response, code) => {
     const fetchMock = vi.fn().mockResolvedValue(response);
@@ -1018,5 +1034,76 @@ describe('VideoVectorClient request encoding', () => {
 
     expect(parsed.pathname).toBe('/api/v2/prompt-runs');
     expect(parsed.searchParams.get('limit')).toBe('200');
+  });
+
+  it('uses a stable OAuth principal identity rather than the rotating access token', () => {
+    const credential = {
+      kind: 'oauth' as const,
+      issuer: 'https://issuer.example.com',
+      subject: 'user_1',
+      resource: 'https://api.example.com/mcp',
+    };
+    const first = new VideoVectorClient({
+      credential: { ...credential, accessToken: 'access-token-one' },
+      baseUrl: 'https://example.com/api/v2',
+    });
+    const refreshed = new VideoVectorClient({
+      credential: { ...credential, accessToken: 'access-token-two' },
+      baseUrl: 'https://example.com/api/v2',
+    });
+    const otherSubject = new VideoVectorClient({
+      credential: {
+        ...credential,
+        subject: 'user_2',
+        accessToken: 'access-token-one',
+      },
+      baseUrl: 'https://example.com/api/v2',
+    });
+
+    expect(first.getIdempotencyScope()).toBe(refreshed.getIdempotencyScope());
+    expect(first.getIdempotencyScope()).not.toBe(otherSubject.getIdempotencyScope());
+  });
+
+  it('forwards OAuth bearer credentials for JSON and FormData requests', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(
+        async () => new Response(JSON.stringify({}), { status: 200 })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const token = 'oauth-access-token';
+    const client = new VideoVectorClient({
+      credential: {
+        kind: 'oauth',
+        accessToken: token,
+        issuer: 'https://issuer.example.com',
+        subject: 'user_1',
+        resource: 'https://api.example.com/mcp',
+      },
+      baseUrl: 'https://example.com/api/v2',
+      timeout: 1000,
+      maxRetries: 0,
+    });
+
+    await client.createS3Connector({
+      name: 'archive',
+      bucket: 'media',
+      access_key_id: 'access',
+      secret_access_key: 'secret',
+      region: 'us-east-1',
+    });
+    await client.createGCSConnector({
+      name: 'archive',
+      bucket: 'media',
+      gcp_project_id: 'project',
+      credentials_json: {},
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchMock.mock.calls as Array<[string, RequestInit]>) {
+      const headers = init.headers as Record<string, string>;
+      expect(headers.Authorization).toBe(`Bearer ${token}`);
+      expect(headers['X-API-Key']).toBeUndefined();
+    }
   });
 });

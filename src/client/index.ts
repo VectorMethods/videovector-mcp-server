@@ -2,4 +2,10 @@
  * VideoVector API Client exports
  */
 
-export { VideoVectorClient, type VideoVectorClientConfig } from './videovector-client.js';
+export {
+  VideoVectorClient,
+  type VideoVectorApiKeyCredential,
+  type VideoVectorClientConfig,
+  type VideoVectorCredential,
+  type VideoVectorOAuthCredential,
+} from './videovector-client.js';

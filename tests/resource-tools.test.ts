@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 
 import {
   executeTool,
@@ -59,6 +60,35 @@ function makeWebhookDelivery(status: 'pending' | 'processing' | 'delivered' | 'f
 }
 
 describe('resource tool handlers', () => {
+  it('does not expose internal account IDs in index discovery results', async () => {
+    const index = {
+      index_id: 'idx_1',
+      name: 'Launch footage',
+      user_id: 'internal-user-id',
+      created_at: '2026-01-01T00:00:00Z',
+      is_default: false,
+      description: 'Product launch media',
+      sort_order: 1,
+    };
+    const client = {
+      listIndexes: vi.fn().mockResolvedValue([index]),
+      getIndex: vi.fn().mockResolvedValue(index),
+    } as unknown as VideoVectorClient;
+
+    const listed = await executeTool('list_indexes', {}, client);
+    const fetched = await executeTool('get_index', { index_id: 'idx_1' }, client);
+    const listedPayload = parseContent(listed);
+    const fetchedPayload = parseContent(fetched);
+
+    expect((listedPayload.user_indexes as Array<Record<string, unknown>>)[0])
+      .not.toHaveProperty('user_id');
+    expect(fetchedPayload).not.toHaveProperty('user_id');
+    expect(listed.structuredContent).toEqual(listedPayload);
+    expect(fetched.structuredContent).toEqual(fetchedPayload);
+    expect(getToolDefinition('get_index')?.outputSchema?.properties)
+      .not.toHaveProperty('user_id');
+  });
+
   it('marks test_connector as write-scoped because it mutates connector status', () => {
     const definition = getToolDefinition('test_connector');
 
@@ -120,14 +150,14 @@ describe('resource tool handlers', () => {
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: false,
-      openWorldHint: true,
+      openWorldHint: false,
     });
   });
 
   it('keeps the public tool registry unique and includes additive workflow tools', () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
 
-    expect(names).toHaveLength(52);
+    expect(names).toHaveLength(53);
     expect(new Set(names).size).toBe(names.length);
     expect(names).toContain('get_export_status');
     expect(names).toContain('get_export_download_url');
@@ -139,94 +169,10 @@ describe('resource tool handlers', () => {
     ]));
   });
 
-  it('execute_prompt requires canonical target and forwards expanded options', async () => {
-    const client = {
-      executePrompt: vi.fn().mockResolvedValue({
-        run_id: 'run_1',
-        status: 'pending',
-        prompt_name: 'metadata-extractor',
-        total_videos: 3,
-        total_audios: 2,
-        total_images: 1,
-      }),
-    } as unknown as VideoVectorClient;
-
-    const result = await executeTool(
-      'execute_prompt',
-      {
-        prompt_id: 'prompt_1',
-        target: { type: 'videos', index_id: 'idx_1', video_ids: ['vid_1', 'vid_2'] },
-        video_segmentation_type: 'fixed',
-        video_segment_duration: 15,
-        audio_segmentation_type: 'fixed',
-        audio_segment_duration: 12,
-        processing_model: 'gemini-2.5-pro',
-        enable_transcription: true,
-        enable_image_embedding: true,
-        idempotency_key: 'exec-1',
-      },
-      client
-    );
-
-    expect((client as any).executePrompt).toHaveBeenCalledWith(
-      {
-        prompt_id: 'prompt_1',
-        target: { type: 'videos', index_id: 'idx_1', video_ids: ['vid_1', 'vid_2'] },
-        video_segmentation_type: 'fixed',
-        audio_segmentation_type: 'fixed',
-        video_segment_duration: 15,
-        audio_segment_duration: 12,
-        processing_model: 'gemini-2.5-pro',
-        enable_transcription: true,
-        enable_image_embedding: true,
-      },
-      'exec-1'
-    );
-
-    const payload = parseContent(result) as { results: any[] };
-    expect(payload.run_id).toBe('run_1');
-    expect(payload.total_media).toBe(6);
-  });
-
-  it('execute_prompt validates fixed audio segmentation duration', async () => {
-    const client = {
-      executePrompt: vi.fn(),
-    } as unknown as VideoVectorClient;
-
-    const result = await executeTool(
-      'execute_prompt',
-      {
-        prompt_id: 'prompt_1',
-        target: { type: 'index', index_id: 'idx_1' },
-        audio_segmentation_type: 'fixed',
-      },
-      client
-    );
-
-    const payload = parseContent(result);
+  it('retires duplicate execute_prompt submission', async () => {
+    expect(TOOL_DEFINITIONS.some((tool) => tool.name === 'execute_prompt')).toBe(false);
+    const result = await executeTool('execute_prompt', {}, {} as VideoVectorClient);
     expect(result.isError).toBe(true);
-    expect(String(payload.message)).toContain('audio_segment_duration is required');
-    expect((client as any).executePrompt).not.toHaveBeenCalled();
-  });
-
-  it('execute_prompt rejects empty video targets', async () => {
-    const client = {
-      executePrompt: vi.fn(),
-    } as unknown as VideoVectorClient;
-
-    const result = await executeTool(
-      'execute_prompt',
-      {
-        prompt_id: 'prompt_1',
-        target: { type: 'videos', video_ids: [] },
-      },
-      client
-    );
-
-    const payload = parseContent(result);
-    expect(result.isError).toBe(true);
-    expect(String(payload.message)).toContain('target.video_ids must be a non-empty array');
-    expect((client as any).executePrompt).not.toHaveBeenCalled();
   });
 
   it('estimate_prompt_run forwards canonical target', async () => {
@@ -266,37 +212,13 @@ describe('resource tool handlers', () => {
     expect(payload.estimated_mt).toBe(12.5);
   });
 
-  it.each(['execute_prompt', 'estimate_prompt_run'])('%s preserves omitted settings and explicit disabled features', async (name) => {
-    const executePrompt = vi.fn().mockResolvedValue({ run_id: 'run_1', status: 'pending' });
-    const estimatePromptRun = vi.fn().mockResolvedValue({ estimated_mt: 1, breakdown: {} });
-    const client = { executePrompt, estimatePromptRun } as unknown as VideoVectorClient;
-    const target = { type: 'videos', index_id: 'idx_1', video_ids: ['vid_1'] };
-
-    await executeTool(name, { prompt_id: 'prompt_1', target }, client);
-    await executeTool(name, {
-      prompt_id: 'prompt_1', target, video_segmentation_type: 'content_aware',
-      enable_transcription: false, enable_image_embedding: false,
-    }, client);
-
-    const calls = name === 'execute_prompt' ? executePrompt.mock.calls : estimatePromptRun.mock.calls;
-    expect(JSON.parse(JSON.stringify(calls[0]?.[0]))).toEqual({ prompt_id: 'prompt_1', target });
-    expect(JSON.parse(JSON.stringify(calls[1]?.[0]))).toEqual({
-      prompt_id: 'prompt_1', target, video_segmentation_type: 'content_aware',
-      enable_transcription: false, enable_image_embedding: false,
-    });
-  });
-
-  it.each(['execute_prompt', 'estimate_prompt_run'])('%s rejects retired smart segmentation without API submission', async (name) => {
-    const client = { executePrompt: vi.fn(), estimatePromptRun: vi.fn() } as unknown as VideoVectorClient;
-    const result = await executeTool(name, {
-      prompt_id: 'prompt_1', target: { type: 'videos', video_ids: ['vid_1'] },
-      video_segmentation_type: 'smart',
-    }, client);
-
-    expect(result.isError).toBe(true);
-    expect(String(parseContent(result).message)).toContain('fixed, content_aware');
-    expect((client as any).executePrompt).not.toHaveBeenCalled();
-    expect((client as any).estimatePromptRun).not.toHaveBeenCalled();
+  it('estimate_prompt_run accepts content-aware and rejects unsupported modes', async () => {
+    const client = { estimatePromptRun: vi.fn().mockResolvedValue({ estimated_mt: 1 }) } as unknown as VideoVectorClient;
+    const args = { prompt_id: 'prompt_1', target: { type: 'playground' }, video_segmentation_type: 'content_aware' };
+    expect((await executeTool('estimate_prompt_run', args, client)).isError).not.toBe(true);
+    expect((client as any).estimatePromptRun).toHaveBeenCalledWith(expect.objectContaining(args));
+    expect((await executeTool('estimate_prompt_run', { ...args, video_segmentation_type: 'unsupported' }, client)).isError).toBe(true);
+    expect((client as any).estimatePromptRun).toHaveBeenCalledTimes(1);
   });
 
   it('get_video surfaces backend marker and processing snapshot fields', async () => {
@@ -393,7 +315,7 @@ describe('resource tool handlers', () => {
           cancelled_videos: 0,
           total_videos: 1,
           error_message: null,
-          video_segmentation_type: 'smart',
+          video_segmentation_type: 'content_aware',
           audio_segmentation_type: 'content_aware',
           image_segmentation_type: 'image',
           video_segment_duration: null,
@@ -509,7 +431,6 @@ describe('resource tool handlers', () => {
         json_schema: { type: 'object', additionalProperties: { type: 'string' } },
         video_level: {
           instructions_text: 'Summarize',
-          included_segment_fields: ['summary'],
           json_schema: { type: 'object', properties: {} },
         },
         is_active: true,
@@ -525,7 +446,6 @@ describe('resource tool handlers', () => {
         json_schema: { type: 'object', additionalProperties: { type: 'string' } },
         video_level: {
           instructions_text: 'Summarize',
-          included_segment_fields: ['summary'],
           json_schema: { type: 'object', properties: {} },
         },
         idempotency_key: 'prompt-create-1',
@@ -541,7 +461,6 @@ describe('resource tool handlers', () => {
         json_schema: { type: 'object', additionalProperties: { type: 'string' } },
         video_level: {
           instructions_text: 'Summarize',
-          included_segment_fields: ['summary'],
           json_schema: { type: 'object', properties: {} },
         },
       },
@@ -648,6 +567,29 @@ describe('resource tool handlers', () => {
     expect(parseContent(usageResult).is_in_use).toBe(true);
   });
 
+  it('returns an invalid prompt-schema verdict as a successful tool result', async () => {
+    const client = {
+      testPromptSchema: vi.fn().mockResolvedValue({
+        valid: false,
+        validated_data: null,
+        error: 'summary must be a string',
+        message: 'Schema validation failed',
+      }),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'test_prompt_schema',
+      {
+        json_schema: { type: 'object' },
+        sample_data: { summary: 42 },
+      },
+      client
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(parseContent(result)).toMatchObject({ valid: false });
+  });
+
   it('prompt-run detail tools forward video results, failed segments, and retries', async () => {
     const client = {
       getPromptRunVideoResult: vi.fn().mockResolvedValue({
@@ -667,11 +609,7 @@ describe('resource tool handlers', () => {
         schema_used: null,
         successful_segment_count: 4,
         failed_segment_count: 0,
-        omitted_segment_ids: [],
-        template_fields: ['summary'],
         source_fingerprint: 'fp1',
-        rendered_prompt_char_count: 42,
-        llm_attempted: true,
         attempt_id: 'attempt_1',
         error_message: null,
         started_at: null,
@@ -800,97 +738,34 @@ describe('resource tool handlers', () => {
     expect(parseContent(retryStatusResult).billing_status).toBe('confirmed');
   });
 
-  it('get_prompt_run_results returns structured canonical segment payloads', async () => {
-    const client = {
-      getPromptRunResults: vi.fn().mockResolvedValue({
-        data: [
-          {
-            segment_id: 'seg_1',
-            video_id: 'vid_1',
-            run_id: 'run_1',
-            prompt_id: 'prompt_1',
-            prompt_run_id: 'run_1',
-            video_name: 'Episode 1',
-            source_index_id: 'idx_1',
-            executed_at: '2026-01-01T00:00:00Z',
-            start_time: 54,
-            end_time: 73,
-            segment_uri: 'gs://segments/seg_1.mp4',
-            gcs_uri: 'gs://segments/seg_1.mp4',
-            thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
-            gif_gcs_uri: 'gs://segments/seg_1.gif',
-            thumbnail_uri: 'https://example.com/thumb.jpg',
-            gif_uri: 'https://example.com/preview.gif',
-            thumbnail_available: true,
-            gif_available: true,
-            metadata: { summary: 'A futuristic vehicle scene.' },
-            metadata_text: 'A futuristic vehicle scene.',
-            processing_warning: null,
-            schema_used: null,
-            field_extraction_succeeded: true,
-            transcription_succeeded: true,
-            image_embedding_succeeded: null,
-            field_extraction_error: null,
-            transcription_error: null,
-            image_embedding_error: null,
-            marker: { marker_id: 'marker-segment', color: 'blue', note: null, updated_at: null },
-            extracted_metadata_markers: {
-              summary: { marker_id: 'marker-summary', color: 'green', note: null, updated_at: null },
-            },
-          },
-        ],
-        pagination: {
-          has_more: false,
-          next_cursor: null,
-        },
-      }),
-    } as unknown as VideoVectorClient;
-
-    const result = await executeTool(
-      'get_prompt_run_results',
-      { run_id: 'run_1', video_id: 'vid_1', limit: 10 },
-      client
-    );
-
-    expect((client as any).getPromptRunResults).toHaveBeenCalledWith('run_1', {
-      videoId: 'vid_1',
-      limit: 10,
+  it('get_prompt_run_results preserves independent pages and cursors', async () => {
+    const payload = {
+      run_id: 'run_1', status: 'completed', result_level: 'segment',
+      selection_filter: null, selection_summary: { status: 'not_applicable' },
+      filtered: null,
+      unfiltered: { data: [{ result_id: 'segment:seg_1:run_1', video_id: 'video_1', segment_id: 'seg_1', metadata: { score: 8 } }],
+        pagination: { limit: 10, has_more: true, next_cursor: 'unfiltered-next' } },
+    };
+    const client = { workflowRunResults: vi.fn().mockResolvedValue(payload) } as unknown as VideoVectorClient;
+    const result = await executeTool('get_prompt_run_results', {
+      run_id: 'run_1', view: 'unfiltered', unfiltered_cursor: 'opaque-next',
+    }, client);
+    expect((client as any).workflowRunResults).toHaveBeenCalledWith('run_1', {
+      result_level: 'segment', view: 'unfiltered', limit: 10,
+      video_id: undefined, filtered_cursor: undefined, unfiltered_cursor: 'opaque-next',
     });
-
-    const payload = parseContent(result);
-    expect(payload.results).toHaveLength(1);
-    expect(payload.results[0]).toMatchObject({
-      result_type: 'segment',
-      result_id: 'segment:seg_1:run_1',
-      video_name: 'Episode 1',
-      start_time: 54,
-      end_time: 73,
-      segment_uri: 'gs://segments/seg_1.mp4',
-      gcs_uri: 'gs://segments/seg_1.mp4',
-      thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
-      gif_gcs_uri: 'gs://segments/seg_1.gif',
-      extracted_metadata: { summary: 'A futuristic vehicle scene.' },
-      extracted_metadata_markers: {
-        summary: { marker_id: 'marker-summary', color: 'green', note: null, updated_at: null },
-      },
-      metadata_markers: {
-        summary: { marker_id: 'marker-summary', color: 'green', note: null, updated_at: null },
-      },
+    expect(result.structuredContent).toMatchObject({
+      contract_version: 2, detail: 'summary', run_id: payload.run_id,
+      filtered: null, unfiltered: { pagination: payload.unfiltered.pagination, data: [{ result_id: 'segment:seg_1:run_1', metadata_fields: ['score'] }] },
     });
-    expect(result.structuredContent).toEqual(payload);
+    expect(parseContent(result)).toEqual(result.structuredContent);
   });
 
-  it('get_prompt_run_results requires video_id', async () => {
-    const client = {
-      getPromptRunResults: vi.fn(),
-    } as unknown as VideoVectorClient;
-
-    const result = await executeTool('get_prompt_run_results', { run_id: 'run_1' }, client);
-
-    const payload = parseContent(result);
+  it('get_prompt_run_results rejects an oversized page', async () => {
+    const client = { workflowRunResults: vi.fn() } as unknown as VideoVectorClient;
+    const result = await executeTool('get_prompt_run_results', { run_id: 'run_1', limit: 51 }, client);
     expect(result.isError).toBe(true);
-    expect(String(payload.message)).toContain("Required parameter 'video_id' is missing");
-    expect((client as any).getPromptRunResults).not.toHaveBeenCalled();
+    expect((client as any).workflowRunResults).not.toHaveBeenCalled();
   });
 
   it('rejects non-string idempotency keys for prompt-run segment retries', async () => {
@@ -1084,11 +959,11 @@ describe('resource tool handlers', () => {
     expect((client as any).createAzureConnector).not.toHaveBeenCalled();
   });
 
-  it('returns durable export status without minting a bearer credential', async () => {
+  it.each(['index', 'prompt_run', 'search_snapshot'])('returns valid durable %s export status without minting a bearer credential', async exportType => {
     const client = {
       getExportStatus: vi.fn().mockResolvedValue({
         export_id: 'exp_1',
-        export_type: 'index',
+        export_type: exportType,
         target_id: 'idx_1',
         created_at: '2026-07-17T00:00:00Z',
         status: 'completed',
@@ -1125,8 +1000,22 @@ describe('resource tool handlers', () => {
     expect(payload.destination_connector_id).toBeNull();
     expect(payload.destination_uri).toBeNull();
     expect(String(payload.download_url)).not.toContain('?token=');
-    expect(String(payload.tip)).toContain('authenticated download endpoint');
-    expect(String(payload.tip)).toContain('get_export_download_url');
+    const links = payload.links as Record<string, string>;
+    const openLink = new URL(links.open_in_app);
+    expect(openLink.origin).toBe('https://app.vectormethods.com');
+    expect(openLink.pathname).toBe('/jobs');
+    expect(Object.fromEntries(openLink.searchParams)).toEqual({
+      tab: 'exports', export: 'exp_1',
+      ...(exportType === 'index' ? {} : { source_kind: exportType, source_id: 'idx_1' }),
+      scope: exportType === 'search_snapshot' ? 'search_results' : 'all',
+    });
+    expect(links.download_json).toBe(`${links.open_in_app}&action=download`);
+    expect(String(payload.tip)).toContain('links.download_json');
+    expect(String(payload.tip)).toContain('authenticated API endpoint');
+    expect(result.structuredContent).toEqual(payload);
+    expect(payload.export_type).toBe(exportType);
+    const validate = new AjvJsonSchemaValidator().getValidator(getToolDefinition('get_export_status')!.outputSchema!);
+    expect(validate(payload).valid).toBe(true);
   });
 
   it('preserves connector delivery fields in durable export status', async () => {
@@ -1175,17 +1064,20 @@ describe('resource tool handlers', () => {
       's3://customer-bucket/exports/daily/export.json'
     );
     expect(String(payload.tip)).toContain('configured connector destination');
+    expect(payload.links).toEqual({
+      open_in_app: 'https://app.vectormethods.com/jobs?tab=exports&export=exp_connector&source_kind=prompt_run&source_id=run_1&scope=all',
+    });
   });
 
-  it('keeps unavailable direct status downloads null', async () => {
+  it.each(['pending', 'processing', 'completed'])('keeps unavailable %s direct status downloads null', async status => {
     const client = {
       getExportStatus: vi.fn().mockResolvedValue({
         export_id: 'exp_processing',
         export_type: 'index',
         target_id: 'idx_1',
         created_at: '2026-07-17T00:00:00Z',
-        status: 'processing',
-        queue_status: 'running',
+        status,
+        queue_status: status === 'completed' ? 'succeeded' : status === 'pending' ? 'queued' : 'running',
         attempts: 1,
         max_attempts: 3,
         available_at: null,
@@ -1215,7 +1107,56 @@ describe('resource tool handlers', () => {
 
     expect(payload.download_url).toBeNull();
     expect(payload.destination_type).toBe('download');
-    expect(String(payload.tip)).toContain('still processing');
+    expect(payload.links).toEqual({
+      open_in_app: 'https://app.vectormethods.com/jobs?tab=exports&export=exp_processing&scope=all',
+    });
+    expect(String(payload.tip)).toContain(status === 'pending' ? 'queued'
+      : status === 'processing' ? 'still processing' : 'no authenticated direct-download endpoint');
+  });
+
+  it('returns a terminal failed export as resource state, not a tool invocation error', async () => {
+    const client = {
+      getExportStatus: vi.fn().mockResolvedValue({
+        export_id: 'exp_failed',
+        export_type: 'index',
+        target_id: 'idx_1',
+        created_at: '2026-07-17T00:00:00Z',
+        status: 'failed',
+        queue_status: 'failed',
+        attempts: 3,
+        max_attempts: 3,
+        available_at: null,
+        started_at: '2026-07-17T00:00:01Z',
+        completed_at: '2026-07-17T00:00:02Z',
+        updated_at: '2026-07-17T00:00:02Z',
+        download_url: null,
+        file_size_bytes: null,
+        error_message: 'Export destination rejected the write',
+        last_error: 'provider detail',
+        destination_type: 'connector',
+        destination_connector_id: 'conn_1',
+        destination_base_path: 'exports/',
+        destination_subpath: null,
+        destination_uri: null,
+        gcs_uri: null,
+        export_params: {},
+      }),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'get_export_status',
+      { export_id: 'exp_failed' },
+      client
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(parseContent(result)).toMatchObject({
+      export_id: 'exp_failed',
+      status: 'failed',
+      error_message: 'Export destination rejected the write',
+      links: { open_in_app: 'https://app.vectormethods.com/jobs?tab=exports&export=exp_failed&scope=all' },
+    });
+    expect(parseContent(result).links).not.toHaveProperty('download_json');
   });
 
   it('explicitly mints and returns the exact five-field export capability', async () => {
@@ -1269,7 +1210,7 @@ describe('resource tool handlers', () => {
     });
   });
 
-  it('propagates explicit export mint failures through the canonical MCP error', async () => {
+  it('redacts export mint diagnostics through the canonical MCP error', async () => {
     const client = {
       mintExportDownloadUrl: vi.fn().mockRejectedValue(
         new VideoVectorApiError(
@@ -1291,8 +1232,9 @@ describe('resource tool handlers', () => {
 
     expect(result.isError).toBe(true);
     expect(payload.code).toBe('metadata_export_token_configuration_invalid');
-    expect(payload.message).toBe('Bearer minting is temporarily unavailable');
-    expect(payload.request_id).toBe('req_export_1');
+    expect(payload.message).toBe('A download link is temporarily unavailable.');
+    expect(payload.details).toBeUndefined();
+    expect(payload.request_id).toBeUndefined();
   });
 
   it('delegates GCS connector retry replay to the durable backend boundary', async () => {
@@ -1524,6 +1466,24 @@ describe('resource tool handlers', () => {
     expect(String(badPayload.message)).toContain('status must be one of');
   });
 
+  it('returns a terminal failed import as resource state, not a tool invocation error', async () => {
+    const client = {
+      getImportJob: vi.fn().mockResolvedValue({
+        ...makeImportJob('failed'),
+        error_message: 'Source object could not be read',
+      }),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool('get_import_job', { job_id: 'job_1' }, client);
+
+    expect(result.isError).not.toBe(true);
+    expect(parseContent(result)).toMatchObject({
+      job_id: 'job_1',
+      status: 'failed',
+      error_message: 'This import job needs attention. Open the job in the app to review the failed or skipped files before retrying.',
+    });
+  });
+
   it('forwards idempotency keys for prompt-run cancellation, import-job cancellation, and webhook writes', async () => {
     const client = {
       cancelPromptRun: vi.fn().mockResolvedValue({
@@ -1557,7 +1517,7 @@ describe('resource tool handlers', () => {
         image_embedding_succeeded: true,
         image_embedding_failures: 0,
         run_context: { index_id: 'idx_1', video_ids: ['vid_1', 'vid_2', 'vid_3'] },
-        video_segmentation_type: 'smart',
+        video_segmentation_type: 'content_aware',
         audio_segmentation_type: 'content_aware',
         video_segment_duration: null,
         audio_segment_duration: null,
@@ -1678,4 +1638,29 @@ describe('resource tool handlers', () => {
     expect(bad.isError).toBe(true);
     expect(String(badPayload.message)).toContain('status must be one of');
   });
+});
+
+it('preserves ordered output pagination and part counters through the public MCP projection', async () => {
+  const cursor = 'opaque-next-' + 'x'.repeat(400);
+  const outputs = { items: [{ file_id: 'f', file_name: 'long.mp4', source_ordinal: 0, part_index: 100, part_count: 101, source_start_seconds: 1000, source_end_seconds: 1010, video_id: 'v101', title: 'Part 101', status: 'completed', download_url: 'https://private.example/secret' }], next_cursor: cursor, total: 101 };
+  const client = { getImportJob: vi.fn().mockResolvedValue({ ...makeImportJob('completed'), phase: 'completed', outputs: { items: [], total: 101, next_cursor: 'first' }, execution: { status: 'not_requested' }, progress: { ...makeImportJob('completed').progress, parts_total: 101, parts_completed: 101, parts_failed: 0 } }), getImportJobOutputs: vi.fn().mockResolvedValue(outputs) } as unknown as VideoVectorClient;
+  const response = await executeTool('get_import_job', { job_id: 'job_1', limit: 1, cursor: 'first' }, client);
+  expect(response.isError).not.toBe(true);
+  expect(client.getImportJobOutputs).toHaveBeenCalledWith('job_1', 1, 'first');
+  expect(parseContent(response)).toMatchObject({ phase: 'completed', video_ids: ['v101'], outputs: { next_cursor: cursor, total: 101, items: [{ part_index: 100, source_ordinal: 0 }] }, progress: { parts_total: 101, parts_completed: 101 }, execution: { status: 'not_requested' } });
+  expect(JSON.stringify(response)).not.toContain('private.example');
+});
+
+
+it('keeps failure-page cursors and every source descriptor through projection', async () => {
+  const failures = Array.from({ length: 100 }, (_, i) => ({ file_id: `f${i}`, file_name: `source${i}.mp4`, source_ordinal: i, status: 'failed', failure: { error: 'private detail', error_code: 'attachment_download_unavailable', refresh_required: true } }));
+  const client = { getImportJob: vi.fn().mockResolvedValue({ ...makeImportJob('failed'), failed_files_next_cursor: 'first' }), getImportJobFiles: vi.fn().mockResolvedValue({ items: failures, next_cursor: 'last', total: 101 }) } as unknown as VideoVectorClient;
+  const response = await executeTool('get_import_job', { job_id: 'job_1', failed_files_cursor: 'first' }, client);
+  expect(response.isError).not.toBe(true);
+  expect(client.getImportJobFiles).toHaveBeenCalledWith('job_1', 100, 'first', true);
+  const payload = parseContent(response);
+  expect(payload.failed_files_next_cursor).toBe('last');
+  expect(payload.failed_files).toHaveLength(100);
+  expect(payload.failed_files[99]).toMatchObject({ file_id: 'f99', refresh_required: true });
+  expect(JSON.stringify(response)).not.toContain('private detail');
 });

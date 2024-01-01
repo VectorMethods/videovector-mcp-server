@@ -6,6 +6,72 @@
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { WORKFLOW_RESULT_TOOLS, WORKFLOW_DETAIL_TOOLS, WORKFLOW_RESULT_SCHEMA, RESULTS_CARD_URI, RESULTS_APP_DEFINITIONS, RESULTS_APP_TOOLS } from './workflow-result-contract.js';
+
+export const ATTACHMENT_PICKER_URI = 'ui://videovector/attachment-picker.html';
+
+export const ATTACHMENT_FILES_SCHEMA = {
+  type: 'array',
+  minItems: 1,
+  maxItems: 100,
+  description: 'Files attached to this message. Pass the host-provided descriptors unchanged.',
+  items: {
+    type: 'object',
+    properties: {
+      download_url: { type: 'string', minLength: 1 },
+      file_id: { type: 'string', minLength: 1 },
+      mime_type: { type: 'string' },
+      file_name: { type: 'string' },
+    },
+    required: ['download_url', 'file_id'],
+    additionalProperties: false,
+  },
+};
+
+const ATTACHMENT_TOOL_META = {
+  'openai/fileParams': ['files'],
+  'openai/outputTemplate': ATTACHMENT_PICKER_URI,
+  'openai/widgetAccessible': true,
+  ui: { resourceUri: ATTACHMENT_PICKER_URI },
+};
+
+const INTAKE_OUTPUT_SCHEMA: NonNullable<Tool['outputSchema']> = {
+  type: 'object',
+  properties: {
+    job_id: { type: 'string' },
+    status: { type: 'string' },
+    source_kind: { type: 'string' },
+    phase: { type: 'string' },
+    outputs: { type: 'object', additionalProperties: true },
+    execution: { type: 'object', additionalProperties: true },
+    failed_files: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    video_ids: { type: 'array', items: { type: 'string' } },
+    run_id: { type: ['string', 'null'] },
+    target_index_id: { type: ['string', 'null'] },
+    error_message: { type: ['string', 'null'] },
+    progress: { type: 'object', additionalProperties: true },
+  },
+  required: ['job_id', 'status', 'video_ids'],
+  additionalProperties: false,
+};
+
+const IMPORT_JOB_OUTPUT_SCHEMA: NonNullable<Tool['outputSchema']> = {
+  type: 'object',
+  properties: {
+    job_id: { type: 'string' }, status: { type: 'string' },
+    video_ids: { type: 'array', items: { type: 'string' } },
+    run_id: { type: ['string', 'null'] },
+    connector_id: { type: ['string', 'null'] },
+    target_index_id: { type: ['string', 'null'] },
+    source_kind: { type: 'string' },
+    phase: { type: 'string' },
+    outputs: { type: 'object', additionalProperties: true },
+    execution: { type: 'object', additionalProperties: true },
+    failed_files: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+  required: ['job_id', 'status', 'video_ids'],
+  additionalProperties: true,
+};
 
 // ============================================================================
 // Tool Names (exported for handler mapping)
@@ -14,6 +80,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 export const TOOL_NAMES = {
   // Simplified Workflow Tools
   UPLOAD_MEDIA: 'upload_media',
+  FIND: 'find',
   DEFINE_PROMPT: 'define_prompt',
   PROCESS_MEDIA: 'process_media',
   SEARCH_MEDIA: 'search_media',
@@ -36,7 +103,6 @@ export const TOOL_NAMES = {
   // Prompt Run Tools
   LIST_PROMPT_RUNS: 'list_prompt_runs',
   ESTIMATE_PROMPT_RUN: 'estimate_prompt_run',
-  EXECUTE_PROMPT: 'execute_prompt',
   GET_PROMPT_RUN_STATUS: 'get_prompt_run_status',
   CANCEL_PROMPT_RUN: 'cancel_prompt_run',
   GET_PROMPT_RUN_RESULTS: 'get_prompt_run_results',
@@ -64,6 +130,7 @@ export const TOOL_NAMES = {
   CREATE_IMPORT_JOB: 'create_import_job',
   LIST_IMPORT_JOBS: 'list_import_jobs',
   GET_IMPORT_JOB: 'get_import_job',
+  RETRY_IMPORT_JOB: 'retry_import_job',
   CANCEL_IMPORT_JOB: 'cancel_import_job',
 
   // Index Management Tools
@@ -92,8 +159,456 @@ export const TOOL_NAMES = {
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
 export type ToolRequiredScope = 'search' | 'read' | 'write';
 
+export interface ToolDefinitionOptions {
+  includeAppTools?: boolean;
+  advertiseOAuth?: boolean;
+}
+
+interface OAuth2SecurityScheme {
+  type: 'oauth2';
+  scopes: string[];
+}
+
+type OAuthAdvertisedTool = Tool & {
+  securitySchemes: OAuth2SecurityScheme[];
+};
+
+const TOOL_TITLES: Record<ToolName, string> = {
+  [TOOL_NAMES.UPLOAD_MEDIA]: 'Upload Media',
+  [TOOL_NAMES.FIND]: 'Find Matching Video Segments',
+  [TOOL_NAMES.DEFINE_PROMPT]: 'Define Prompt',
+  [TOOL_NAMES.PROCESS_MEDIA]: 'Process Media',
+  [TOOL_NAMES.SEARCH_MEDIA]: 'Search Media',
+  [TOOL_NAMES.SEARCH_VIDEOS]: 'Search Videos',
+  [TOOL_NAMES.SEARCH_VIDEOS_BY_IMAGE]: 'Search Videos by Image',
+  [TOOL_NAMES.MULTIMODAL_SEARCH]: 'Run Multimodal Search',
+  [TOOL_NAMES.FILTER_VIDEOS]: 'Filter Videos',
+  [TOOL_NAMES.LIST_INDEXES]: 'List Indexes',
+  [TOOL_NAMES.GET_INDEX]: 'Get Index',
+  [TOOL_NAMES.LIST_PROMPTS]: 'List Prompts',
+  [TOOL_NAMES.GET_VIDEO]: 'Get Video',
+  [TOOL_NAMES.GET_VIDEO_SEGMENTS]: 'Get Video Segments',
+  [TOOL_NAMES.LIST_PROMPT_RUNS]: 'List Prompt Runs',
+  [TOOL_NAMES.ESTIMATE_PROMPT_RUN]: 'Estimate Prompt Run',
+  [TOOL_NAMES.GET_PROMPT_RUN_STATUS]: 'Get Prompt Run Status',
+  [TOOL_NAMES.CANCEL_PROMPT_RUN]: 'Cancel Prompt Run',
+  [TOOL_NAMES.GET_PROMPT_RUN_RESULTS]: 'Get Prompt Run Results',
+  [TOOL_NAMES.GET_PROMPT_RUN_VIDEO_RESULT]: 'Get Prompt Run Video Result',
+  [TOOL_NAMES.GET_PROMPT_RUN_FAILED_SEGMENTS]: 'Get Failed Prompt Run Segments',
+  [TOOL_NAMES.RETRY_PROMPT_RUN_SEGMENT]: 'Retry Prompt Run Segment',
+  [TOOL_NAMES.GET_PROMPT_RUN_SEGMENT_RETRY_STATUS]: 'Get Segment Retry Status',
+  [TOOL_NAMES.CREATE_PROMPT]: 'Create Prompt',
+  [TOOL_NAMES.GET_PROMPT]: 'Get Prompt',
+  [TOOL_NAMES.UPDATE_PROMPT]: 'Update Prompt',
+  [TOOL_NAMES.TEST_PROMPT_SCHEMA]: 'Test Prompt Schema',
+  [TOOL_NAMES.GET_PROMPT_USAGE]: 'Get Prompt Usage',
+  [TOOL_NAMES.CREATE_GCS_CONNECTOR]: 'Create Google Cloud Storage Connector',
+  [TOOL_NAMES.CREATE_S3_CONNECTOR]: 'Create Amazon S3 Connector',
+  [TOOL_NAMES.CREATE_AZURE_CONNECTOR]: 'Create Azure Blob Storage Connector',
+  [TOOL_NAMES.LIST_CONNECTORS]: 'List Cloud Connectors',
+  [TOOL_NAMES.TEST_CONNECTOR]: 'Test Cloud Connector',
+  [TOOL_NAMES.BROWSE_CONNECTOR_FILES]: 'Browse Cloud Connector Files',
+  [TOOL_NAMES.CREATE_IMPORT_JOB]: 'Create Import Job',
+  [TOOL_NAMES.LIST_IMPORT_JOBS]: 'List Import Jobs',
+  [TOOL_NAMES.GET_IMPORT_JOB]: 'Get Import Job',
+  [TOOL_NAMES.RETRY_IMPORT_JOB]: 'Retry Import Job',
+  [TOOL_NAMES.CANCEL_IMPORT_JOB]: 'Cancel Import Job',
+  [TOOL_NAMES.CREATE_INDEX]: 'Create Index',
+  [TOOL_NAMES.LIST_VIDEOS]: 'List Videos',
+  [TOOL_NAMES.GET_VIDEOS_STATUS]: 'Get Video Statuses',
+  [TOOL_NAMES.EXPORT_INDEX_METADATA]: 'Export Index Metadata',
+  [TOOL_NAMES.EXPORT_PROMPT_RUN]: 'Export Prompt Run',
+  [TOOL_NAMES.GET_EXPORT_STATUS]: 'Get Export Status',
+  [TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL]: 'Get Export Download URL',
+  [TOOL_NAMES.CREATE_WEBHOOK]: 'Create Webhook',
+  [TOOL_NAMES.LIST_WEBHOOKS]: 'List Webhooks',
+  [TOOL_NAMES.GET_WEBHOOK]: 'Get Webhook',
+  [TOOL_NAMES.UPDATE_WEBHOOK]: 'Update Webhook',
+  [TOOL_NAMES.LIST_WEBHOOK_EVENTS]: 'List Webhook Events',
+  [TOOL_NAMES.TEST_WEBHOOK]: 'Test Webhook',
+  [TOOL_NAMES.LIST_WEBHOOK_DELIVERIES]: 'List Webhook Deliveries',
+};
+
+/**
+ * Minimal result contracts for tools that currently return structuredContent.
+ * Keep these focused on stable wrapper fields; nested backend records remain
+ * extensible so adding non-breaking API response fields cannot invalidate MCP
+ * responses that were otherwise handled successfully.
+ */
+const TOOL_OUTPUT_SCHEMAS: Partial<
+  Record<ToolName, NonNullable<Tool['outputSchema']>>
+> = {
+  [TOOL_NAMES.UPLOAD_MEDIA]: INTAKE_OUTPUT_SCHEMA,
+  [TOOL_NAMES.FIND]: INTAKE_OUTPUT_SCHEMA,
+  [TOOL_NAMES.GET_IMPORT_JOB]: IMPORT_JOB_OUTPUT_SCHEMA,
+  [TOOL_NAMES.RETRY_IMPORT_JOB]: IMPORT_JOB_OUTPUT_SCHEMA,
+  [TOOL_NAMES.DEFINE_PROMPT]: {
+    type: 'object',
+    properties: {
+      prompt_id: { type: ['string', 'null'] },
+      prompt: { type: ['object', 'null'], additionalProperties: true },
+      draft: { type: ['object', 'null'], additionalProperties: true },
+      definition: { type: 'object', additionalProperties: true },
+      saved: { type: 'boolean' },
+    },
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.PROCESS_MEDIA]: {
+    type: 'object',
+    properties: {
+      run_id: { type: 'string' },
+      run: { type: 'object', additionalProperties: true },
+      prompt: { type: 'object', additionalProperties: true },
+      prompt_created_inline: { type: 'boolean' },
+      results_url: { type: 'string' },
+      status_url: { type: 'string' },
+    },
+    required: ['run_id', 'run', 'prompt', 'prompt_created_inline', 'status_url', 'results_url'],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.SEARCH_MEDIA]: {
+    type: 'object',
+    properties: {
+      data: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+      mode: { type: 'string', enum: ['vector', 'condition'] },
+      result_level: { type: 'string', enum: ['segment', 'video'] },
+      pagination: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer' },
+          count: { type: 'integer' },
+          has_more: { type: 'boolean' },
+          next_cursor: { type: ['string', 'null'] },
+          result_window: { type: 'integer' },
+          truncated: { type: 'boolean' },
+        },
+        required: [
+          'limit',
+          'count',
+          'has_more',
+          'next_cursor',
+          'result_window',
+          'truncated',
+        ],
+        additionalProperties: true,
+      },
+      scope: { type: 'object', additionalProperties: true },
+      coverage: { type: 'object', additionalProperties: true },
+      warnings: { type: 'array', items: {} },
+    },
+    required: ['data', 'mode', 'result_level', 'pagination'],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.SEARCH_VIDEOS]: {
+    type: 'object',
+    properties: {
+      query: { type: 'string' },
+      index_id: { type: 'string' },
+      total_results: { type: 'integer', minimum: 0 },
+      segment_enrichment: { type: 'object', additionalProperties: true },
+      results: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+    },
+    required: ['query', 'index_id', 'total_results', 'segment_enrichment', 'results'],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.SEARCH_VIDEOS_BY_IMAGE]: {
+    type: 'object',
+    properties: {
+      index_id: { type: 'string' },
+      search_type: { type: 'string', enum: ['image'] },
+      total_results: { type: 'integer', minimum: 0 },
+      results: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+    },
+    required: ['index_id', 'search_type', 'total_results', 'results'],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.MULTIMODAL_SEARCH]: {
+    type: 'object',
+    properties: {
+      index_id: { type: 'string' },
+      search_type: { type: 'string', enum: ['multimodal'] },
+      text_query: { type: ['string', 'null'] },
+      has_image: { type: 'boolean' },
+      text_weight: { type: 'number' },
+      image_weight: { type: 'number' },
+      total_results: { type: 'integer', minimum: 0 },
+      results: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+    },
+    required: [
+      'index_id',
+      'search_type',
+      'text_query',
+      'has_image',
+      'text_weight',
+      'image_weight',
+      'total_results',
+      'results',
+    ],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.FILTER_VIDEOS]: {
+    type: 'object',
+    properties: {
+      index_id: { type: 'string' },
+      search_type: { type: 'string', enum: ['filter'] },
+      conditions: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+      total_results: { type: 'integer', minimum: 0 },
+      has_more: { type: 'boolean' },
+      next_cursor: { type: ['string', 'null'] },
+      results: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+    },
+    required: [
+      'index_id',
+      'search_type',
+      'conditions',
+      'total_results',
+      'has_more',
+      'next_cursor',
+      'results',
+    ],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.LIST_INDEXES]: {
+    type: 'object',
+    properties: {
+      total_indexes: { type: 'integer', minimum: 0 },
+      user_indexes: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+      default_indexes: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+      tip: { type: 'string' },
+    },
+    required: ['total_indexes', 'user_indexes', 'tip'],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.GET_INDEX]: {
+    type: 'object',
+    properties: {
+      index_id: { type: 'string' },
+      name: { type: 'string' },
+      is_default: { type: 'boolean' },
+      created_at: { type: 'string' },
+      description: { type: ['string', 'null'] },
+      sort_order: { type: ['number', 'null'] },
+    },
+    required: [
+      'index_id',
+      'name',
+      'is_default',
+      'created_at',
+      'description',
+      'sort_order',
+    ],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.GET_VIDEO]: {
+    type: 'object',
+    properties: {
+      video_id: { type: 'string' },
+      title: { type: 'string' },
+      media_type: { type: 'string' },
+      status: { type: 'string' },
+      processing_summary: { type: 'object', additionalProperties: true },
+      processing_status: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+    },
+    required: [
+      'video_id',
+      'title',
+      'media_type',
+      'status',
+      'processing_summary',
+      'processing_status',
+    ],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.GET_VIDEO_SEGMENTS]: {
+    type: 'object',
+    properties: {
+      video_id: { type: 'string' },
+      run_id: { type: ['string', 'null'] },
+      total_segments: { type: 'integer', minimum: 0 },
+      has_more: { type: 'boolean' },
+      segments: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+    },
+    required: ['video_id', 'run_id', 'total_segments', 'has_more', 'segments'],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.GET_PROMPT_RUN_STATUS]: {
+    type: 'object',
+    properties: {
+      run_id: { type: 'string' },
+      status: { type: 'string' },
+      selection_filter: { type: ['object', 'null'], additionalProperties: true },
+      selection_summary: { type: 'object', additionalProperties: true },
+      reuse_summary: { type: 'object', additionalProperties: true },
+    },
+    required: ['run_id', 'status'],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.GET_PROMPT_RUN_RESULTS]: {
+    type: 'object',
+    properties: {
+      run_id: { type: 'string' },
+      status: { type: 'string' },
+      result_level: { type: 'string', enum: ['segment', 'video'] },
+      selection_filter: { type: ['object', 'null'], additionalProperties: true },
+      selection_summary: { type: 'object', additionalProperties: true },
+      ...Object.fromEntries(['filtered', 'unfiltered'].map((name) => [name, {
+        type: ['object', 'null'],
+        properties: {
+          data: { type: 'array', items: { type: 'object', additionalProperties: true }, maxItems: 50 },
+          pagination: {
+            type: 'object',
+            properties: {
+              limit: { type: 'integer', minimum: 1, maximum: 50 },
+              has_more: { type: 'boolean' },
+              next_cursor: { type: ['string', 'null'] },
+            },
+            required: ['limit', 'has_more', 'next_cursor'],
+            additionalProperties: false,
+          },
+        },
+        required: ['data', 'pagination'],
+        additionalProperties: false,
+      }])),
+    },
+    required: ['run_id', 'status', 'result_level', 'selection_filter', 'selection_summary', 'filtered', 'unfiltered'],
+    additionalProperties: false,
+  },
+  [TOOL_NAMES.GET_PROMPT_RUN_VIDEO_RESULT]: {
+    type: 'object',
+    properties: {
+      result_type: { type: 'string' },
+      result_id: { type: 'string' },
+      run_id: { type: 'string' },
+      prompt_run_id: { type: 'string' },
+      video_id: { type: 'string' },
+      status: { type: 'string' },
+      metadata: { type: 'object', additionalProperties: true },
+    },
+    required: ['result_type', 'result_id', 'run_id', 'prompt_run_id', 'video_id'],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.LIST_VIDEOS]: {
+    type: 'object',
+    properties: {
+      index_id: { type: 'string' },
+      videos_returned: { type: 'integer', minimum: 0 },
+      has_more: { type: 'boolean' },
+      next_cursor: { type: ['string', 'null'] },
+      by_status: { type: 'object', additionalProperties: { type: 'integer' } },
+      by_media_type: { type: 'object', additionalProperties: { type: 'integer' } },
+      by_run_status: { type: 'object', additionalProperties: { type: 'integer' } },
+      segment_status_totals: { type: 'object', additionalProperties: { type: 'integer' } },
+      videos_with_processing_details: { type: 'integer', minimum: 0 },
+      videos: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
+      tip: { type: 'string' },
+    },
+    required: [
+      'index_id',
+      'videos_returned',
+      'has_more',
+      'next_cursor',
+      'by_status',
+      'by_media_type',
+      'by_run_status',
+      'segment_status_totals',
+      'videos_with_processing_details',
+      'videos',
+    ],
+    additionalProperties: true,
+  },
+  [TOOL_NAMES.GET_EXPORT_STATUS]: {
+    type: 'object',
+    properties: {
+      export_id: { type: 'string' },
+      export_type: { type: 'string', enum: ['index', 'prompt_run', 'search_snapshot'] },
+      target_id: { type: 'string' },
+      status: {
+        type: 'string',
+        enum: ['pending', 'processing', 'completed', 'failed'],
+      },
+      created_at: { type: ['string', 'null'] },
+      available_at: { type: ['string', 'null'] },
+      started_at: { type: ['string', 'null'] },
+      completed_at: { type: ['string', 'null'] },
+      updated_at: { type: ['string', 'null'] },
+      download_url: { type: ['string', 'null'] },
+      links: {
+        type: 'object',
+        properties: {
+          open_in_app: { type: 'string' },
+          download_json: { type: 'string' },
+        },
+        required: ['open_in_app'],
+        additionalProperties: false,
+      },
+      file_size_bytes: { type: ['integer', 'null'], minimum: 0 },
+      error_message: { type: ['string', 'null'] },
+      destination_type: {
+        type: 'string',
+        enum: ['download', 'connector'],
+      },
+      destination_connector_id: { type: ['string', 'null'] },
+      destination_uri: { type: ['string', 'null'] },
+      tip: { type: 'string' },
+    },
+    required: [
+      'export_id',
+      'export_type',
+      'target_id',
+      'status',
+      'created_at',
+      'available_at',
+      'started_at',
+      'completed_at',
+      'updated_at',
+      'download_url',
+      'file_size_bytes',
+      'error_message',
+      'destination_type',
+      'destination_connector_id',
+      'destination_uri',
+      'tip',
+    ],
+    additionalProperties: true,
+  },
+};
+
 export const TOOL_CATEGORIES: Record<ToolName, string> = {
   [TOOL_NAMES.UPLOAD_MEDIA]: 'Workflow',
+  [TOOL_NAMES.FIND]: 'Workflow',
   [TOOL_NAMES.DEFINE_PROMPT]: 'Workflow',
   [TOOL_NAMES.PROCESS_MEDIA]: 'Workflow',
   [TOOL_NAMES.SEARCH_MEDIA]: 'Workflow',
@@ -108,7 +623,6 @@ export const TOOL_CATEGORIES: Record<ToolName, string> = {
   [TOOL_NAMES.GET_VIDEO_SEGMENTS]: 'Video',
   [TOOL_NAMES.LIST_PROMPT_RUNS]: 'Prompt runs',
   [TOOL_NAMES.ESTIMATE_PROMPT_RUN]: 'Prompt runs',
-  [TOOL_NAMES.EXECUTE_PROMPT]: 'Prompt runs',
   [TOOL_NAMES.GET_PROMPT_RUN_STATUS]: 'Prompt runs',
   [TOOL_NAMES.CANCEL_PROMPT_RUN]: 'Prompt runs',
   [TOOL_NAMES.GET_PROMPT_RUN_RESULTS]: 'Prompt runs',
@@ -130,6 +644,7 @@ export const TOOL_CATEGORIES: Record<ToolName, string> = {
   [TOOL_NAMES.CREATE_IMPORT_JOB]: 'Import jobs',
   [TOOL_NAMES.LIST_IMPORT_JOBS]: 'Import jobs',
   [TOOL_NAMES.GET_IMPORT_JOB]: 'Import jobs',
+  [TOOL_NAMES.RETRY_IMPORT_JOB]: 'Import jobs',
   [TOOL_NAMES.CANCEL_IMPORT_JOB]: 'Import jobs',
   [TOOL_NAMES.CREATE_INDEX]: 'Indexes',
   [TOOL_NAMES.LIST_VIDEOS]: 'Videos',
@@ -240,10 +755,56 @@ const FILTER_CONDITION_SCHEMA_VARIANTS = Object.entries(
   }))
 );
 
+const EXECUTION_CONFIGURATION_PROPERTIES = {
+  video_segmentation_type: { type: 'string', enum: ['fixed', 'content_aware'] },
+  audio_segmentation_type: { type: 'string', enum: ['fixed', 'content_aware'] },
+  video_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300 },
+  audio_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300 },
+  processing_model: { type: ['string', 'null'], minLength: 1, description: 'Model ID published by the billing pricing API.' },
+  enable_transcription: { type: 'boolean' },
+  enable_image_embedding: { type: 'boolean' },
+};
+
+const SELECTION_FILTER_GROUP_SCHEMA = {
+  type: 'object',
+  properties: {
+    logic: { type: 'string', enum: ['and', 'or'] },
+    conditions: {
+      type: 'array', minItems: 1, maxItems: 4,
+      items: {
+        type: 'object',
+        properties: {
+          field: { type: 'string', minLength: 1 },
+          operator: { type: 'string' },
+          type: { type: 'string', enum: FILTER_CONDITION_VALIDATION.supported_types },
+          item_type: { type: ['string', 'null'], enum: ['string', 'integer', 'number', 'boolean', null] },
+          value: {},
+        },
+        oneOf: FILTER_CONDITION_SCHEMA_VARIANTS.map(({ not, ...variant }) => (
+          not ? { ...variant, properties: { ...variant.properties, value: { type: 'null' } } } : variant
+        )),
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['logic', 'conditions'],
+  additionalProperties: false,
+};
+
+const SELECTION_FILTER_SCHEMA = {
+  type: ['object', 'null'],
+  description: 'Optional schema-bound selection after extraction. At most four conditions total. Fields and types must match the corresponding segment or video schema.',
+  properties: {
+    segment: { ...SELECTION_FILTER_GROUP_SCHEMA, type: ['object', 'null'] },
+    video: { ...SELECTION_FILTER_GROUP_SCHEMA, type: ['object', 'null'] },
+    level_logic: { type: 'string', enum: ['and', 'or'] },
+  },
+  required: ['level_logic'],
+  anyOf: [{ required: ['segment'] }, { required: ['video'] }],
+  additionalProperties: false,
+};
+
 const READ_ONLY_TOOLS = new Set<ToolName>([
-  TOOL_NAMES.SEARCH_VIDEOS,
-  TOOL_NAMES.SEARCH_VIDEOS_BY_IMAGE,
-  TOOL_NAMES.MULTIMODAL_SEARCH,
   TOOL_NAMES.FILTER_VIDEOS,
   TOOL_NAMES.LIST_INDEXES,
   TOOL_NAMES.GET_INDEX,
@@ -280,9 +841,13 @@ const WRITE_SCOPE_READ_ONLY_TOOLS = new Set<ToolName>([
   TOOL_NAMES.TEST_PROMPT_SCHEMA,
 ]);
 
-// This explicit capability mint uses backend read scope even though it is not
-// operationally read-only and must not be advertised as idempotent.
+// These operations retain their established backend read scope even though
+// they create durable billing/usage or capability state. They must not be
+// advertised as read-only or idempotent to OpenAI clients.
 const READ_SCOPE_NON_READ_ONLY_TOOLS = new Set<ToolName>([
+  TOOL_NAMES.SEARCH_VIDEOS,
+  TOOL_NAMES.SEARCH_VIDEOS_BY_IMAGE,
+  TOOL_NAMES.MULTIMODAL_SEARCH,
   TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL,
 ]);
 
@@ -295,7 +860,20 @@ const DESTRUCTIVE_TOOLS = new Set<ToolName>([
   TOOL_NAMES.RETRY_PROMPT_RUN_SEGMENT,
   TOOL_NAMES.UPDATE_PROMPT,
   TOOL_NAMES.CANCEL_IMPORT_JOB,
+  TOOL_NAMES.RETRY_IMPORT_JOB,
   TOOL_NAMES.UPDATE_WEBHOOK,
+  TOOL_NAMES.TEST_WEBHOOK,
+]);
+
+// OpenAI's review contract uses openWorldHint for writes that can change state
+// beyond VideoVector's private boundary. Export jobs can write to a customer's
+// configured cloud destination, and webhook tests send an irreversible request
+// to the customer's external endpoint. Read-only browsing, connector health
+// probes, first-party import state, and capability minting remain closed-world.
+const OPEN_WORLD_TOOLS = new Set<ToolName>([
+  TOOL_NAMES.EXPORT_INDEX_METADATA,
+  TOOL_NAMES.EXPORT_PROMPT_RUN,
+  TOOL_NAMES.TEST_WEBHOOK,
 ]);
 
 export function getToolCategory(name: string): string {
@@ -303,6 +881,7 @@ export function getToolCategory(name: string): string {
 }
 
 export function getToolRequiredScope(name: string): ToolRequiredScope {
+  if (RESULTS_APP_TOOLS.has(name)) return 'read';
   if (SEARCH_SCOPE_TOOLS.has(name as ToolName)) {
     return 'search';
   }
@@ -322,7 +901,7 @@ export function getToolAnnotations(name: string): NonNullable<Tool['annotations'
     readOnlyHint: readOnly,
     destructiveHint: DESTRUCTIVE_TOOLS.has(name as ToolName),
     idempotentHint: readOnly,
-    openWorldHint: true,
+    openWorldHint: OPEN_WORLD_TOOLS.has(name as ToolName),
   };
 }
 
@@ -335,13 +914,40 @@ const BASE_TOOL_DEFINITIONS: Tool[] = [
   // Simplified Workflow Tools
   // --------------------------------------------------------------------------
   {
-    name: TOOL_NAMES.UPLOAD_MEDIA,
-    description: `Upload one local media file through the simplified workflow.
+    name: TOOL_NAMES.FIND,
+    description: `Find matching segments in videos attached to this message.
 
-The destination defaults to your Playground. Provide index_id for an existing index, or index_name to reuse/create a private index. This tool is intentionally available only over local stdio and can read only configured upload roots.`,
+This starts a fresh Playground workflow: upload the supplied videos, generate extraction schemas and optional filters together, and execute across exactly those videos. Transcription and image embeddings are off. Video segmentation uses content-aware processing.
+
+Prefer files forwarded by the host. Omit files only when the host cannot forward the videos; an inline picker will collect them. Local stdio clients can supply file_paths. Poll get_import_job with job_id until run_id is available, then get_prompt_run_status and get_prompt_run_results(view="both"). Each new command starts fresh; reuse idempotency_key only when retrying that command.`,
+    _meta: ATTACHMENT_TOOL_META,
     inputSchema: {
       type: 'object',
       properties: {
+        instruction: { type: 'string', minLength: 1, maxLength: 12000 },
+        files: ATTACHMENT_FILES_SCHEMA,
+        file_paths: {
+          type: 'array', minItems: 1, maxItems: 100,
+          items: { type: 'string', minLength: 1 },
+          description: 'Local stdio only: video paths within allowed upload roots.',
+        },
+        idempotency_key: { type: 'string', minLength: 1 },
+      },
+      required: ['instruction'],
+      additionalProperties: false,
+      not: { required: ['files', 'file_paths'] },
+    },
+  },
+  {
+    name: TOOL_NAMES.UPLOAD_MEDIA,
+    description: `Upload attached media through a durable import job.
+
+Prefer host-provided files. Omit files only when the host cannot forward attachments; an inline picker will collect them. Local stdio clients can supply file_path within allowed upload roots. Destination defaults to Playground; index_id selects an existing index and index_name reuses or creates a private index. Poll get_import_job with the returned job_id. To upload and immediately find matching segments, use find.`,
+    _meta: ATTACHMENT_TOOL_META,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        files: ATTACHMENT_FILES_SCHEMA,
         file_path: {
           type: 'string',
           minLength: 1,
@@ -368,16 +974,18 @@ The destination defaults to your Playground. Provide index_id for an existing in
           description: 'Optional stable retry identity. One is generated automatically when omitted.',
         },
       },
-      required: ['file_path'],
       additionalProperties: false,
-      not: { required: ['index_id', 'index_name'] },
+      allOf: [
+        { not: { required: ['index_id', 'index_name'] } },
+        { not: { required: ['files', 'file_path'] } },
+      ],
     },
   },
   {
     name: TOOL_NAMES.DEFINE_PROMPT,
     description: `Turn a natural-language instruction into a VideoVector prompt using Prompt Lab.
 
-The generated prompt is saved by default and the returned prompt_id can be passed directly to process_media. Set save=false only when the user explicitly wants a draft.`,
+The same generation call returns extraction schemas and an optional selection_filter only when the user wants to find, filter, or shortlist matching media. The generated instructions reflect supported segmentation intent, such as concise social clips or useful context around a target moment. The generated prompt is saved by default and the returned prompt_id can be passed directly to process_media. Set save=false only when the user explicitly wants a draft.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -405,7 +1013,7 @@ The generated prompt is saved by default and the returned prompt_id can be passe
     name: TOOL_NAMES.PROCESS_MEDIA,
     description: `Process media with one prompt using a minimal target contract.
 
-Provide prompt_id or an inline prompt_instruction. With no target, the entire Playground is processed. Provide index_id/index_name for an index, or video_ids for selected media. Omit execution settings to retain saved prompt and backend defaults. Explicit shortcut settings use content_aware or fixed segmentation, with transcription and image embeddings disabled unless enabled.`,
+Provide prompt_id or an inline prompt_instruction. With no target, the entire Playground is processed. Provide index_id/index_name for an index, video_ids for selected media, or import_job_id to process every published part of a completed import (exclusive with video_ids). Omitted execution settings inherit the engine configuration. Video and audio support fixed or content_aware segmentation, with content_aware as the default. The prompt may include an optional post-extraction selection filter. Returns a run immediately; poll get_prompt_run_status, then use get_prompt_run_results for both filtered and unfiltered pages.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -419,6 +1027,7 @@ Provide prompt_id or an inline prompt_instruction. With no target, the entire Pl
           minLength: 1,
           description: 'Inline instruction to generate, save, and run as a prompt.',
         },
+        import_job_id: { type: 'string', minLength: 1, description: 'Completed import whose full ordered output manifest is processed. Exclusive with video_ids; never use only the first page of imported video_ids.' },
         video_ids: {
           type: 'array',
           minItems: 1,
@@ -436,25 +1045,7 @@ Provide prompt_id or an inline prompt_instruction. With no target, the entire Pl
           minLength: 1,
           description: 'Exact existing private index name. Processing never creates indexes.',
         },
-        segmentation_mode: {
-          type: 'string',
-          enum: ['content_aware', 'fixed'],
-          description: 'Optional unified segmentation override. Omit execution settings to retain saved prompt and backend defaults.',
-        },
-        fixed_segment_duration_seconds: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 300,
-          description: 'Duration for fixed segmentation; defaults to 10 seconds in fixed mode.',
-        },
-        advanced_transcription: {
-          type: 'boolean',
-          description: 'Enable advanced transcription during processing. Omit all execution settings to retain saved prompt and backend defaults.',
-        },
-        create_image_embeddings: {
-          type: 'boolean',
-          description: 'Create image embeddings during processing. Omit all execution settings to retain saved prompt and backend defaults.',
-        },
+        ...EXECUTION_CONFIGURATION_PROPERTIES,
         idempotency_key: {
           type: 'string',
           minLength: 1,
@@ -477,7 +1068,7 @@ Provide prompt_id or an inline prompt_instruction. With no target, the entire Pl
     name: TOOL_NAMES.SEARCH_MEDIA,
     description: `Search processed media without first navigating VideoVector's internal abstractions.
 
-Use query for semantic vector search or filters for conditional search. With no scope, search the Playground. Scope by index, media IDs, or prompt-run IDs. Pass only cursor to retrieve the next frozen page without rerunning or rebilling the search.`,
+Use query for semantic vector search, filters for conditional search, or both to filter the ranked semantic result window. With no scope, search the Playground. Scope by index, media IDs, or prompt-run IDs. Pass only cursor to retrieve the next frozen page without rerunning or rebilling the search. Compatible clients display the ranked results in an interactive player with formatted analysis. Keep replies brief when that viewer is visible; otherwise present the returned viewing and JSON links.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -526,7 +1117,7 @@ Use query for semantic vector search or filters for conditional search. With no 
           type: 'string',
           enum: ['segment', 'video'],
           default: 'segment',
-          description: 'Search segment extraction results or video-level synthesis results.',
+          description: 'Search segment extraction results or video-level extraction results.',
         },
         video_ids: {
           type: 'array',
@@ -586,8 +1177,7 @@ Use query for semantic vector search or filters for conditional search. With no 
         },
         {
           oneOf: [
-            { required: ['query'], not: { anyOf: [{ required: ['filters'] }, { required: ['cursor'] }] } },
-            { required: ['filters'], not: { anyOf: [{ required: ['query'] }, { required: ['cursor'] }] } },
+            { anyOf: [{ required: ['query'] }, { required: ['filters'] }], not: { required: ['cursor'] } },
             {
               required: ['cursor'],
               not: {
@@ -910,7 +1500,7 @@ Returns the index name, creation date, and whether it's a shared demo index.`,
 
 Prompts define what information to extract from videos (e.g., objects, actions, scenes). Each prompt has a JSON schema that defines the output structure.
 
-Use this to discover what analysis capabilities are available before running execute_prompt.`,
+Use this to discover what analysis capabilities are available before running process_media.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1017,7 +1607,7 @@ Use this to discover prior prompt executions before drilling into status, result
     name: TOOL_NAMES.ESTIMATE_PROMPT_RUN,
     description: `Estimate the billing cost of a prompt run using the same configuration as execution.
 
-This does not start processing. Video/audio targets must already have server-measured duration metadata; otherwise the backend returns a duration validation error. Use it before execute_prompt when the user wants pricing or balance confirmation.`,
+This does not start processing. Video/audio targets must already have server-measured duration metadata; otherwise the backend returns a duration validation error. Use it before process_media when the user wants pricing or balance confirmation.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1049,7 +1639,7 @@ This does not start processing. Video/audio targets must already have server-mea
         video_segmentation_type: {
           type: 'string',
           enum: ['fixed', 'content_aware'],
-          description: 'Optional video segmentation override; omitted settings retain saved prompt and backend defaults.',
+          description: 'How to segment videos before extraction.',
         },
         video_segment_duration: {
           type: 'number',
@@ -1060,7 +1650,7 @@ This does not start processing. Video/audio targets must already have server-mea
         audio_segmentation_type: {
           type: 'string',
           enum: ['fixed', 'content_aware'],
-          description: 'Optional audio segmentation override; omitted settings retain saved prompt and backend defaults.',
+          description: 'How to segment audio files.',
         },
         audio_segment_duration: {
           type: 'number',
@@ -1070,96 +1660,15 @@ This does not start processing. Video/audio targets must already have server-mea
         },
         processing_model: {
           type: 'string',
-          description: 'Optional model override for prompt execution.',
+          description: 'Optional model override; omitted fields inherit the saved indexed execution settings.',
         },
         enable_transcription: {
           type: 'boolean',
-          description: 'Enable transcription for videos and audio. Omit to retain saved prompt and backend defaults.',
+          description: 'Enable transcription for videos and audio.',
         },
         enable_image_embedding: {
           type: 'boolean',
-          description: 'Enable image embeddings for image-search workflows. Omit to retain saved prompt and backend defaults.',
-        },
-      },
-      required: ['prompt_id', 'target'],
-    },
-  },
-  {
-    name: TOOL_NAMES.EXECUTE_PROMPT,
-    description: `Execute an analysis prompt against an index, specific videos, or playground media.
-
-This starts an asynchronous processing job that analyzes videos with the specified prompt. The prompt defines what information to extract using its JSON schema.
-
-Video/audio targets must already have server-measured duration metadata before execution. Returns immediately with a run_id. Use get_prompt_run_status to check progress.
-
-Note: For large indexes, processing may take several minutes. Consider using webhooks for production workflows.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        prompt_id: {
-          type: 'string',
-          description: 'ID of the prompt to execute. Use list_prompts to see available prompts.',
-        },
-        target: {
-          type: 'object',
-          description: 'Target configuration with type=index|videos|playground.',
-          properties: {
-            type: {
-              type: 'string',
-              enum: ['index', 'videos', 'playground'],
-            },
-            index_id: {
-              type: 'string',
-              description: 'Required when target.type is index. Optional when target.type is videos.',
-            },
-            video_ids: {
-              type: 'array',
-              items: { type: 'string' },
-              minItems: 1,
-              description: 'Required when target.type is videos.',
-            },
-          },
-          required: ['type'],
-        },
-        video_segmentation_type: {
-          type: 'string',
-          enum: ['fixed', 'content_aware'],
-          description:
-            'Optional video segmentation override: fixed (fixed duration) or content_aware. Omit to retain saved prompt and backend defaults.',
-        },
-        video_segment_duration: {
-          type: 'number',
-          minimum: 1,
-          maximum: 300,
-          description: 'Duration in seconds for fixed segmentation (required if video_segmentation_type is "fixed")',
-        },
-        audio_segmentation_type: {
-          type: 'string',
-          enum: ['fixed', 'content_aware'],
-          description: 'Optional audio segmentation override; omitted settings retain saved prompt and backend defaults.',
-        },
-        audio_segment_duration: {
-          type: 'number',
-          minimum: 1,
-          maximum: 300,
-          description: 'Duration in seconds for fixed audio segmentation (required if audio_segmentation_type is "fixed")',
-        },
-        processing_model: {
-          type: 'string',
-          description:
-            'Optional model override for prompt execution. Supported values are published by /billing/pricing processing_model_options.',
-        },
-        enable_transcription: {
-          type: 'boolean',
-          description: 'Enable audio transcription for videos. Omit to retain saved prompt and backend defaults.',
-        },
-        enable_image_embedding: {
-          type: 'boolean',
-          description: 'Enable image embeddings for visual search workflows. Omit to retain saved prompt and backend defaults.',
-        },
-        idempotency_key: {
-          type: 'string',
-          description: 'Optional idempotency key for safe retry of the prompt-run submission.',
+          description: 'Enable image embeddings for image-search workflows.',
         },
       },
       required: ['prompt_id', 'target'],
@@ -1174,13 +1683,13 @@ Note: For large indexes, processing may take several minutes. Consider using web
 - Billing settlement fields (billing_status, billing_error, billing_estimated_mt, billing_actual_mt)
 - Any error messages
 
-Use this to monitor async processing jobs started with execute_prompt.`,
+Use this to monitor async processing jobs started with process_media.`,
     inputSchema: {
       type: 'object',
       properties: {
         run_id: {
           type: 'string',
-          description: 'The prompt run ID returned from execute_prompt',
+          description: 'The prompt run ID returned from process_media',
         },
       },
       required: ['run_id'],
@@ -1198,7 +1707,7 @@ Use this when the user wants to stop an in-flight run because intent changed.`,
       properties: {
         run_id: {
           type: 'string',
-          description: 'The prompt run ID returned from execute_prompt',
+          description: 'The prompt run ID returned from process_media',
         },
         idempotency_key: {
           type: 'string',
@@ -1210,34 +1719,29 @@ Use this when the user wants to stop an in-flight run because intent changed.`,
   },
   {
     name: TOOL_NAMES.GET_PROMPT_RUN_RESULTS,
-    description: `Get the extraction results from a completed prompt run.
+    description: `Show results from an existing prompt run, including an interactive video viewer in compatible clients.
 
-Returns segment-level metadata extracted by the prompt's JSON schema. Only available after the run reaches a terminal status (completed or failed).`,
+Use the run and video the user just processed or referenced in this conversation; supply video_id when the request concerns one video. The viewer preloads that video's results, pauses its player, and displays formatted analysis with segment switching. When the viewer is shown, keep the accompanying reply brief instead of repeating its fields. In clients without a viewer, present the returned viewing and JSON links.
+
+Defaults to both pages across the entire run. Optionally narrow to one video_id. Each page has its own cursor; choose view=filtered or unfiltered to advance one page independently. result_level=segment returns segment metadata; video returns media-level extraction. selection_summary distinguishes pending, ready (including zero matches), failed, and not_applicable. A null page is unrequested or unavailable. Poll get_prompt_run_status while processing; reading results never starts processing, reruns search, or consumes generation usage.`,
     inputSchema: {
       type: 'object',
       properties: {
-        run_id: {
-          type: 'string',
-          description: 'The prompt run ID',
-        },
-        video_id: {
-          type: 'string',
-          description: 'The video or audio media ID within the run.',
-        },
-        limit: {
-          type: 'number',
-          default: 50,
-          minimum: 1,
-          maximum: 100,
-          description: 'Maximum number of results to return',
-        },
+        run_id: { type: 'string', minLength: 1, description: 'Run ID from process_media.' },
+        result_level: { type: 'string', enum: ['segment', 'video'], default: 'segment' },
+        video_id: { type: 'string', minLength: 1, description: 'Optionally narrow both pages to one media item.' },
+        view: { type: 'string', enum: ['both', 'filtered', 'unfiltered'], default: 'both' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, default: 10, description: 'Maximum rows in each requested page.' },
+        filtered_cursor: { type: 'string', minLength: 1, description: 'Opaque next_cursor from the filtered page.' },
+        unfiltered_cursor: { type: 'string', minLength: 1, description: 'Opaque next_cursor from the unfiltered page.' },
       },
-      required: ['run_id', 'video_id'],
+      required: ['run_id'],
+      additionalProperties: false,
     },
   },
   {
     name: TOOL_NAMES.GET_PROMPT_RUN_VIDEO_RESULT,
-    description: `Get the video/audio-level synthesis result for a specific media item inside a prompt run.`,
+    description: `Get the video/audio-level extraction result for a specific media item inside a prompt run.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1366,22 +1870,18 @@ The json_schema must be a valid JSON Schema with root type "object".`,
         },
         video_level: {
           type: 'object',
-          description: 'Optional video/audio-level synthesis configuration.',
+          description: 'Optional grounded video/audio-level extraction in the same content-aware model call. Each standalone part is analyzed independently.',
           properties: {
             instructions_text: {
               type: 'string',
               minLength: 1,
               maxLength: 12000,
             },
-            included_segment_fields: {
-              type: 'array',
-              items: { type: 'string' },
-            },
             json_schema: {
               type: 'object',
             },
           },
-          required: ['instructions_text', 'included_segment_fields', 'json_schema'],
+          required: ['instructions_text', 'json_schema'],
         },
         semantic_indexing: {
           type: 'object',
@@ -1397,6 +1897,13 @@ The json_schema must be a valid JSON Schema with root type "object".`,
             },
           },
         },
+        execution_config: {
+          type: 'object',
+          properties: EXECUTION_CONFIGURATION_PROPERTIES,
+          additionalProperties: false,
+          description: 'Saved execution defaults. Omitted run overrides inherit this configuration for indexed media.',
+        },
+        selection_filter: SELECTION_FILTER_SCHEMA,
         idempotency_key: {
           type: 'string',
           description: 'Optional idempotency key for safe retry of prompt creation.',
@@ -1414,7 +1921,7 @@ Returns the complete prompt definition with:
 - Full JSON schema for extraction
 - Active status and creation date
 
-Use this to understand what a prompt extracts before using it with execute_prompt.`,
+Use this to understand what a prompt extracts before using it with process_media.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1428,7 +1935,7 @@ Use this to understand what a prompt extracts before using it with execute_promp
   },
   {
     name: TOOL_NAMES.UPDATE_PROMPT,
-    description: `Update an existing prompt's name, instructions, schemas, or video-level synthesis settings.`,
+    description: `Update an existing prompt's name, instructions, schemas, or video-level extraction settings.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1459,22 +1966,18 @@ Use this to understand what a prompt extracts before using it with execute_promp
         },
         video_level: {
           type: 'object',
-          description: 'Replacement video/audio-level synthesis configuration.',
+          description: 'Replacement grounded video/audio-level extraction in the same content-aware model call. Each standalone part is analyzed independently.',
           properties: {
             instructions_text: {
               type: 'string',
               minLength: 1,
               maxLength: 12000,
             },
-            included_segment_fields: {
-              type: 'array',
-              items: { type: 'string' },
-            },
             json_schema: {
               type: 'object',
             },
           },
-          required: ['instructions_text', 'included_segment_fields', 'json_schema'],
+          required: ['instructions_text', 'json_schema'],
         },
         semantic_indexing: {
           type: 'object',
@@ -1493,8 +1996,16 @@ Use this to understand what a prompt extracts before using it with execute_promp
         clear_video_level: {
           type: 'boolean',
           default: false,
-          description: 'Remove any existing video/audio-level synthesis configuration.',
+          description: 'Remove any existing grounded video/audio-level extraction in the same content-aware model call. Each standalone part is analyzed independently.',
         },
+        execution_config: {
+          type: 'object',
+          properties: EXECUTION_CONFIGURATION_PROPERTIES,
+          additionalProperties: false,
+          description: 'Saved execution defaults. Omitted run overrides inherit this configuration for indexed media.',
+        },
+        selection_filter: SELECTION_FILTER_SCHEMA,
+        clear_selection_filter: { type: 'boolean', default: false, description: 'Remove the saved selection filter.' },
         idempotency_key: {
           type: 'string',
           description: 'Optional idempotency key for safe retry of prompt updates.',
@@ -1859,9 +2370,10 @@ Returns jobs with their status, progress, and results. Use this to monitor ongoi
 
 Returns:
 - Current status (pending, scanning, importing, completed, failed, cancelled)
-- Progress (total files, imported, failed, skipped, bytes transferred)
-- List of imported video IDs
-- Details of any failed or skipped files`,
+- Phase and source-file progress (total files, imported, failed, skipped, bytes transferred), with separate part counters
+- Ordered outputs page with source/part positions and original time ranges; video_ids includes only that page. Follow outputs.next_cursor until null, or use import_job_id with process_media to select the entire completed import.
+- run_id once a find workflow has submitted its execution; then use get_prompt_run_status and get_prompt_run_results
+- Failed source details; follow failed_files_next_cursor using failed_files_cursor to inspect every failure before retrying`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1869,8 +2381,26 @@ Returns:
           type: 'string',
           description: 'ID of the import job. Use list_import_jobs to find job IDs.',
         },
+        limit: { type: 'integer', minimum: 1, maximum: 100, default: 100 },
+        cursor: { type: 'string', description: 'Opaque outputs.next_cursor from the previous page. Continue until null to enumerate every standalone part.' },
+        failed_files_cursor: { type: 'string', description: 'Opaque failed_files_next_cursor. Returns the next page of failed source descriptors for inspection or refresh.' },
       },
       required: ['job_id'],
+    },
+  },
+  {
+    name: TOOL_NAMES.RETRY_IMPORT_JOB,
+    _meta: { 'openai/fileParams': ['files'] },
+    description: 'Resume a failed attachment import or find workflow, reusing imported and staged files. If get_import_job reports refresh_required, supply fresh host descriptors in files for those same unfinished file IDs; keep original file_name and mime_type. Use a new idempotency key when changing descriptors. A known wizard failure starts a new generation attempt; successful generations are reused. An uncertain generation outcome returns a conflict. This resumes the same job. Use find for a fresh command instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        job_id: { type: 'string', minLength: 1 },
+        files: ATTACHMENT_FILES_SCHEMA,
+        idempotency_key: { type: 'string', minLength: 1 },
+      },
+      required: ['job_id'],
+      additionalProperties: false,
     },
   },
   {
@@ -1879,7 +2409,7 @@ Returns:
 
 Files already imported will remain in the index. Only pending files will be skipped.
 
-Cannot cancel jobs that are already completed, failed, or cancelled.`,
+Failed attachment jobs may also be cancelled to discard retained unfinished files. Completed jobs, cancelled jobs, and failed connector jobs cannot be cancelled.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1907,7 +2437,7 @@ Indexes are collections that hold videos and their processed metadata. Create an
 
 After creating an index, you can:
 - Import videos from cloud storage using create_import_job
-- Run prompts on the index using execute_prompt
+- Run prompts on the index using process_media
 - Search the index using search_videos`,
     inputSchema: {
       type: 'object',
@@ -2050,17 +2580,19 @@ Creates an asynchronous export job for the results of a single prompt execution.
     description: `Get the status and delivery details of an export job.
 
 Returns:
-- status: processing, completed, or failed
-- destination_type: direct download or connector delivery
+- status: pending, processing, completed, or failed
+- destination_type: download or connector
 - destination_connector_id and destination_uri: connector delivery details when applicable
+- links.open_in_app: account-protected app link to review this export
+- links.download_json: clickable app download link when a direct export is ready
 - download_url: authenticated API download endpoint for a completed direct export
 - file_size_bytes: size of the exported file
 - error_message: details if the export failed
 
 This tool is side-effect free and never creates or returns a bearer capability.
-Use the authenticated VideoVector SDK/API streaming download for large files.
-Call get_export_download_url only when a separate header-free client explicitly
-needs a short-lived bounded bearer URL.`,
+Present links.download_json to users for a ready download, or links.open_in_app
+to review status. These links use the user's existing VideoVector sign-in.
+The legacy download_url path is for authenticated SDK/API streaming clients.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -2295,10 +2827,23 @@ Use this to debug webhook issues or verify events are being delivered.`,
   },
 ];
 
-export const TOOL_DEFINITIONS: Tool[] = BASE_TOOL_DEFINITIONS.map((tool) => ({
-  ...tool,
-  annotations: getToolAnnotations(tool.name),
-}));
+export const TOOL_DEFINITIONS: Tool[] = BASE_TOOL_DEFINITIONS.map((tool) => {
+  const toolName = tool.name as ToolName;
+  const outputSchema = WORKFLOW_RESULT_TOOLS.has(toolName) ? WORKFLOW_RESULT_SCHEMA : TOOL_OUTPUT_SCHEMAS[toolName];
+  return {
+    ...tool,
+    ...(WORKFLOW_DETAIL_TOOLS.has(toolName) ? {
+      description: `${tool.description}\n\nReturns compact contract_version=2 summaries by default. Use detail=full only when the user asks to inspect extracted JSON or prompt details. Pagination is identical in both modes. Open returned app links for playback and JSON downloads without adding payloads to model context.`,
+      inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, detail: { type: 'string', enum: ['summary', 'full'], default: 'summary' } } },
+    } : {}),
+    ...(['get_prompt_run_results', 'search_media'].includes(toolName) ? {
+      _meta: { ...tool._meta, ui: { resourceUri: RESULTS_CARD_URI }, 'openai/outputTemplate': RESULTS_CARD_URI, 'openai/widgetAccessible': true },
+    } : {}),
+    title: TOOL_TITLES[toolName],
+    ...(outputSchema === undefined ? {} : { outputSchema }),
+    annotations: getToolAnnotations(tool.name),
+  };
+});
 
 export type ToolProfile = 'simple' | 'full';
 export type ToolTransport = 'stdio' | 'streamable-http';
@@ -2310,9 +2855,26 @@ export interface ToolAvailability {
 
 const SIMPLE_TOOL_NAMES = new Set<string>([
   TOOL_NAMES.UPLOAD_MEDIA,
+  TOOL_NAMES.FIND,
   TOOL_NAMES.DEFINE_PROMPT,
   TOOL_NAMES.PROCESS_MEDIA,
   TOOL_NAMES.SEARCH_MEDIA,
+  TOOL_NAMES.GET_PROMPT_RUN_STATUS,
+  TOOL_NAMES.GET_PROMPT_RUN_RESULTS,
+  TOOL_NAMES.GET_IMPORT_JOB,
+  TOOL_NAMES.RETRY_IMPORT_JOB,
+]);
+
+// OpenAI's public MCP contract must not ask the model to collect credentials
+// or return bearer capabilities. These tools remain available to the existing
+// stdio and HTTP API-key surfaces; only the advertised OAuth publication clone
+// excludes them.
+const OAUTH_PUBLICATION_UNSAFE_TOOLS = new Set<string>([
+  TOOL_NAMES.CREATE_GCS_CONNECTOR,
+  TOOL_NAMES.CREATE_S3_CONNECTOR,
+  TOOL_NAMES.CREATE_AZURE_CONNECTOR,
+  TOOL_NAMES.CREATE_WEBHOOK,
+  TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL,
 ]);
 
 export const SIMPLE_TOOL_DEFINITIONS: Tool[] = TOOL_DEFINITIONS.filter((tool) =>
@@ -2322,25 +2884,59 @@ export const SIMPLE_TOOL_DEFINITIONS: Tool[] = TOOL_DEFINITIONS.filter((tool) =>
 export function getToolAvailability(name: string): ToolAvailability {
   return {
     profiles: SIMPLE_TOOL_NAMES.has(name) ? ['simple', 'full'] : ['full'],
-    transports: name === TOOL_NAMES.UPLOAD_MEDIA
-      ? ['stdio']
-      : ['stdio', 'streamable-http'],
+    transports: ['stdio', 'streamable-http'],
   };
 }
 
 /**
  * Select the runtime tool surface. The full profile is the compatibility
- * default; local upload is removed for every non-stdio transport.
+ * default; local path shortcuts are removed for every non-stdio transport.
  */
 export function getToolDefinitions(
   profile: ToolProfile = 'full',
-  includeLocalUpload: boolean = true
+  includeLocalUpload: boolean = true,
+  options: ToolDefinitionOptions = {}
 ): Tool[] {
-  const selected = profile === 'simple' ? SIMPLE_TOOL_DEFINITIONS : TOOL_DEFINITIONS;
-  if (includeLocalUpload) {
-    return selected;
+  const selected = [...(profile === 'simple' ? SIMPLE_TOOL_DEFINITIONS : TOOL_DEFINITIONS), ...(options.includeAppTools ? RESULTS_APP_DEFINITIONS : [])];
+  const transportTools = includeLocalUpload
+    ? selected
+    : selected.map((tool) => {
+      if (tool.name !== TOOL_NAMES.UPLOAD_MEDIA && tool.name !== TOOL_NAMES.FIND) return tool;
+      const properties = { ...tool.inputSchema.properties };
+      delete properties.file_path;
+      delete properties.file_paths;
+      return {
+        ...tool,
+        inputSchema: {
+          type: 'object' as const,
+          properties,
+          additionalProperties: false,
+          ...(tool.name === TOOL_NAMES.FIND
+            ? { required: ['instruction'] }
+            : { not: { required: ['index_id', 'index_name'] } }),
+        },
+      };
+    });
+  if (!options.advertiseOAuth) {
+    return transportTools;
   }
-  return selected.filter((tool) => tool.name !== TOOL_NAMES.UPLOAD_MEDIA);
+  const publicationTools = transportTools.filter(
+    (tool) => !OAUTH_PUBLICATION_UNSAFE_TOOLS.has(tool.name)
+  );
+  return publicationTools.map((tool): OAuthAdvertisedTool => {
+    const securitySchemes: OAuth2SecurityScheme[] = [{ type: 'oauth2', scopes: [] }];
+    return {
+      ...tool,
+      securitySchemes,
+      _meta: {
+        ...tool._meta,
+        securitySchemes: securitySchemes.map((scheme) => ({
+          ...scheme,
+          scopes: [...scheme.scopes],
+        })),
+      },
+    };
+  });
 }
 
 // ============================================================================
@@ -2348,5 +2944,5 @@ export function getToolDefinitions(
 // ============================================================================
 
 export function getToolDefinition(name: string): Tool | undefined {
-  return TOOL_DEFINITIONS.find((tool) => tool.name === name);
+  return TOOL_DEFINITIONS.find((tool) => tool.name === name) ?? RESULTS_APP_DEFINITIONS.find((tool) => tool.name === name);
 }
