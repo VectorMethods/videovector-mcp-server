@@ -1,0 +1,153 @@
+{
+  "type": "object",
+  "required": [
+    "analysis_id",
+    "status",
+    "terminal",
+    "stage",
+    "message",
+    "progress",
+    "results",
+    "next_action"
+  ],
+  "properties": {
+    "analysis_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "boolean",
+      "description": "True only when the analysis execution has ended. Media/indexing work may still be pending; results.final describes the extraction snapshot, not asset readiness."
+    },
+    "stage": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "scope": {
+      "type": "object"
+    },
+    "progress": {
+      "type": "object"
+    },
+    "results": {
+      "type": "object",
+      "properties": {
+        "included_videos": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "final": {
+          "type": "boolean"
+        },
+        "download_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_in_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "type": "string"
+        },
+        "videos": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "pagination": {
+          "type": "object"
+        },
+        "segment_downloads": {
+          "type": "array",
+          "maxItems": 6,
+          "description": "Direct clip downloads. All available segment links are also included in the JSON. Follow redirects without OAuth headers.",
+          "items": {
+            "type": "object",
+            "required": [
+              "video_id",
+              "segment_id",
+              "start_time",
+              "end_time",
+              "download_url",
+              "expires_at"
+            ],
+            "properties": {
+              "video_id": {
+                "type": "string"
+              },
+              "segment_id": {
+                "type": "string"
+              },
+              "start_time": {
+                "type": "number"
+              },
+              "end_time": {
+                "type": "number"
+              },
+              "download_url": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "next_action": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "newer_processing": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": false
+}

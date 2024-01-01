@@ -6,9 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { validateStdioSmoke } from '../scripts/validate-stdio-smoke.mjs';
 
-const names = ['analyze', 'get_analysis', 'search', 'import_media', 'save_prompt', 'browse'];
+const names = ['analyze', 'get_analysis', 'search', 'import_media', 'browse'];
 const contract = {
-  server: { name: 'videovector', version: '6.0.0' },
+  server: { name: 'videovector', version: '7.0.0' },
   tools: [
     ...names.map(name => ({ name, availability: { transports: ['stdio', 'streamable-http'] } })),
     { name: 'http_only', availability: { transports: ['streamable-http'] } },
@@ -22,8 +22,8 @@ function response(toolNames = [...names].reverse(), version = contract.server.ve
 }
 
 describe('release artifact stdio discovery', () => {
-  it('compares the complete six-tool catalog without profiles or list-order assumptions', () => {
-    expect(validateStdioSmoke(response(), contract)).toEqual({ version: '6.0.0', toolCount: 6 });
+  it('compares the complete five-tool catalog without profiles or list-order assumptions', () => {
+    expect(validateStdioSmoke(response(), contract)).toEqual({ version: '7.0.0', toolCount: 5 });
   });
   it.each([
     { toolNames: names.slice(1) },
@@ -34,7 +34,7 @@ describe('release artifact stdio discovery', () => {
   ])('rejects missing, extra, duplicate, replaced or retired tools: $toolNames', ({ toolNames }) => {
     expect(() => validateStdioSmoke(response(toolNames), contract)).toThrow(/stdio tools differ/);
   });
-  it('rejects retired app-only helpers outside the public six-tool contract', () => {
+  it('rejects retired app-only helpers outside the public five-tool contract', () => {
     expect(() => validateStdioSmoke(response([...names, 'read_analysis']), contract)).toThrow(/stdio tools differ/);
   });
   it.each([true, false])('validates oversized discovery through stdin (valid=%s)', valid => {

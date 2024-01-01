@@ -21,7 +21,7 @@ profile form; tool calls still enforce the account's credits and entitlements.
 Start linking from the MCP client, not by opening the login continuation URL
 directly: the continuation requires a current, one-use authorization request.
 
-OAuth authenticates the linked account for the six published media tools;
+OAuth authenticates the linked account for the five published media tools;
 MCP exposes no deletion or administration tools. OAuth is not a `read`,
 `write`, `search`, or `admin` API-key scope. It does not grant platform administration, API-key management,
 or access to Firebase-session-only and internal-service endpoints.
@@ -62,8 +62,8 @@ authorize executing them.
 
 ## Available tools and existing API-key clients
 
-OAuth exposes the same six tools as direct integrations: `analyze`, `get_analysis`,
-`search`, `import_media`, `save_prompt`, and `browse`. All interaction is conversational; there are no embedded views or private UI helpers. There is no profile setting. OAuth schemas omit cloud
+OAuth exposes the same five tools as direct integrations: `analyze`, `get_analysis`,
+`search`, `import_media`, and `browse`. All interaction is conversational; there are no embedded views or private UI helpers. There is no profile setting. OAuth schemas omit cloud
 sources and credentials and webhook arguments, and execution
 rejects those options. API-key/stdio integrations can use those direct options.
 Authorized analysis and search results include one-hour JSON download grants

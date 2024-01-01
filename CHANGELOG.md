@@ -1,4 +1,40 @@
+# 7.0.0 unified extraction contract
+
+- Require segment and whole-media schemas and extract both scopes together, including images.
+- Remove fixed segmentation, prompt selection filters, and separate whole-media execution states.
+- Return extraction results through one page and cursor; keep downstream conditional search.
+
 # Changelog
+
+## 7.0.0
+
+- Remove the standalone `save_prompt` tool. Analyses already save generated prompts; return their verified identity as `scope.prompt_id` for reuse. The public catalog now contains five tools.
+- Give each tool a short, distinct purpose: extraction, result loading, large-collection search, transfer-only imports, or resource discovery. General Q&A uses loaded analysis results.
+
+- Keep internal task identifiers and transfer details out of user-facing replies, including interrupted observations; provide the returned JSON download link when available.
+- Shorten the bundled analysis skill with concrete extraction examples and continued polling through terminal completion.
+
+## 6.1.6
+
+- Preserve an accepted analysis's existing Studio link when its first status read times out or returns recoverable observation guidance. Keep the same task identity without replaying submission.
+
+## 6.1.5
+
+- Add stable links to open processing and historical analyses in VideoVector Studio, preserving the exact run and media.
+- Return clip links before optional local downloads, and keep internal identifiers out of ordinary replies.
+- Preserve compatibility with cached 6.1.4 analysis output schemas.
+
+## 6.1.4
+
+Deliver tool errors as text JSON without applying the successful result schema. Preserve error guidance, task identifiers, retry keys, and OAuth reconnect metadata. Successful structured results and their validation are unchanged.
+
+## 6.1.3
+
+Clarify that video summaries, lecture notes, and matching moments use analyze, while identified analyses/results are reused. Explain native ChatGPT file handoff at runtime before reporting an attachment limitation. Tool schemas, authorization, processing, and duplicate-submission safeguards are unchanged.
+
+## 6.1.2
+
+Correct the public-internet annotation for analyze and import_media in OAuth connections. Both tools accept public media URLs, so they remain open-world even when callbacks are unavailable. Input schemas and processing behavior are unchanged.
 
 ## 6.1.1
 

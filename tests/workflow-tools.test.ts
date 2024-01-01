@@ -3,13 +3,13 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv
 import { VideoVectorClient } from '../src/client/index.js';
 import { VideoVectorApiError } from '../src/types/index.js';
 import { executeTool, getToolDefinitions, getToolDefinition, getToolRequiredScope } from '../src/tools/index.js';
-const names = ['analyze','get_analysis','search','import_media','save_prompt','browse'];
+const names = ['analyze','get_analysis','search','import_media','browse'];
 const data = { analysis_id:'analysis-1',status:'processing',terminal:false,stage:'extracting',message:'One video complete',scope:{type:'videos',video_ids:['video-1','video-2']},progress:{total:2,imported:2,completed:1,failed:0},results:{included_videos:1,final:false,download_url:'https://api.example/results?token=grant',expires_in_seconds:3600},next_action:{type:'continue_polling',after_seconds:15} };
 const response = (value: Record<string, unknown> = data, meta = {}) => ({content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value,_meta:meta});
 function client() { return { mcpTool:vi.fn().mockResolvedValue(response()) } as unknown as VideoVectorClient; }
 const parse = (result:any) => result.structuredContent ?? JSON.parse(result.content[0].text);
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
-describe('single six-tool facade', () => {
+describe('single five-tool facade', () => {
   it.each(['api-key', 'oauth'] as const)('forwards URL sources once through the existing facade for %s', async authenticationKind => {
     for (const name of ['analyze', 'import_media']) {
       const backend = client();
@@ -27,7 +27,7 @@ describe('single six-tool facade', () => {
     const result = await executeTool('analyze', { instruction: 'Describe', source }, backend);
     expect(result.isError).toBe(true); expect(backend.mcpTool).not.toHaveBeenCalled();
   });
-  it.each(['video', 'audio'])('rejects incomplete fixed %s execution before upload or admission', async media => {
+  it.each(['video', 'audio'])('rejects removed fixed %s execution before upload or admission', async media => {
     for (const duration of [undefined, null]) {
       const backend = client();
       const execution = { [`${media}_segmentation_type`]: 'fixed', ...(duration === null ? { [`${media}_segment_duration`]: null } : {}) };
@@ -39,10 +39,10 @@ describe('single six-tool facade', () => {
   });
   it('publishes identical names on both transports and OAuth, with no profile or aliases', () => {
     for(const includeLocalUpload of [true,false]) for(const advertiseOAuth of [true,false]) expect(getToolDefinitions({includeLocalUpload,advertiseOAuth}).map(t=>t.name)).toEqual(names);
-    for(const name of ['find','process_media','list_indexes','list_analyses','upload_media','get_import_job','retry_import_job','get_export_status','cancel_prompt_run']) expect(getToolDefinition(name)).toBeUndefined();
+    for(const name of ['save_prompt','find','process_media','list_indexes','list_analyses','upload_media','get_import_job','retry_import_job','get_export_status','cancel_prompt_run']) expect(getToolDefinition(name)).toBeUndefined();
   });
   it('keeps public required scopes and import observation scope precise', () => {
-    expect(names.map(name=>getToolRequiredScope(name))).toEqual(['write','read','search','write','write','read']);
+    expect(names.map(name=>getToolRequiredScope(name))).toEqual(['write','read','search','write','read']);
     expect(getToolRequiredScope('import_media',{import_id:'i'})).toBe('read');
     expect(getToolRequiredScope('import_media',{import_id:'i',retry:true})).toBe('write');
   });
@@ -58,14 +58,36 @@ describe('single six-tool facade', () => {
     expect(vi.mocked(backend.mcpTool).mock.calls[1][1]).toEqual({analysis_id:'analysis-1',wait_seconds:30});
     expect(onProgress).toHaveBeenCalledWith('One video complete',1,2);
   });
+  it.each(['analyze', 'get_analysis'] as const)('returns the saved prompt identity from %s without extra prompt calls', async name => {
+    const backend = client();
+    const saved = response({ ...data, scope: { ...data.scope, prompt_id: 'saved-prompt-1' } });
+    vi.mocked(backend.mcpTool).mockResolvedValue(saved);
+    const args = name === 'analyze'
+      ? { instruction: 'Summarize the lecture', source: { video_ids: ['video-1'] }, wait_seconds: 0 }
+      : { analysis_id: 'analysis-1', wait_seconds: 0 };
+    const out = await executeTool(name, args, backend);
+    expect(out).toEqual(saved);
+    expect(parse(out).scope.prompt_id).toBe('saved-prompt-1');
+    expect(backend.mcpTool).toHaveBeenCalledTimes(1);
+    const validate = new AjvJsonSchemaValidator().getValidator(getToolDefinition(name)!.outputSchema!);
+    expect(validate(out.structuredContent).valid).toBe(true);
+    expect(validate({ ...data, scope: { ...data.scope, prompt_id: 123 } }).valid).toBe(false);
+    expect(validate(data).valid).toBe(true);
+  });
   it.each(['timeout_error','network_error'] as const)('returns the exact submission key on uncertain %s and never silently submits twice',async code=>{
     const backend=client();vi.mocked(backend.mcpTool).mockRejectedValue(new VideoVectorApiError('private',code,0));
     const out=await executeTool('analyze',{instruction:'Describe',source:{video_ids:['video-1']},idempotency_key:'same'},backend);
     expect(parse(out).next_action).toEqual({type:'retry_same_submission',tool:'analyze',idempotency_key:'same',after_seconds:15});expect(backend.mcpTool).toHaveBeenCalledTimes(1);
   });
-  it('retains accepted identity after observation timeout without another submission',async()=>{
-    const backend=client();vi.mocked(backend.mcpTool).mockResolvedValueOnce(response()).mockRejectedValueOnce(new VideoVectorApiError('private','timeout_error',408));
-    const out=await executeTool('analyze',{instruction:'Describe',source:{video_ids:['video-1']}},backend);expect(parse(out)).toMatchObject({analysis_id:'analysis-1',next_action:{type:'continue_polling'}});expect(backend.mcpTool).toHaveBeenCalledTimes(2);
+  it('retains accepted analysis, saved prompt and Studio link after observation timeout without another submission',async()=>{
+    const links = { open_in_app: 'https://app.vectormethods.com/playground?analysis=analysis-1' };
+    const backend=client();vi.mocked(backend.mcpTool)
+      .mockResolvedValueOnce(response({ ...data, scope: { ...data.scope, prompt_id: 'saved-prompt-1' }, next_action: { ...data.next_action, links } }))
+      .mockRejectedValueOnce(new VideoVectorApiError('private','timeout_error',408));
+    const out=await executeTool('analyze',{instruction:'Describe',source:{video_ids:['video-1']}},backend);
+    expect(parse(out)).toMatchObject({analysis_id:'analysis-1',scope:{prompt_id:'saved-prompt-1'},next_action:{type:'continue_polling',after_seconds:15,links}});
+    expect(JSON.parse(out.content[0].text)).toEqual(out.structuredContent);
+    expect(backend.mcpTool).toHaveBeenCalledTimes(2);
   });
   it.each([
     ['get_analysis',{analysis_id:'a',detail:'full',cursor:'page-2'}],
@@ -153,9 +175,41 @@ describe('single six-tool facade', () => {
     expect(vi.mocked(backend.mcpTool).mock.calls.map(call=>call[0])).toEqual([name,readTool]);
     expect(vi.mocked(backend.mcpTool).mock.calls[1][1]).toEqual({[idField]:id,wait_seconds:30});
   });
+  it.each([undefined, { open_in_app: 'https://app.vectormethods.com/playground?analysis=analysis-1&video=video-1' }])('preserves same-analysis observation navigation without restoring stale admission state: %j',async(observedLinks)=>{
+    const links = { open_in_app: 'https://app.vectormethods.com/playground?analysis=analysis-1' };
+    const backend=client();
+    const receipt = { analysis_id: 'analysis-1', code: 'observation_unavailable', message: 'Read this same task.',
+      next_action: { type: 'continue_polling', tool: 'get_analysis', after_seconds: 15, ...(observedLinks ? { links: observedLinks } : {}) } };
+    const unavailable = { ...response(receipt, { request_id: 'observation-1' }), isError: true };
+    vi.mocked(backend.mcpTool)
+      .mockResolvedValueOnce(response({ ...data, next_action: { ...data.next_action, links } }))
+      .mockResolvedValueOnce(unavailable);
+    const out=await executeTool('analyze',{instruction:'Describe',source:{video_ids:['video-1']}},backend);
+    const expected = { ...receipt, next_action: { ...receipt.next_action, links: observedLinks ?? links } };
+    expect(out).toEqual({ ...unavailable, structuredContent: expected, content: [{ type: 'text', text: JSON.stringify(expected) }] });
+    expect(out.structuredContent).not.toHaveProperty('progress');
+    expect(out.structuredContent).not.toHaveProperty('results');
+    expect(vi.mocked(backend.mcpTool).mock.calls.map(call=>call[0])).toEqual(['analyze','get_analysis']);
+  });
   it('rejects a different-task observation receipt after admission',async()=>{
     const backend=client();vi.mocked(backend.mcpTool).mockResolvedValueOnce(response()).mockResolvedValueOnce({...response({analysis_id:'different',code:'observation_unavailable',next_action:{type:'continue_polling'}}),isError:true});
     expect(parse(await executeTool('analyze',{instruction:'Describe',source:{video_ids:['video-1']}},backend))).toMatchObject({analysis_id:'analysis-1',next_action:{type:'review_error'}});
+    expect(backend.mcpTool).toHaveBeenCalledTimes(2);
+  });
+  it.each([undefined, 'observed-prompt-1'])('retains saved prompt identity on same-analysis recovery without stale state: %s', async observedPromptId => {
+    const backend = client();
+    const receipt = { analysis_id: 'analysis-1', code: 'observation_unavailable', message: 'Read this same analysis.',
+      ...(observedPromptId ? { scope: { prompt_id: observedPromptId } } : {}),
+      next_action: { type: 'continue_polling', tool: 'get_analysis', after_seconds: 15 } };
+    vi.mocked(backend.mcpTool)
+      .mockResolvedValueOnce(response({ ...data, scope: { ...data.scope, prompt_id: 'saved-prompt-1' } }))
+      .mockResolvedValueOnce({ ...response(receipt), isError: true });
+    const out = await executeTool('analyze', { instruction: 'Describe', source: { video_ids: ['video-1'] } }, backend);
+    expect(parse(out)).toEqual({ ...receipt, scope: { prompt_id: observedPromptId ?? 'saved-prompt-1' } });
+    expect(JSON.parse(out.content[0].text)).toEqual(out.structuredContent);
+    expect(parse(out)).not.toHaveProperty('progress');
+    expect(parse(out)).not.toHaveProperty('results');
+    expect(parse(out).scope).not.toHaveProperty('video_ids');
     expect(backend.mcpTool).toHaveBeenCalledTimes(2);
   });
   it.each([
@@ -168,7 +222,7 @@ describe('single six-tool facade', () => {
   it.each([['get_analysis',{analysis_id:'a'}],['import_media',{import_id:'i'}],['search',{search_id:'s'}]] as const)('retains read identity and typed auth guidance for %s',async(name,args)=>{
     const backend=client();vi.mocked(backend.mcpTool).mockRejectedValue(new VideoVectorApiError('private','invalid_api_key',401));const out=await executeTool(name,args,backend);expect(parse(out)).toMatchObject({...args,next_action:{type:'request_input'}});expect(backend.mcpTool).toHaveBeenCalledTimes(1);
   });
-  it.each([['search',{query:'red car',scope:{index_name:'Clips'},max_results:50,page_size:5}],['save_prompt',{instruction:'Describe',save:false}],['browse',{resource:'analyses',index_id:'i',status:'completed'}]] as const)('forwards canonical %s arguments without native alias dispatch',async(name,args)=>{
+  it.each([['search',{query:'red car',scope:{index_name:'Clips'},max_results:50,page_size:5}],['browse',{resource:'analyses',index_id:'i',status:'completed'}]] as const)('forwards canonical %s arguments without native alias dispatch',async(name,args)=>{
     const backend=client();await executeTool(name,args,backend);expect(backend.mcpTool).toHaveBeenCalledExactlyOnceWith(name,expect.objectContaining(args),expect.any(Object));
   });
   it('continues a saved search with its identity and optional cursor without a new submission key',async()=>{const backend=client();await executeTool('search',{search_id:'s',cursor:'next',page_size:5},backend);expect(backend.mcpTool).toHaveBeenCalledExactlyOnceWith('search',{search_id:'s',cursor:'next',page_size:5},expect.objectContaining({idempotencyKey:undefined}));});
@@ -190,7 +244,7 @@ describe('single six-tool facade', () => {
     ['analyze',{instruction:'x',prompt_id:'p'}],['analyze',{instruction:'x',video_ids:['v']}],['analyze',{instruction:'x',files:[{file_id:'f',download_url:'https://x'}],source:{video_ids:['v']}}],
     ['analyze',{instruction:'x',source:{video_ids:['v']},destination:{index_id:'i'}}],['analyze',{instruction:'x',source:{index_id:'i',index_name:'n'}}],
     ['get_analysis',{analysis_id:'a',after_revision:'private'}],['get_analysis',{analysis_id:'a',cursor:'c'}],['search',{query:'x'}],['search',{cursor:'c'}],['search',{search_id:'s',query:'x'}],['search',{query:'x',scope:{analysis_ids:['a'],video_ids:['v']}}],
-    ['import_media',{import_id:'i',files:[{file_id:'f',download_url:'https://x'}]}],['import_media',{import_id:'i',retry:true}],['save_prompt',{instruction:'x',definition:{name:'p',prompt_text:'p',json_schema:{}}}],['browse',{resource:'indexes',status:'completed'}],['browse',{resource:'videos',include_defaults:true}],
+    ['import_media',{import_id:'i',files:[{file_id:'f',download_url:'https://x'}]}],['import_media',{import_id:'i',retry:true}],['browse',{resource:'indexes',status:'completed'}],['browse',{resource:'videos',include_defaults:true}],
   ])('rejects invalid %s combinations before backend access',async(name,args)=>{const backend=client();const out=await executeTool(name as string,args as Record<string,unknown>,backend);expect(out.isError).toBe(true);expect(parse(out).next_action.type).toBe('correct_arguments');expect(backend.mcpTool).not.toHaveBeenCalled();});
   it('emits bounded-wait progress only for opted-in hosts and clears the timer',async()=>{
     vi.useFakeTimers();const backend=client();let finish!:(value:any)=>void;vi.mocked(backend.mcpTool).mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));const onProgress=vi.fn();

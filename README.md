@@ -45,7 +45,7 @@ JSON file below configures local stdio servers. See the current
 [Claude connector instructions](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
 and [Cursor MCP configuration](https://cursor.com/docs/mcp).
 
-OAuth connects the signed-in VideoVector account to the six published media
+OAuth connects the signed-in VideoVector account to the five published media
 tools. MCP exposes no deletion or administration tools. Product ownership,
 credits, and entitlements still apply. For narrower integration permissions,
 use a scoped API key.
@@ -155,8 +155,8 @@ Plaintext keys are never written to caches or logs. Requests that combine
 
 Every authenticated `tools/call` for a published tool sends one explicit
 `POST /auth/processing-activity` before execution, using the same credential.
-This includes `analyze`, `import_media` (including progress reads), `save_prompt`
-(including prompt generation), `get_analysis`, `search`, and `browse` on both
+This includes `analyze`, `import_media` (including progress reads),
+`get_analysis`, `search`, and `browse` on both
 HTTP and stdio. Initialization, initialized notifications, tool listing,
 credential validation/cache refresh, token refresh and internal API polling
 never signal readiness. Control rejects MCP authentication-only activity,
@@ -196,26 +196,27 @@ deployment settings apply when operating your own server; see
 
 ## Tools
 
-One six-tool catalog is shared by stdio, API-key HTTP, and OAuth:
+One five-tool catalog is shared by stdio, API-key HTTP, and OAuth:
 
 | Tool | Purpose |
 | --- | --- |
-| `analyze` | Analyze root native `files` or one nested `source`, using `instruction` or `prompt_id`. |
+| `analyze` | Analyze native `files` or one `source`; automatically save the prompt generated from `instruction`, or reuse a saved `prompt_id`. |
 | `get_analysis` | Read one analysis or the latest complete analysis for a video. |
-| `search` | Combine text, image, and metadata filters in one nested `scope`; resume saved snapshots. |
-| `import_media` | Import without analysis, inspect `import_id`, or retry failures where supported. |
-| `save_prompt` | Generate/save a prompt from instruction or an explicit definition. |
+| `search` | Retrieve matches from large, already-processed collections whose extracted results exceed the available context. |
+| `import_media` | Transfer or upload media without extraction; inspect the same `import_id`. |
 | `browse` | Discover indexes, videos, analyses, imports, or prompts with resource-specific filters. |
 
-There are no Simple/Full profiles or retired-name aliases. OAuth omits cloud source credentials, cloud import, and webhook arguments while keeping the same six names. Direct integrations can supply terminal-only task callbacks. Local paths are nested under `source.file_paths` and appear only on stdio. All schemas include conditional rules and examples; see the [hierarchical contract](docs/tool-contract.md) and [generated JSON Schema](artifacts/tool-contract.json).
+There are no Simple/Full profiles or retired-name aliases. OAuth omits cloud source credentials, cloud import, and webhook arguments while keeping the same five names. Direct integrations can supply terminal-only task callbacks. Local paths are nested under `source.file_paths` and appear only on stdio. All schemas include conditional rules and examples; see the [hierarchical contract](docs/tool-contract.md) and [generated JSON Schema](artifacts/tool-contract.json).
 
-Analysis retains one durable ID across upload and processing. Observations wait at most 30 seconds; local transfers use the configured request timeout. Typed `next_action` distinguishes required input, progress, results, and errors. Continue observing within host/user controls, preserving the ID and retry identity. Pending or a failed observation does not mean processing stopped. `terminal` confirms execution completion; `results.final` confirms the extraction snapshot, independently of later media and image readiness. Content-aware video/audio segmentation is the default. Choose fixed intervals only when the user explicitly requests them. New analysis consumes credits: never resubmit active work, and replace terminal work only on explicit user retry intent. `retry_same_submission` replays identical arguments/key to confirm the original delivery; it does not start a new execution.
+An `instruction` generates and automatically saves a reusable prompt; retain the returned `scope.prompt_id` internally and pass it to a later `analyze` call to reuse the format. No separate prompt-saving tool is required. `import_media` performs transfer only and never starts extraction.
+
+Analysis retains one durable ID across upload and processing. Observations wait at most 30 seconds; local transfers use the configured request timeout. Typed `next_action` distinguishes required input, progress, results, and errors. Continue observing within host/user controls, preserving the ID and retry identity. Pending or a failed observation does not mean processing stopped. `terminal` confirms execution completion; `results.final` confirms the extraction snapshot, independently of later media and image readiness. Every extraction includes segment and whole-media fields together. Audio/video segmentation is content-aware; images use one segment with both scopes. Apply filtering downstream or through search. New analysis consumes credits: never resubmit active work, and replace terminal work only on explicit user retry intent. `retry_same_submission` replays identical arguments/key to confirm the original delivery; it does not start a new execution.
 
 Local attachments upload directly to storage in resumable chunks of at most 8 MiB. The job-scoped grant authorizes JSON session and completion requests; it is never sent to storage. A retry asks the backend for the storage-confirmed byte offset and sends only the remaining bytes. The client verifies the authorized local file identity before each chunk and finalizes the exact attachment batch after every file is durable.
 
-Accepted analysis parts appear incrementally in metadata and included one-hour JSON download grants. Main extraction, media assets, and image search have independent readiness. The response and JSON also contain direct segment downloads. Fetch these capabilities without OAuth headers; refresh through the same result tool without rerunning or creating an export. Save JSON where the host supports files and retain its path for context recovery. Hosts without filesystem tools can use bounded full-detail pages.
+Accepted media bundles appear as each source completes, with included one-hour JSON download grants. All internal windows and both extraction scopes for one source are accepted together. Main extraction, media assets, and image search have independent readiness. The response and JSON also contain direct segment downloads. Fetch these capabilities without OAuth headers; refresh through the same result tool without rerunning or creating an export. Save JSON where the host supports files and retain its path for context recovery. Hosts without filesystem tools can use bounded full-detail pages.
 
-Every new search requires an explicit scope. Search filters candidates before ranking; library/video/Playground scopes use latest complete results per video. `scope.analysis_ids` selects history. Use `search_id` with an optional cursor to resume the same saved snapshot without rerunning. Native REST APIs remain available independently.
+For ordinary questions, load extracted content with `get_analysis` and answer in context. Run new analysis only when the needed information is absent. Reserve `search` for large, already-processed collections whose extraction cannot fit in context. Every new search requires an explicit scope. Search filters candidates before ranking; library/video/Playground scopes use latest complete results per video. `scope.analysis_ids` selects history. Use `search_id` with an optional cursor to resume the same saved snapshot without rerunning. Native REST APIs remain available independently.
 
 ## Development
 
@@ -254,23 +255,24 @@ Read `import_media` with the original `import_id` for safe per-file errors and p
 
 ## Conversational progress
 
-All hosts use `get_analysis` with the same analysis_id. Each observation is bounded to 30 seconds; follow the typed next_action without starting duplicate analysis. Show accepted part metadata immediately, and report media/image readiness separately. There is no iframe, private polling loop, or embedded result player. Download links remain part of the tool response.
+All hosts use `get_analysis` with the same analysis_id. Each observation is bounded to 30 seconds; follow the typed next_action without starting duplicate analysis. Show accepted media metadata immediately, and report media/image readiness separately. There is no iframe, private polling loop, or embedded result player. Download links remain part of the tool response.
 
 ## One original and internal analysis parts
 
 Uploads return durable import jobs and retain one original public video per file.
 Long videos have internal optimal-cut analysis windows, each at most 40 minutes;
-accepted parts publish progressively against that same video. Segment timestamps
+all windows and whole-media fields publish together for that video. Separate media
+items can complete independently. Segment timestamps
 use the full original playback timeline. Intake source-file counters are separate
 from processing `total_parts`, `completed_parts`, and `failed_parts`. Read every
 ordered import outputs page (`next_cursor` until null). `video_ids` includes only
 the current page. Use `analyze` with `source.import_id` to select the completed
 import; it is exclusive with other source selectors.
 
-The optional `video_level` configuration contains `instructions_text` and
-`json_schema` and requires content-aware segmentation. Segment metadata can be
-available while whole-video synthesis and media/image enrichment continue. Use
-the reported phase and independent readiness rather than treating the first
-metadata page or main completion as completion of every artifact.
+Every prompt requires `video_level` with `instructions_text` and `json_schema`
+alongside its segment schema. Both scopes are extracted and published together.
+Media assets and image indexing may finish afterward; use their reported readiness.
+Execution only extracts information. Use search conditions or your own result
+handling for filtering.
 
 Public HTTPS media and individual YouTube videos can be submitted with `source.urls` (one URL or up to eight URLs) to `analyze` or `import_media`. URL transfer is owned by the backend; clients keep the existing task ID and observation flow. `destination` applies to newly imported media.
