@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.1
+
+- Preserve the complete GitHub Actions identity when generating npm provenance.
+- Verify the checksum-pinned npm publisher’s provenance contract before publishing.
+- Report bounded, redacted underlying publication errors while preserving exact
+  artifact reconciliation and avoiding duplicate publication.
+- No changes to MCP tool behavior or dependencies from the 2.1.0 source.
+
 ## 2.1.0
 
 - Documented browser OAuth account linking for the separately hosted MCP service,

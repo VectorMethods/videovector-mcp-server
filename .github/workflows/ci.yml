@@ -57,6 +57,12 @@ jobs:
       - name: Pack dry run
         run: npm pack --dry-run
 
+      - name: Verify the pinned npm provenance contract offline
+        run: |
+          set -euo pipefail
+          bash scripts/install_pinned_npm.sh publisher
+          node scripts/validate-npm-provenance.mjs --npm-root "$(npm root -g)/npm"
+
   docker:
     name: Docker build and health smoke
     runs-on: ubuntu-latest

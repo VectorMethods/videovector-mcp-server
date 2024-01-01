@@ -132,3 +132,11 @@ Conflicting package bytes fail immediately. Version publication, monotonic targe
 tag promotion, and temporary tag cleanup each have an independent bounded window;
 the npm job allows forty minutes for setup and all three phases. A later recovery
 reuses the verified draft bundle and skips any registry state already exact.
+
+
+Before publication, the checksum-pinned npm publisher is exercised offline with
+its actual provenance implementation. The publisher retains the GitHub repository
+and owner IDs and hosted-runner identity along with the exact workflow, source,
+tag, and run. Signing and network calls are replaced only for this contract check;
+the subsequent publication uses GitHub OIDC and real npm provenance. Publication
+failures retain bounded, redacted cause details during authoritative reconciliation.

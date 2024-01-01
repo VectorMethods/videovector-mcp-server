@@ -94,7 +94,7 @@ Environment variables:
 ## Self-Hosted HTTP
 
 HTTP mode is intended for self-hosted or private network deployments.
-The runtime in this repository (`package.json` version `2.1.0`) authenticates
+The runtime in this repository (`package.json` version `2.1.1`) authenticates
 HTTP requests with API keys; it does not implement the hosted service's
 OAuth verifier or discovery. To
 connect using browser OAuth, use the hosted URL above. Setting OAuth
@@ -151,7 +151,7 @@ and protected-resource metadata.
 ## Repository tools
 
 This section describes the local and self-hosted runtime in this repository
-(`package.json` version `2.1.0`).
+(`package.json` version `2.1.1`).
 The hosted service has its own current tool surface, including remote media
 upload; see [hosted OAuth tools](docs/hosted-oauth.md#available-tools-and-existing-api-key-clients)
 and discover the available tools through your connected client.

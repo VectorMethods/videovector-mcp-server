@@ -9,8 +9,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   PublicationError,
   compareSemver,
+  formatPublicationError,
   mcpVersionUrl,
   npmReleaseTags,
+  npmPublisherEnvironment,
   reconcileNpmDistTags,
   requireOidcOnlyNpmEnvironment,
   requireNpmPublisherVersion,
@@ -24,6 +26,26 @@ const sourceRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..'
 );
+
+function githubPublisherEnvironment(): Record<string, string> {
+  return {
+    PATH: process.env.PATH!,
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'synthetic-request-token',
+    ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.actions.example.test/request?capability=synthetic',
+    GITHUB_ACTIONS: 'true',
+    GITHUB_WORKFLOW_REF: 'VectorMethods/videovector-mcp-server/.github/workflows/release.yml@refs/tags/videovector-mcp-v2.1.1',
+    GITHUB_REPOSITORY: 'VectorMethods/videovector-mcp-server',
+    GITHUB_SERVER_URL: 'https://github.com',
+    GITHUB_EVENT_NAME: 'workflow_dispatch',
+    GITHUB_REPOSITORY_ID: '1234567',
+    GITHUB_REPOSITORY_OWNER_ID: '7654321',
+    GITHUB_REF: 'refs/tags/videovector-mcp-v2.1.1',
+    GITHUB_SHA: 'a'.repeat(40),
+    RUNNER_ENVIRONMENT: 'github-hosted',
+    GITHUB_RUN_ID: '123456789',
+    GITHUB_RUN_ATTEMPT: '1',
+  };
+}
 
 describe('release publication state machines', () => {
   it('replays exact state without dispatching a mutation', async () => {
@@ -199,6 +221,108 @@ describe('release publication state machines', () => {
     }
     expect(() => requireOidcOnlyNpmEnvironment({ GITHUB_ACTIONS: 'true' }))
       .toThrow(/OIDC/);
+  });
+
+  it('forwards every npm provenance field without inheriting alternate credentials', async () => {
+    const source = {
+      ...githubPublisherEnvironment(),
+      GITHUB_TOKEN: 'repository-secret',
+      NPM_ID_TOKEN: 'npm-identity-override',
+      SIGSTORE_ID_TOKEN: 'sigstore-identity-override',
+      UNRELATED_SECRET: 'unrelated-secret',
+    };
+    const environment = npmPublisherEnvironment(source);
+    expect(environment).toEqual(githubPublisherEnvironment());
+    const result = await runResult(process.execPath, ['-e',
+      'process.stdout.write(JSON.stringify({'
+      + 'repository:process.env.GITHUB_REPOSITORY_ID,'
+      + 'owner:process.env.GITHUB_REPOSITORY_OWNER_ID,'
+      + 'runner:process.env.RUNNER_ENVIRONMENT,'
+      + 'override:process.env.NPM_ID_TOKEN,'
+      + 'githubToken:process.env.GITHUB_TOKEN}))',
+    ], { env: environment });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      repository: '1234567', owner: '7654321', runner: 'github-hosted',
+    });
+  });
+
+  it.each([
+    'GITHUB_WORKFLOW_REF', 'GITHUB_REPOSITORY', 'GITHUB_SERVER_URL',
+    'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY_ID', 'GITHUB_REPOSITORY_OWNER_ID',
+    'GITHUB_REF', 'GITHUB_SHA', 'RUNNER_ENVIRONMENT', 'GITHUB_RUN_ID',
+    'GITHUB_RUN_ATTEMPT',
+  ])('rejects missing provenance field %s before npm is invoked', (name) => {
+    const source = githubPublisherEnvironment();
+    delete source[name];
+    expect(() => npmPublisherEnvironment(source)).toThrow(name);
+  });
+
+  it.each([
+    ['GITHUB_REPOSITORY_ID', 'not-an-id'],
+    ['GITHUB_REPOSITORY_OWNER_ID', '0'],
+    ['GITHUB_RUN_ID', '-1'],
+    ['GITHUB_RUN_ATTEMPT', '1.2'],
+    ['RUNNER_ENVIRONMENT', 'self-hosted'],
+  ])('rejects invalid publisher identity %s', (name, value) => {
+    expect(() => npmPublisherEnvironment({
+      ...githubPublisherEnvironment(), [name]: value,
+    })).toThrow(/npm provenance/);
+  });
+
+  it('preserves the original npm failure after bounded read-only settlement', async () => {
+    const mutate = vi.fn(async () => {
+      throw new PublicationError('npm exited 1: EPROVENANCE repository identity missing');
+    });
+    let failure: unknown;
+    try {
+      await settleNpmPublication({
+        attempts: 2,
+        classify: async () => ({ state: 'missing' }),
+        label: 'npm version',
+        mutate,
+        sleep: async () => undefined,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(PublicationError);
+    expect(formatPublicationError(failure, {})).toContain('did not settle');
+    expect(formatPublicationError(failure, {})).toContain('EPROVENANCE repository identity missing');
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('redacts capability URLs and credentials throughout nested error diagnostics', () => {
+    const source = githubPublisherEnvironment();
+    const jwt = 'eyJ0ZXN0IjoxfQ.cGF5bG9hZA.c2lnbmF0dXJl';
+    const cause = new Error([
+      'npm error EOIDC: token exchange rejected',
+      source.ACTIONS_ID_TOKEN_REQUEST_URL,
+      'https:\/\/token.example.test\/request?secret=capability-value',
+      `request credential ${source.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`,
+      `issued JWT ${jwt}`,
+      'Authorization: Bearer opaque-bearer-value',
+      '"_authToken":"opaque-config-value"',
+      'npm_synthetic_token',
+    ].join('\n'));
+    const text = formatPublicationError(new PublicationError('npm did not settle', cause), source);
+    expect(text).toContain('npm error EOIDC: token exchange rejected');
+    expect(text).toContain('Caused by:');
+    for (const forbidden of [
+      'https:', 'capability-value', source.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
+      jwt, 'opaque-bearer-value', 'opaque-config-value', 'npm_synthetic_token',
+    ]) expect(text).not.toContain(forbidden);
+  });
+
+  it('bounds diagnostics while retaining the final npm explanation and handling cause cycles', () => {
+    const cause = new Error(`${'package details '.repeat(2_000)}npm error E403: permission denied`);
+    const failure = new PublicationError('npm did not settle', cause);
+    cause.cause = failure;
+    const text = formatPublicationError(failure, {});
+    expect(text.length).toBeLessThanOrEqual(6_200);
+    expect(text).toContain('[truncated]');
+    expect(text).toContain('npm error E403: permission denied');
+    expect(text.match(/Caused by:/g)).toHaveLength(1);
   });
 
   it('accepts only the canonical anonymous npm tarball URL', () => {
@@ -504,7 +628,16 @@ describe('release publication state machines', () => {
     );
     expect(
       ciWorkflow.match(/bash scripts\/install_pinned_npm\.sh/g)
-    ).toHaveLength(2);
+    ).toHaveLength(3);
+    const provenanceCommand = 'node scripts/validate-npm-provenance.mjs --npm-root "$(npm root -g)/npm"';
+    for (const steps of [ciWorkflow, npmJob]) {
+      expect(steps).toContain(provenanceCommand);
+      expect(steps.indexOf('bash scripts/install_pinned_npm.sh publisher'))
+        .toBeLessThan(steps.indexOf(provenanceCommand));
+    }
+    expect(npmJob.indexOf(provenanceCommand)).toBeLessThan(
+      npmJob.indexOf('release-publication.mjs publish-npm')
+    );
     expect(ciWorkflow).toContain(
       'actionlint_1.7.12_linux_amd64.tar.gz'
     );
