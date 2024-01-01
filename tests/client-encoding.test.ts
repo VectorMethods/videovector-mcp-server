@@ -736,6 +736,68 @@ describe('VideoVectorClient request encoding', () => {
     expect(testHeaders['Idempotency-Key']).toMatch(/^webhook-test:/);
   });
 
+  it('binds connector probes to an explicit or generated idempotency key', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(async () =>
+        new Response(JSON.stringify({ success: true, error_message: null }), {
+          status: 200,
+        })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new VideoVectorClient({
+      apiKey: 'sk_test_abc',
+      baseUrl: 'https://example.com/api/v2',
+      timeout: 1000,
+      maxRetries: 0,
+    });
+
+    await client.testConnector('connector_1', 'connector-probe-1');
+    const explicitHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(explicitHeaders['Idempotency-Key']).toBe('connector-probe-1');
+
+    await client.testConnector('connector_1');
+    const generatedHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
+    expect(generatedHeaders['Idempotency-Key']).toMatch(/^connector-test:/);
+  });
+
+  it('reuses one generated connector probe key across automatic retries', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'temporary outage' }), {
+          status: 503,
+          headers: { 'Retry-After': '0' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ success: true, error_message: null }),
+          { status: 200 }
+        )
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new VideoVectorClient({
+      apiKey: 'sk_test_abc',
+      baseUrl: 'https://example.com/api/v2',
+      timeout: 1000,
+      maxRetries: 1,
+    });
+
+    await expect(client.testConnector('connector_1')).resolves.toMatchObject({
+      success: true,
+    });
+
+    const firstHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    const secondHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
+    expect(firstHeaders['Idempotency-Key']).toMatch(/^connector-test:/);
+    expect(secondHeaders['Idempotency-Key']).toBe(
+      firstHeaders['Idempotency-Key']
+    );
+  });
+
   it('does not retry multipart connector creation after a transport failure', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
     vi.stubGlobal('fetch', fetchMock);

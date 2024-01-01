@@ -65,6 +65,36 @@ describe('resource tool handlers', () => {
     expect(getToolRequiredScope('test_connector')).toBe('write');
     expect(definition?.annotations?.readOnlyHint).toBe(false);
     expect(definition?.annotations?.idempotentHint).toBe(false);
+    expect(definition?.inputSchema.properties?.idempotency_key).toMatchObject({
+      type: 'string',
+    });
+  });
+
+  it('forwards connector probe idempotency identity to the API client', async () => {
+    const client = {
+      testConnector: vi.fn().mockResolvedValue({
+        success: true,
+        error_message: null,
+      }),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'test_connector',
+      {
+        connector_id: 'connector_1',
+        idempotency_key: 'connector-probe-1',
+      },
+      client
+    );
+
+    expect((client as any).testConnector).toHaveBeenCalledWith(
+      'connector_1',
+      'connector-probe-1'
+    );
+    expect(parseContent(result)).toMatchObject({
+      connector_id: 'connector_1',
+      success: true,
+    });
   });
 
   it('advertises the backend write scope for read-only prompt schema tests', () => {

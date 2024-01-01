@@ -25,8 +25,10 @@
 - Added atomic global/per-key session capacity, idle and absolute session
   expiry, and cleanup of abandoned transports without changing stdio auth.
 - Limited automatic API retries to safe methods or writes carrying a stable
-  idempotency key so search, LLM, connector-test, and other cost-bearing POSTs
-  cannot be duplicated after an ambiguous provider or network result.
+  idempotency key so unkeyed cost-bearing POSTs cannot be duplicated after an
+  ambiguous provider or network result. Connector probes now carry a
+  caller-supplied or generated stable key, allowing the client to retry the
+  exact backend operation safely.
 - Aligned stdio key validation and dual-header authentication precedence with
   the hardened API, and added actionable quota/LLM guard suggestions without
   dropping structured error details.

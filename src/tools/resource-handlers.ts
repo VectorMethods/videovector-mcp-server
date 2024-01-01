@@ -1836,8 +1836,9 @@ async function handleTestConnector(
   client: VideoVectorClient
 ): Promise<ToolHandlerResult> {
   const connectorId = validateRequired<string>(args, 'connector_id', 'string');
+  const idempotencyKey = validateOptionalIdempotencyKey(args);
 
-  const result = await client.testConnector(connectorId);
+  const result = await client.testConnector(connectorId, idempotencyKey);
 
   return {
     content: [

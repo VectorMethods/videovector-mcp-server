@@ -1461,6 +1461,10 @@ Returns success/failure with error details if the connection fails. Use this aft
           type: 'string',
           description: 'ID of the connector to test. Use list_connectors to find connector IDs.',
         },
+        idempotency_key: {
+          type: 'string',
+          description: 'Optional idempotency key for replaying one exact connector probe.',
+        },
       },
       required: ['connector_id'],
     },

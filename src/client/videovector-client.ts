@@ -1145,10 +1145,21 @@ export class VideoVectorClient {
     );
   }
 
-  async testConnector(connectorId: string): Promise<TestConnectionResponse> {
+  async testConnector(
+    connectorId: string,
+    idempotencyKey?: string
+  ): Promise<TestConnectionResponse> {
     return this.request<TestConnectionResponse>(
       'POST',
-      `/connectors/${encodeURIComponent(connectorId)}/test`
+      `/connectors/${encodeURIComponent(connectorId)}/test`,
+      {
+        headers: {
+          'Idempotency-Key': createIdempotencyKey(
+            'connector-test',
+            idempotencyKey
+          ),
+        },
+      }
     );
   }
 
