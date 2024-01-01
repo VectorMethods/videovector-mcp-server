@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible problem with the VideoVector MCP server.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, access tokens, private media URLs, or other secrets.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Package, container tag, or git commit.
+      placeholder: "2.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - stdio
+        - Streamable HTTP
+        - unknown
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Redacted configuration
+      description: Paste only redacted client config and relevant environment variable names.
+      render: json
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List exact commands or client actions.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized logs or error messages.
+    validations:
+      required: true
+

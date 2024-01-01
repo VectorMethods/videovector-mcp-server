@@ -191,7 +191,9 @@ describe('http transport origin policy and preflight', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers['access-control-allow-origin']).toBe('https://allowed.example');
+    expect(response.headers['access-control-expose-headers']).toContain('Mcp-Session-Id');
     expect(response.headers['access-control-expose-headers']).toContain('MCP-Session-Id');
+    expect(response.headers['access-control-expose-headers']).toContain('Mcp-Protocol-Version');
     expect(response.headers.vary).toContain('Origin');
   });
 
@@ -201,11 +203,18 @@ describe('http transport origin policy and preflight', () => {
       .options('/mcp')
       .set('Origin', 'https://allowed.example')
       .set('Access-Control-Request-Method', 'POST')
-      .set('Access-Control-Request-Headers', 'authorization,x-api-key,mcp-session-id,content-type');
+      .set(
+        'Access-Control-Request-Headers',
+        'authorization,x-api-key,mcp-protocol-version,mcp-session-id,last-event-id,content-type'
+      );
 
     expect(response.status).toBe(204);
     expect(response.headers['access-control-allow-origin']).toBe('https://allowed.example');
-    expect(response.headers['access-control-allow-headers']).toContain('Authorization');
+    const allowedHeaders = response.headers['access-control-allow-headers'];
+    expect(allowedHeaders).toContain('Authorization');
+    expect(allowedHeaders).toContain('Mcp-Protocol-Version');
+    expect(allowedHeaders).toContain('Mcp-Session-Id');
+    expect(allowedHeaders).toContain('Last-Event-ID');
     expect(response.headers['access-control-allow-methods']).toContain('POST');
   });
 

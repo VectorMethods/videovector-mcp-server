@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest an MCP server improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or integration gap should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the desired behavior, config, tool, or documentation change.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - tool contract
+        - stdio transport
+        - Streamable HTTP transport
+        - client configuration
+        - documentation
+        - packaging
+        - security
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility notes
+      description: Mention expected impact on existing clients, tool schemas, or environment variables.
+

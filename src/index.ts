@@ -457,7 +457,15 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
   const sessions = new Map<string, SessionContext>();
 
   if (config.allowedOrigins.length > 0) {
-    const allowedHeaders = 'Authorization, X-API-Key, Content-Type, MCP-Session-Id, Accept';
+    const allowedHeaders = [
+      'Accept',
+      'Authorization',
+      'Content-Type',
+      'Last-Event-ID',
+      'Mcp-Protocol-Version',
+      'Mcp-Session-Id',
+      'X-API-Key',
+    ].join(', ');
     const allowedMethods = 'GET, POST, DELETE, OPTIONS';
 
     app.use((req: HttpRequest, res: HttpResponse, next: HttpNext) => {
@@ -478,7 +486,10 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Headers', allowedHeaders);
       res.setHeader('Access-Control-Allow-Methods', allowedMethods);
-      res.setHeader('Access-Control-Expose-Headers', 'MCP-Session-Id');
+      res.setHeader(
+        'Access-Control-Expose-Headers',
+        'Mcp-Session-Id, MCP-Session-Id, Mcp-Protocol-Version, MCP-Protocol-Version'
+      );
       res.setHeader('Access-Control-Max-Age', '600');
       appendVaryHeader(res, 'Origin');
 
