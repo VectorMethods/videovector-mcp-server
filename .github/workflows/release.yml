@@ -293,13 +293,7 @@ jobs:
             npm view "${NPM_PACKAGE}@${RELEASE_VERSION}" version
             exit 0
           fi
-          if [[ "$NPM_PACKAGE_EXISTS" == "true" ]]; then
-            npm publish --access public
-          else
-            if [[ -z "${NPM_BOOTSTRAP_TOKEN:-}" ]]; then
-              echo "First npm publish requires NPM_BOOTSTRAP_TOKEN in the npm environment." >&2
-              exit 1
-            fi
+          if [[ -n "${NPM_BOOTSTRAP_TOKEN:-}" ]]; then
             bootstrap_userconfig="$(mktemp)"
             trap 'rm -f "$bootstrap_userconfig"' EXIT
             {
@@ -312,6 +306,11 @@ jobs:
             unset NODE_AUTH_TOKEN
             npm whoami >/dev/null
             npm publish --access public --registry https://registry.npmjs.org/
+          elif [[ "$NPM_PACKAGE_EXISTS" == "true" ]]; then
+            npm publish --access public
+          else
+            echo "First npm publish requires NPM_BOOTSTRAP_TOKEN in the npm environment." >&2
+            exit 1
           fi
 
       - name: Install smoke from npm
