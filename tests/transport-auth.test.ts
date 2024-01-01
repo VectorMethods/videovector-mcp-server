@@ -62,6 +62,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('API-key fingerprints', () => {
+  it('is deterministic within one process and separates distinct API keys', () => {
+    const firstKey = publicApiKey(1);
+    const secondKey = publicApiKey(2);
+
+    const firstFingerprint = fingerprintApiKey(firstKey);
+    const repeatedFingerprint = fingerprintApiKey(firstKey);
+    const secondFingerprint = fingerprintApiKey(secondKey);
+
+    expect(firstFingerprint).toHaveLength(32);
+    expect(firstFingerprint.equals(repeatedFingerprint)).toBe(true);
+    expect(firstFingerprint.equals(secondFingerprint)).toBe(false);
+  });
+});
+
 describe('http transport auth and readiness', () => {
   it('health endpoint returns 200 for Cloud Run probes', async () => {
     const { app } = createHttpApp(httpConfig);

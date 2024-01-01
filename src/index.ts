@@ -316,6 +316,11 @@ function acceptsStreamableHttpResponse(headers: IncomingHttpHeaders): boolean {
 const API_KEY_FINGERPRINT_SECRET = randomBytes(32);
 
 export function fingerprintApiKey(apiKey: string): Buffer {
+  // Public API keys are fixed-format credentials with 192 bits of random key
+  // material, not user-selected passwords. A process-keyed HMAC is deliberately
+  // fast: it prevents offline recovery from an in-memory fingerprint without
+  // adding attacker-controlled password-KDF work to this pre-authentication path.
+  // codeql[js/insufficient-password-hash]
   return createHmac('sha256', API_KEY_FINGERPRINT_SECRET).update(apiKey).digest();
 }
 
