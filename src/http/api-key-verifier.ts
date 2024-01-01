@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from 'node:crypto';
+import { randomBytes, webcrypto } from 'node:crypto';
 
 import { VideoVectorClient } from '../client/index.js';
 import { VideoVectorApiError } from '../types/index.js';
@@ -54,16 +54,31 @@ interface QueuedValidation {
   timer: NodeJS.Timeout;
 }
 
-const API_KEY_FINGERPRINT_SECRET = randomBytes(32);
+const API_KEY_FINGERPRINT_KEY = (async () => {
+  const secret = randomBytes(32);
+  try {
+    return await webcrypto.subtle.importKey(
+      'raw',
+      secret,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+  } finally {
+    secret.fill(0);
+  }
+})();
 
-function cacheKeyForApiKey(apiKey: string): string {
+async function cacheKeyForApiKey(apiKey: string): Promise<string> {
   // This is a process-local cache/singleflight index, not password verification.
-  // A keyed 256-bit HMAC prevents offline recovery if an in-memory key leaks,
+  // A non-exportable keyed HMAC prevents offline recovery if an index leaks,
   // while intentionally avoiding attacker-amplifiable password-KDF work.
-  const fingerprint = createHmac('sha256', API_KEY_FINGERPRINT_SECRET);
-  // codeql[js/insufficient-password-hash]
-  fingerprint.update(apiKey);
-  return fingerprint.digest('hex');
+  const fingerprint = await webcrypto.subtle.sign(
+    'HMAC',
+    await API_KEY_FINGERPRINT_KEY,
+    Buffer.from(apiKey, 'utf8')
+  );
+  return Buffer.from(fingerprint).toString('hex');
 }
 
 function invalidApiKeyResult(): ApiKeyVerificationFailure {
@@ -292,7 +307,7 @@ export class ApiKeyVerifier {
     apiKey: string,
     nowMs: number = this.now()
   ): Promise<ApiKeyVerificationResult> {
-    const keyHash = cacheKeyForApiKey(apiKey);
+    const keyHash = await cacheKeyForApiKey(apiKey);
     const cached = this.cache.get(keyHash);
     if (cached && cached.expiresAtMs > nowMs) {
       // Refresh insertion order on access so hot valid tenants are not evicted
