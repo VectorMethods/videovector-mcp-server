@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.1.0
+
+- Added the simplified `upload_media`, `define_prompt`, `process_media`, and
+  `search_media` workflow tools backed by the additive `/api/v2/workflow`
+  facade.
+- Added `simple` and `full` tool profiles. `full` remains the compatibility
+  default; `simple` exposes only the four workflow tools.
+- Restricted local file upload to stdio, configured upload roots, regular
+  files, and stable file identity across retries. Hosted HTTP never advertises
+  or executes `upload_media`.
+- Added simplified processing controls for `smart`, `content_aware`, and
+  `fixed` segmentation, with advanced transcription and image embeddings
+  opt-in by default.
+- Added cursor continuation for workflow search and automatic stable
+  idempotency keys for all initial workflow mutations and searches.
+- Refreshed the locked dependency graph within the existing declared ranges so
+  runtime and release dependency audits remain clean.
+- Expanded the generated contract, docs, examples, and tests to cover tool
+  availability, transport restrictions, retry behavior, and all 52 tools.
+
 ## 2.0.2
 
 - Derived the MCP protocol and outbound API client versions from package

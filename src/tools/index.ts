@@ -5,8 +5,14 @@
 export {
   TOOL_NAMES,
   TOOL_DEFINITIONS,
+  SIMPLE_TOOL_DEFINITIONS,
+  getToolDefinitions,
+  getToolAvailability,
   getToolDefinition,
   getToolRequiredScope,
+  type ToolProfile,
+  type ToolTransport,
+  type ToolAvailability,
   type ToolName,
   type ToolRequiredScope,
 } from './definitions.js';
@@ -20,6 +26,13 @@ export {
   isResourceTool,
   executeResourceTool,
 } from './resource-handlers.js';
+export {
+  WORKFLOW_HANDLERS,
+  isWorkflowTool,
+  executeWorkflowTool,
+  authorizeUploadFile,
+  type WorkflowToolContext,
+} from './workflow-handlers.js';
 
 // Combined handler execution
 import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
@@ -27,6 +40,11 @@ import type { VideoVectorClient } from '../client/index.js';
 import { TOOL_DEFINITIONS } from './definitions.js';
 import { isSearchTool, executeSearchTool } from './search-handlers.js';
 import { isResourceTool, executeResourceTool } from './resource-handlers.js';
+import {
+  isWorkflowTool,
+  executeWorkflowTool,
+  type WorkflowToolContext,
+} from './workflow-handlers.js';
 import { formatError } from '../utils/helpers.js';
 
 export interface ToolHandlerResult {
@@ -38,9 +56,14 @@ export interface ToolHandlerResult {
 export async function executeTool(
   toolName: string,
   args: Record<string, unknown>,
-  client: VideoVectorClient
+  client: VideoVectorClient,
+  context: WorkflowToolContext = {}
 ): Promise<ToolHandlerResult> {
   try {
+    if (isWorkflowTool(toolName)) {
+      return await executeWorkflowTool(toolName, args, client, context);
+    }
+
     if (isSearchTool(toolName)) {
       return await executeSearchTool(toolName, args, client);
     }

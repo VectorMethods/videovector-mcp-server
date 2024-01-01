@@ -12,6 +12,12 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 // ============================================================================
 
 export const TOOL_NAMES = {
+  // Simplified Workflow Tools
+  UPLOAD_MEDIA: 'upload_media',
+  DEFINE_PROMPT: 'define_prompt',
+  PROCESS_MEDIA: 'process_media',
+  SEARCH_MEDIA: 'search_media',
+
   // Search Tools
   SEARCH_VIDEOS: 'search_videos',
   SEARCH_VIDEOS_BY_IMAGE: 'search_videos_by_image',
@@ -84,9 +90,13 @@ export const TOOL_NAMES = {
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
-export type ToolRequiredScope = 'read' | 'write';
+export type ToolRequiredScope = 'search' | 'read' | 'write';
 
 export const TOOL_CATEGORIES: Record<ToolName, string> = {
+  [TOOL_NAMES.UPLOAD_MEDIA]: 'Workflow',
+  [TOOL_NAMES.DEFINE_PROMPT]: 'Workflow',
+  [TOOL_NAMES.PROCESS_MEDIA]: 'Workflow',
+  [TOOL_NAMES.SEARCH_MEDIA]: 'Workflow',
   [TOOL_NAMES.SEARCH_VIDEOS]: 'Search',
   [TOOL_NAMES.SEARCH_VIDEOS_BY_IMAGE]: 'Search',
   [TOOL_NAMES.MULTIMODAL_SEARCH]: 'Search',
@@ -276,6 +286,10 @@ const READ_SCOPE_NON_READ_ONLY_TOOLS = new Set<ToolName>([
   TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL,
 ]);
 
+const SEARCH_SCOPE_TOOLS = new Set<ToolName>([
+  TOOL_NAMES.SEARCH_MEDIA,
+]);
+
 const DESTRUCTIVE_TOOLS = new Set<ToolName>([
   TOOL_NAMES.CANCEL_PROMPT_RUN,
   TOOL_NAMES.RETRY_PROMPT_RUN_SEGMENT,
@@ -289,6 +303,9 @@ export function getToolCategory(name: string): string {
 }
 
 export function getToolRequiredScope(name: string): ToolRequiredScope {
+  if (SEARCH_SCOPE_TOOLS.has(name as ToolName)) {
+    return 'search';
+  }
   if (WRITE_SCOPE_READ_ONLY_TOOLS.has(name as ToolName)) {
     return 'write';
   }
@@ -314,6 +331,288 @@ export function getToolAnnotations(name: string): NonNullable<Tool['annotations'
 // ============================================================================
 
 const BASE_TOOL_DEFINITIONS: Tool[] = [
+  // --------------------------------------------------------------------------
+  // Simplified Workflow Tools
+  // --------------------------------------------------------------------------
+  {
+    name: TOOL_NAMES.UPLOAD_MEDIA,
+    description: `Upload one local media file through the simplified workflow.
+
+The destination defaults to your Playground. Provide index_id for an existing index, or index_name to reuse/create a private index. This tool is intentionally available only over local stdio and can read only configured upload roots.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file_path: {
+          type: 'string',
+          minLength: 1,
+          description: 'Path to a local video, audio, or image file inside an allowed upload root.',
+        },
+        title: {
+          type: 'string',
+          minLength: 1,
+          description: 'Optional media title. Defaults to the filename stem.',
+        },
+        index_id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Existing destination index ID. Omit to use Playground.',
+        },
+        index_name: {
+          type: 'string',
+          minLength: 1,
+          description: 'Exact private index name to reuse or create when absent.',
+        },
+        idempotency_key: {
+          type: 'string',
+          minLength: 1,
+          description: 'Optional stable retry identity. One is generated automatically when omitted.',
+        },
+      },
+      required: ['file_path'],
+      additionalProperties: false,
+      not: { required: ['index_id', 'index_name'] },
+    },
+  },
+  {
+    name: TOOL_NAMES.DEFINE_PROMPT,
+    description: `Turn a natural-language instruction into a VideoVector prompt using Prompt Lab.
+
+The generated prompt is saved by default and the returned prompt_id can be passed directly to process_media. Set save=false only when the user explicitly wants a draft.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instruction: {
+          type: 'string',
+          minLength: 1,
+          description: 'What information the prompt should extract from the media.',
+        },
+        save: {
+          type: 'boolean',
+          default: true,
+          description: 'Persist the generated prompt and return a prompt_id.',
+        },
+        idempotency_key: {
+          type: 'string',
+          minLength: 1,
+          description: 'Optional stable retry identity. One is generated automatically when omitted.',
+        },
+      },
+      required: ['instruction'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: TOOL_NAMES.PROCESS_MEDIA,
+    description: `Process media with one prompt using a minimal target contract.
+
+Provide prompt_id or an inline prompt_instruction. With no target, the entire Playground is processed. Provide index_id/index_name for an index, or video_ids for selected media. Segmentation defaults to smart; advanced transcription and image embeddings default to false.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt_id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Existing prompt ID to run.',
+        },
+        prompt_instruction: {
+          type: 'string',
+          minLength: 1,
+          description: 'Inline instruction to generate, save, and run as a prompt.',
+        },
+        video_ids: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 100,
+          items: { type: 'string', minLength: 1 },
+          description: 'One or more media IDs. Omit to process the selected whole container.',
+        },
+        index_id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Existing index target or container for video_ids.',
+        },
+        index_name: {
+          type: 'string',
+          minLength: 1,
+          description: 'Exact existing private index name. Processing never creates indexes.',
+        },
+        segmentation_mode: {
+          type: 'string',
+          enum: ['smart', 'content_aware', 'fixed'],
+          default: 'smart',
+          description: 'Unified segmentation mode. smart maps audio to content-aware segmentation.',
+        },
+        fixed_segment_duration_seconds: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 300,
+          description: 'Duration for fixed segmentation; defaults to 10 seconds in fixed mode.',
+        },
+        advanced_transcription: {
+          type: 'boolean',
+          default: false,
+          description: 'Enable advanced transcription during processing.',
+        },
+        create_image_embeddings: {
+          type: 'boolean',
+          default: false,
+          description: 'Create image embeddings during processing.',
+        },
+        idempotency_key: {
+          type: 'string',
+          minLength: 1,
+          description: 'Optional stable retry identity. One is generated automatically when omitted.',
+        },
+      },
+      additionalProperties: false,
+      allOf: [
+        {
+          oneOf: [
+            { required: ['prompt_id'], not: { required: ['prompt_instruction'] } },
+            { required: ['prompt_instruction'], not: { required: ['prompt_id'] } },
+          ],
+        },
+        { not: { required: ['index_id', 'index_name'] } },
+      ],
+    },
+  },
+  {
+    name: TOOL_NAMES.SEARCH_MEDIA,
+    description: `Search processed media without first navigating VideoVector's internal abstractions.
+
+Use query for semantic vector search or filters for conditional search. With no scope, search the Playground. Scope by index, media IDs, or prompt-run IDs. Pass only cursor to retrieve the next frozen page without rerunning or rebilling the search.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          minLength: 1,
+          description: 'Natural-language vector search query.',
+        },
+        filters: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 4,
+          description: 'Conditional metadata filters combined with AND logic.',
+          items: {
+            type: 'object',
+            properties: {
+              field: { type: 'string', minLength: 1 },
+              operator: {
+                type: 'string',
+                enum: [
+                  'equals',
+                  'greater_than',
+                  'greater_equal',
+                  'less_than',
+                  'less_equal',
+                  'contains',
+                  'starts_with',
+                  'ends_with',
+                  'is_empty',
+                  'is_not_empty',
+                  'item_equals',
+                  'item_contains',
+                  'length_equals',
+                  'length_greater',
+                  'length_less',
+                ],
+                default: 'equals',
+              },
+              value: {},
+            },
+            required: ['field'],
+            additionalProperties: false,
+          },
+        },
+        result_level: {
+          type: 'string',
+          enum: ['segment', 'video'],
+          default: 'segment',
+          description: 'Search segment extraction results or video-level synthesis results.',
+        },
+        video_ids: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 100,
+          items: { type: 'string', minLength: 1 },
+          description: 'Search every searchable prompt run containing these media IDs.',
+        },
+        prompt_run_ids: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 100,
+          items: { type: 'string', minLength: 1 },
+          description: 'Search exactly these prompt runs.',
+        },
+        index_id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Existing index to search. Omit all scope fields for Playground.',
+        },
+        index_name: {
+          type: 'string',
+          minLength: 1,
+          description: 'Exact existing private index name to search.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 50,
+          default: 10,
+          description: 'Results to return on this page.',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description: 'Opaque next_cursor. When set, omit every other argument.',
+        },
+        idempotency_key: {
+          type: 'string',
+          minLength: 1,
+          description: 'Optional stable identity for starting a search. Not used with cursor.',
+        },
+      },
+      additionalProperties: false,
+      allOf: [
+        {
+          not: {
+            anyOf: [
+              { required: ['index_id', 'index_name'] },
+              { required: ['video_ids', 'prompt_run_ids'] },
+              { required: ['video_ids', 'index_id'] },
+              { required: ['video_ids', 'index_name'] },
+              { required: ['prompt_run_ids', 'index_id'] },
+              { required: ['prompt_run_ids', 'index_name'] },
+            ],
+          },
+        },
+        {
+          oneOf: [
+            { required: ['query'], not: { anyOf: [{ required: ['filters'] }, { required: ['cursor'] }] } },
+            { required: ['filters'], not: { anyOf: [{ required: ['query'] }, { required: ['cursor'] }] } },
+            {
+              required: ['cursor'],
+              not: {
+                anyOf: [
+                  { required: ['query'] },
+                  { required: ['filters'] },
+                  { required: ['result_level'] },
+                  { required: ['video_ids'] },
+                  { required: ['prompt_run_ids'] },
+                  { required: ['index_id'] },
+                  { required: ['index_name'] },
+                  { required: ['limit'] },
+                  { required: ['idempotency_key'] },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   // --------------------------------------------------------------------------
   // Search Tools
   // --------------------------------------------------------------------------
@@ -2011,6 +2310,49 @@ export const TOOL_DEFINITIONS: Tool[] = BASE_TOOL_DEFINITIONS.map((tool) => ({
   ...tool,
   annotations: getToolAnnotations(tool.name),
 }));
+
+export type ToolProfile = 'simple' | 'full';
+export type ToolTransport = 'stdio' | 'streamable-http';
+
+export interface ToolAvailability {
+  profiles: ToolProfile[];
+  transports: ToolTransport[];
+}
+
+const SIMPLE_TOOL_NAMES = new Set<string>([
+  TOOL_NAMES.UPLOAD_MEDIA,
+  TOOL_NAMES.DEFINE_PROMPT,
+  TOOL_NAMES.PROCESS_MEDIA,
+  TOOL_NAMES.SEARCH_MEDIA,
+]);
+
+export const SIMPLE_TOOL_DEFINITIONS: Tool[] = TOOL_DEFINITIONS.filter((tool) =>
+  SIMPLE_TOOL_NAMES.has(tool.name)
+);
+
+export function getToolAvailability(name: string): ToolAvailability {
+  return {
+    profiles: SIMPLE_TOOL_NAMES.has(name) ? ['simple', 'full'] : ['full'],
+    transports: name === TOOL_NAMES.UPLOAD_MEDIA
+      ? ['stdio']
+      : ['stdio', 'streamable-http'],
+  };
+}
+
+/**
+ * Select the runtime tool surface. The full profile is the compatibility
+ * default; local upload is removed for every non-stdio transport.
+ */
+export function getToolDefinitions(
+  profile: ToolProfile = 'full',
+  includeLocalUpload: boolean = true
+): Tool[] {
+  const selected = profile === 'simple' ? SIMPLE_TOOL_DEFINITIONS : TOOL_DEFINITIONS;
+  if (includeLocalUpload) {
+    return selected;
+  }
+  return selected.filter((tool) => tool.name !== TOOL_NAMES.UPLOAD_MEDIA);
+}
 
 // ============================================================================
 // Helper to get tool by name

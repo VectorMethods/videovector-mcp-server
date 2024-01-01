@@ -20,6 +20,105 @@ export interface PaginatedResponse<T> {
 }
 
 // ============================================================================
+// Simplified Workflow Types
+// ============================================================================
+
+export type WorkflowSegmentationMode = 'smart' | 'content_aware' | 'fixed';
+export type WorkflowResultLevel = 'segment' | 'video';
+
+export interface WorkflowUploadRequest {
+  file_path: string;
+  title?: string;
+  index_id?: string;
+  index_name?: string;
+}
+
+export interface WorkflowUploadResponse {
+  video: Video;
+  destination: {
+    type: 'playground' | 'index';
+    index_id: string | null;
+    index_name: string | null;
+    index_created: boolean;
+  };
+  [key: string]: unknown;
+}
+
+export interface WorkflowDefineRequest {
+  instruction: string;
+  save?: boolean;
+}
+
+export interface WorkflowDefineResponse {
+  prompt_id?: string | null;
+  prompt?: Prompt | Record<string, unknown> | null;
+  draft?: Record<string, unknown> | null;
+  definition?: Record<string, unknown>;
+  saved?: boolean;
+  [key: string]: unknown;
+}
+
+export interface WorkflowProcessRequest {
+  prompt_id?: string;
+  prompt_instruction?: string;
+  video_ids?: string[];
+  index_id?: string;
+  index_name?: string;
+  segmentation_mode?: WorkflowSegmentationMode;
+  fixed_segment_duration_seconds?: number;
+  advanced_transcription?: boolean;
+  create_image_embeddings?: boolean;
+}
+
+export interface WorkflowProcessResponse {
+  run_id?: string;
+  run?: PromptRun | Record<string, unknown>;
+  prompt_run?: PromptRun | Record<string, unknown>;
+  prompt?: Prompt | Record<string, unknown>;
+  prompt_generated_inline?: boolean;
+  prompt_created_inline?: boolean;
+  status_url?: string;
+  [key: string]: unknown;
+}
+
+export interface WorkflowFilterCondition {
+  field: string;
+  operator?: FilterOperator;
+  value?: unknown;
+}
+
+export interface WorkflowSearchRequest {
+  query?: string;
+  filters?: WorkflowFilterCondition[];
+  result_level?: WorkflowResultLevel;
+  video_ids?: string[];
+  prompt_run_ids?: string[];
+  index_id?: string;
+  index_name?: string;
+  limit?: number;
+}
+
+export interface WorkflowSearchPagination {
+  limit: number;
+  count: number;
+  has_more: boolean;
+  next_cursor: string | null;
+  result_window: number;
+  truncated: boolean;
+}
+
+export interface WorkflowSearchResponse {
+  data: Array<Record<string, unknown>>;
+  mode: 'vector' | 'condition';
+  result_level: WorkflowResultLevel;
+  pagination: WorkflowSearchPagination;
+  scope?: Record<string, unknown>;
+  coverage?: Record<string, unknown>;
+  warnings?: Array<Record<string, unknown> | string>;
+  [key: string]: unknown;
+}
+
+// ============================================================================
 // Index Types
 // ============================================================================
 

@@ -44,6 +44,8 @@ Environment variables:
 | `VIDEOVECTOR_BASE_URL` | No | `https://api.vectormethods.com/api/v2` | API base URL. |
 | `VIDEOVECTOR_TIMEOUT` | No | `90000` | Request timeout in milliseconds. |
 | `VIDEOVECTOR_MAX_RETRIES` | No | `3` | Retry count for retryable API failures. |
+| `VIDEOVECTOR_TOOL_PROFILE` | No | `full` | `full` keeps every advanced tool; `simple` exposes only the four workflow tools. |
+| `VIDEOVECTOR_UPLOAD_ROOTS` | No | current directory | Comma-separated directories from which local stdio `upload_media` may read. |
 | `MCP_TRANSPORT_MODE` | No | `stdio` | `stdio` or `http`. |
 
 ## Client Examples
@@ -51,6 +53,7 @@ Environment variables:
 - Claude Desktop: [examples/claude-desktop.json](examples/claude-desktop.json)
 - Cursor: [examples/cursor.json](examples/cursor.json)
 - Generic stdio: [examples/custom-stdio.json](examples/custom-stdio.json)
+- Simplified workflow stdio: [examples/simple-stdio.json](examples/simple-stdio.json)
 - Local Streamable HTTP: [examples/streamable-http-local.json](examples/streamable-http-local.json)
 
 ## Self-Hosted HTTP
@@ -103,6 +106,21 @@ API.
 Do not advertise a public hosted remote MCP endpoint until OAuth and MCP protected-resource metadata are enabled for that deployment.
 
 ## Tools
+
+For the lowest-friction agent workflow, set `VIDEOVECTOR_TOOL_PROFILE=simple`.
+It exposes:
+
+- `upload_media`: stream a local media file to Playground or a named/index-ID destination
+- `define_prompt`: generate and, by default, save a Prompt Lab prompt
+- `process_media`: process Playground, an index, or selected media with `smart`, `content_aware`, or `fixed` segmentation
+- `search_media`: vector or conditional search over Playground, an index, selected media, or prompt runs with stable cursor pagination
+
+The default `full` profile preserves those tools plus the complete advanced
+surface below. `upload_media` is local-stdio-only and is never advertised by
+the Streamable HTTP transport. Its path must resolve inside
+`VIDEOVECTOR_UPLOAD_ROOTS` (or the process working directory by default), and
+the server streams and reopens the file for safe idempotent retries instead of
+buffering it in memory.
 
 The server exposes tools for:
 

@@ -124,13 +124,19 @@ describe('resource tool handlers', () => {
     });
   });
 
-  it('keeps the public tool registry unique and aligned at 48 tools', () => {
+  it('keeps the public tool registry unique and includes additive workflow tools', () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
 
-    expect(names).toHaveLength(48);
+    expect(names).toHaveLength(52);
     expect(new Set(names).size).toBe(names.length);
     expect(names).toContain('get_export_status');
     expect(names).toContain('get_export_download_url');
+    expect(names).toEqual(expect.arrayContaining([
+      'upload_media',
+      'define_prompt',
+      'process_media',
+      'search_media',
+    ]));
   });
 
   it('execute_prompt requires canonical target and forwards expanded options', async () => {

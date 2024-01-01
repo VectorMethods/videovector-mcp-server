@@ -9,6 +9,9 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { constants as fsConstants, promises as fs } from 'node:fs';
+import { basename, extname } from 'node:path';
+import { Readable } from 'node:stream';
 
 import { PACKAGE_VERSION } from '../version.js';
 import {
@@ -61,6 +64,14 @@ import {
   type WebhookWithSecret,
   type WebhookDelivery,
   type TestWebhookResponse,
+  type WorkflowDefineRequest,
+  type WorkflowDefineResponse,
+  type WorkflowProcessRequest,
+  type WorkflowProcessResponse,
+  type WorkflowSearchRequest,
+  type WorkflowSearchResponse,
+  type WorkflowUploadRequest,
+  type WorkflowUploadResponse,
   VideoVectorApiError,
 } from '../types/index.js';
 
@@ -81,6 +92,22 @@ const DEFAULT_MAX_RETRIES = 3;
 const RETRY_STATUS_CODES = [429, 500, 502, 503, 504];
 const INITIAL_RETRY_DELAY_MS = 1000;
 const AUTOMATIC_RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const RETRYABLE_RESPONSE_PAYLOAD_ERROR_CODES = new Set([
+  'empty_response',
+  'invalid_json_response',
+]);
+const RETRYABLE_NETWORK_ERROR_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
 const EXPORT_STATUS_VALUES = new Set(['pending', 'processing', 'completed', 'failed']);
 const EXPORT_TYPE_VALUES = new Set(['index', 'prompt_run']);
 const EXPORT_DESTINATION_VALUES = new Set(['download', 'connector']);
@@ -108,6 +135,36 @@ const EXPORT_DOWNLOAD_RESPONSE_FIELDS = [
 const MIN_EXPORT_DOWNLOAD_TOKEN_LENGTH = 32;
 const MAX_EXPORT_DOWNLOAD_TOKEN_LENGTH = 2048;
 const EXPORT_DOWNLOAD_TOKEN_PATTERN = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+const WORKFLOW_MEDIA_CONTENT_TYPES: Record<string, string> = {
+  '.aac': 'audio/aac',
+  '.avi': 'video/x-msvideo',
+  '.bmp': 'image/bmp',
+  '.flac': 'audio/flac',
+  '.gif': 'image/gif',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.m4a': 'audio/mp4',
+  '.mkv': 'video/x-matroska',
+  '.mov': 'video/quicktime',
+  '.mp3': 'audio/mpeg',
+  '.mp4': 'video/mp4',
+  '.ogg': 'audio/ogg',
+  '.png': 'image/png',
+  '.tiff': 'image/tiff',
+  '.wav': 'audio/wav',
+  '.webm': 'video/webm',
+  '.webp': 'image/webp',
+};
+
+export interface WorkflowUploadFileIdentity {
+  device: number;
+  inode: number;
+  size: number;
+  modifiedMs: number;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -201,6 +258,37 @@ function createIdempotencyKey(prefix: string, providedKey?: string): string {
   return `${prefix}:${randomUUID().replace(/-/g, '')}`;
 }
 
+function workflowMultipartField(name: string, value: string, boundary: string): Buffer {
+  if (!/^[a-z_]+$/.test(name)) {
+    throw new Error('Invalid multipart field name');
+  }
+  return Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+    'utf8'
+  );
+}
+
+function workflowMultipartFileHeader(
+  filePath: string,
+  boundary: string,
+  contentType: string
+): Buffer {
+  const originalName = basename(filePath);
+  const asciiName = originalName.replace(/[^\x20-\x7E]|["\\\r\n]/g, '_') || 'media';
+  const encodedName = encodeURIComponent(originalName).replace(/'/g, '%27');
+  return Buffer.from(
+    `--${boundary}\r\n`
+      + `Content-Disposition: form-data; name="file"; filename="${asciiName}"; filename*=UTF-8''${encodedName}\r\n`
+      + `Content-Type: ${contentType}\r\n\r\n`,
+    'utf8'
+  );
+}
+
+function workflowUploadContentType(filePath: string): string {
+  return WORKFLOW_MEDIA_CONTENT_TYPES[extname(filePath).toLowerCase()]
+    ?? 'application/octet-stream';
+}
+
 function normalizeExportRequestBody<T extends object>(request: T): Partial<T> | undefined {
   const requestRecord = request as Record<string, unknown>;
   const body = Object.fromEntries(
@@ -243,6 +331,42 @@ function isAutomaticRetryAllowed(
   return (
     AUTOMATIC_RETRY_METHODS.has(method.toUpperCase()) ||
     hasStableIdempotencyKey(headers)
+  );
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function isNetworkTransportError(error: unknown): boolean {
+  if (!(error instanceof TypeError)) {
+    return false;
+  }
+
+  const normalizedMessage = error.message.toLowerCase();
+  if (
+    normalizedMessage.includes('fetch')
+    || normalizedMessage.includes('network')
+    || normalizedMessage.includes('terminated')
+    || normalizedMessage.includes('socket')
+    || normalizedMessage.includes('connection')
+    || normalizedMessage.includes('load failed')
+    || normalizedMessage.includes('other side closed')
+  ) {
+    return true;
+  }
+
+  const cause = (error as Error & { cause?: unknown }).cause;
+  const causeCode = isRecord(cause) && typeof cause.code === 'string'
+    ? cause.code
+    : undefined;
+  return causeCode !== undefined && RETRYABLE_NETWORK_ERROR_CODES.has(causeCode);
+}
+
+function isRetryableResponsePayloadError(error: unknown): boolean {
+  return (
+    error instanceof VideoVectorApiError
+    && RETRYABLE_RESPONSE_PAYLOAD_ERROR_CODES.has(error.code)
   );
 }
 
@@ -332,6 +456,17 @@ export class VideoVectorClient {
     // Create abort controller for timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const retryRequest = async (delay: number): Promise<T> => {
+      clearTimeout(timeoutId);
+      await this.sleep(delay);
+      return this.request<T>(method, path, {
+        body,
+        query,
+        headers: extraHeaders,
+        retryCount: retryCount + 1,
+        allowEmptyResponse,
+      });
+    };
 
     try {
       const response = await fetch(url.toString(), {
@@ -340,8 +475,6 @@ export class VideoVectorClient {
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });
-
-      clearTimeout(timeoutId);
 
       // Handle non-2xx responses
       if (!response.ok) {
@@ -354,14 +487,7 @@ export class VideoVectorClient {
           RETRY_STATUS_CODES.includes(response.status)
         ) {
           const delay = this.calculateRetryDelay(response, retryCount);
-          await this.sleep(delay);
-          return this.request<T>(method, path, {
-            body,
-            query,
-            headers: extraHeaders,
-            retryCount: retryCount + 1,
-            allowEmptyResponse,
-          });
+          return retryRequest(delay);
         }
 
         throw new VideoVectorApiError(
@@ -391,10 +517,11 @@ export class VideoVectorClient {
       }
       return this.parseSuccessfulJson<T>(text);
     } catch (error) {
-      clearTimeout(timeoutId);
-
       // Handle abort/timeout
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (isAbortError(error)) {
+        if (allowRetry && retryCount < this.maxRetries) {
+          return retryRequest(INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount));
+        }
         throw new VideoVectorApiError(
           'Request timed out',
           'timeout_error',
@@ -402,24 +529,24 @@ export class VideoVectorClient {
         );
       }
 
-      // Handle network errors
-      if (error instanceof TypeError && error.message.includes('fetch')) {
+      // Handle connection failures and response-body stream failures.
+      if (isNetworkTransportError(error)) {
         if (allowRetry && retryCount < this.maxRetries) {
-          const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount);
-          await this.sleep(delay);
-          return this.request<T>(method, path, {
-            body,
-            query,
-            headers: extraHeaders,
-            retryCount: retryCount + 1,
-            allowEmptyResponse,
-          });
+          return retryRequest(INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount));
         }
         throw new VideoVectorApiError(
           'Network error: Unable to connect to VideoVector API',
           'network_error',
           0
         );
+      }
+
+      if (
+        isRetryableResponsePayloadError(error)
+        && allowRetry
+        && retryCount < this.maxRetries
+      ) {
+        return retryRequest(INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount));
       }
 
       // Re-throw VideoVectorApiError
@@ -433,6 +560,8 @@ export class VideoVectorClient {
         'unknown_error',
         500
       );
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -485,7 +614,10 @@ export class VideoVectorClient {
         message: `API request failed with HTTP ${response.status}`,
         code: `http_${response.status}`,
       };
-    } catch {
+    } catch (error) {
+      if (isAbortError(error) || isNetworkTransportError(error)) {
+        throw error;
+      }
       return {
         message: `API request failed with HTTP ${response.status}`,
         code: `http_${response.status}`,
@@ -736,6 +868,64 @@ export class VideoVectorClient {
   async validateApiKey(): Promise<void> {
     await this.request<void>('GET', '/auth/validate', {
       allowEmptyResponse: true,
+    });
+  }
+
+  // ==========================================================================
+  // Simplified Workflow Operations
+  // ==========================================================================
+
+  async workflowUploadMedia(
+    request: WorkflowUploadRequest,
+    idempotencyKey?: string,
+    expectedIdentity?: WorkflowUploadFileIdentity
+  ): Promise<WorkflowUploadResponse> {
+    return this.requestWorkflowUpload<WorkflowUploadResponse>(
+      request,
+      createIdempotencyKey('workflow-upload', idempotencyKey),
+      expectedIdentity
+    );
+  }
+
+  async workflowDefinePrompt(
+    request: WorkflowDefineRequest,
+    idempotencyKey?: string
+  ): Promise<WorkflowDefineResponse> {
+    return this.request<WorkflowDefineResponse>('POST', '/workflow/define', {
+      body: request,
+      headers: {
+        'Idempotency-Key': createIdempotencyKey('workflow-define', idempotencyKey),
+      },
+    });
+  }
+
+  async workflowProcessMedia(
+    request: WorkflowProcessRequest,
+    idempotencyKey?: string
+  ): Promise<WorkflowProcessResponse> {
+    return this.request<WorkflowProcessResponse>('POST', '/workflow/process', {
+      body: request,
+      headers: {
+        'Idempotency-Key': createIdempotencyKey('workflow-process', idempotencyKey),
+      },
+    });
+  }
+
+  async workflowSearchMedia(
+    request: WorkflowSearchRequest,
+    idempotencyKey?: string
+  ): Promise<WorkflowSearchResponse> {
+    return this.request<WorkflowSearchResponse>('POST', '/workflow/search', {
+      body: request,
+      headers: {
+        'Idempotency-Key': createIdempotencyKey('workflow-search', idempotencyKey),
+      },
+    });
+  }
+
+  async workflowSearchPage(cursor: string): Promise<WorkflowSearchResponse> {
+    return this.request<WorkflowSearchResponse>('GET', '/workflow/search/page', {
+      query: { cursor },
     });
   }
 
@@ -1421,6 +1611,200 @@ export class VideoVectorClient {
 
   async getWebhookEvents(): Promise<string[]> {
     return this.request<string[]>('GET', '/webhooks/events');
+  }
+
+  // ==========================================================================
+  // Streaming Workflow Upload Helper
+  // ==========================================================================
+
+  /**
+   * Stream a local media file as multipart data. Each retry opens a fresh file
+   * descriptor while retaining one backend idempotency key; the file is never
+   * buffered into memory.
+   */
+  private async requestWorkflowUpload<T>(
+    request: WorkflowUploadRequest,
+    idempotencyKey: string,
+    expectedIdentity?: WorkflowUploadFileIdentity
+  ): Promise<T> {
+    const boundary = `videovector-${randomUUID()}`;
+    const fields: Buffer[] = [];
+    // Send the file part first so Starlette can spool the large payload before
+    // retaining any subsequent scalar multipart fields.
+    if (request.title !== undefined) {
+      fields.push(workflowMultipartField('title', request.title, boundary));
+    }
+    if (request.index_id !== undefined) {
+      fields.push(workflowMultipartField('index_id', request.index_id, boundary));
+    }
+    if (request.index_name !== undefined) {
+      fields.push(workflowMultipartField('index_name', request.index_name, boundary));
+    }
+
+    const fileHeader = workflowMultipartFileHeader(
+      request.file_path,
+      boundary,
+      workflowUploadContentType(request.file_path)
+    );
+    const fileFooter = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+    const url = new URL(`${this.baseUrl}/workflow/upload`);
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      let fileHandle: Awaited<ReturnType<typeof fs.open>>;
+      try {
+        fileHandle = await fs.open(
+          request.file_path,
+          fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)
+        );
+      } catch (error) {
+        throw new VideoVectorApiError(
+          error instanceof Error ? error.message : 'Unable to open upload source',
+          'upload_source_error',
+          400
+        );
+      }
+      let body: Readable | undefined;
+      let retryDelay: number | undefined;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+      try {
+        const fileStat = await fileHandle.stat();
+        if (!fileStat.isFile()) {
+          throw new Error('Upload source must be a regular file');
+        }
+        if (
+          expectedIdentity
+          && (
+            fileStat.dev !== expectedIdentity.device
+            || fileStat.ino !== expectedIdentity.inode
+            || fileStat.size !== expectedIdentity.size
+            || fileStat.mtimeMs !== expectedIdentity.modifiedMs
+          )
+        ) {
+          throw new Error('Upload source changed after it was authorized');
+        }
+
+        const fileStream = fileHandle.createReadStream({ autoClose: false });
+        const streamParts = async function* (): AsyncGenerator<Buffer> {
+          try {
+            yield fileHeader;
+            for await (const chunk of fileStream) {
+              yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            }
+            yield Buffer.from('\r\n', 'utf8');
+            for (const field of fields) {
+              yield field;
+            }
+            yield fileFooter.subarray(2);
+          } finally {
+            fileStream.destroy();
+          }
+        };
+        body = Readable.from(streamParts());
+
+        const contentLength = fields.reduce((total, field) => total + field.length, 0)
+          + fileHeader.length
+          + fileStat.size
+          + 2
+          + fileFooter.length - 2;
+        const init: RequestInit & { duplex: 'half' } = {
+          method: 'POST',
+          headers: {
+            'X-API-Key': this.apiKey,
+            'Accept': 'application/json',
+            'User-Agent': `videovector-mcp/${PACKAGE_VERSION}`,
+            'Idempotency-Key': idempotencyKey,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Content-Length': String(contentLength),
+          },
+          body: body as unknown as RequestInit['body'],
+          signal: controller.signal,
+          duplex: 'half',
+        };
+        const response = await fetch(url.toString(), init);
+
+        if (!response.ok) {
+          const errorBody = await this.parseErrorResponse(response);
+          if (
+            attempt < this.maxRetries
+            && RETRY_STATUS_CODES.includes(response.status)
+          ) {
+            retryDelay = this.calculateRetryDelay(response, attempt);
+          } else {
+            throw new VideoVectorApiError(
+              errorBody.message,
+              errorBody.code,
+              response.status,
+              errorBody.details,
+              errorBody.requestId
+            );
+          }
+        } else {
+          const text = await response.text();
+          if (!text) {
+            throw new VideoVectorApiError(
+              'Received empty response body from API',
+              'empty_response',
+              response.status,
+              { url: url.toString(), method: 'POST' }
+            );
+          }
+          return this.parseSuccessfulJson<T>(text);
+        }
+      } catch (error) {
+        if (isAbortError(error)) {
+          if (attempt < this.maxRetries) {
+            retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+          } else {
+            throw new VideoVectorApiError('Request timed out', 'timeout_error', 408);
+          }
+        } else if (isNetworkTransportError(error)) {
+          if (attempt < this.maxRetries) {
+            retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+          } else {
+            throw new VideoVectorApiError(
+              'Network error: Unable to connect to VideoVector API',
+              'network_error',
+              0
+            );
+          }
+        } else if (isRetryableResponsePayloadError(error)) {
+          if (attempt < this.maxRetries) {
+            retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+          } else {
+            throw error;
+          }
+        } else if (error instanceof VideoVectorApiError) {
+          throw error;
+        } else {
+          throw new VideoVectorApiError(
+            error instanceof Error ? error.message : 'Unable to upload media',
+            error instanceof TypeError ? 'network_error' : 'upload_source_error',
+            error instanceof TypeError ? 0 : 400
+          );
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        body?.destroy();
+        await fileHandle.close().catch(() => undefined);
+      }
+
+      if (retryDelay === undefined) {
+        throw new VideoVectorApiError(
+          'Upload retry state was not established',
+          'upload_retry_state_error',
+          500
+        );
+      }
+      await this.sleep(retryDelay);
+    }
+
+    throw new VideoVectorApiError(
+      'Network error: Unable to connect to VideoVector API',
+      'network_error',
+      0
+    );
   }
 
   // ==========================================================================
