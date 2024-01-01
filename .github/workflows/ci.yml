@@ -18,11 +18,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
+      - name: Validate shell and workflow sources
+        run: |
+          set -euo pipefail
+          shellcheck scripts/install_pinned_npm.sh scripts/validate_release_request.sh
+          mkdir -m 0700 /tmp/actionlint
+          curl --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 120 \
+            --retry 3 --retry-all-errors \
+            -fsSLo /tmp/actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tar.gz' |
+            sha256sum --check -
+          tar --no-same-owner -xzf /tmp/actionlint.tar.gz \
+            -C /tmp/actionlint actionlint
+          test "$(/tmp/actionlint/actionlint -version | head -n 1)" = "1.7.12"
+          /tmp/actionlint/actionlint \
+            .github/workflows/ci.yml \
+            .github/workflows/release.yml
+
       - name: Setup Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "20.20.2"
+          node-version: "24.14.0"
           cache: npm
+
+      - name: Use the supported npm toolchain
+        run: bash scripts/install_pinned_npm.sh
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
@@ -43,6 +64,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Setup pinned Docker Engine and CLI
+        uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
+        with:
+          version: v29.1.3
 
       - name: Build image
         run: |
@@ -69,6 +95,26 @@ jobs:
             echo "Credential sentinel entered the image." >&2
             exit 1
           fi
+
+      - name: Smoke registry stdio default
+        run: |
+          set -euo pipefail
+          request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"registry-smoke","version":"1.0.0"}}}'
+          api_key="sk_live_$(printf '0%.0s' {1..48})"
+          response="$(printf '%s\n' "$request" |
+            timeout 20s docker run --rm -i \
+              -e VIDEOVECTOR_API_KEY="$api_key" \
+              videovector-mcp-server:ci)"
+          RESPONSE="$response" node <<'NODE'
+          const payload = JSON.parse(process.env.RESPONSE);
+          if (
+            payload.jsonrpc !== '2.0'
+            || payload.id !== 1
+            || payload.result?.serverInfo?.name !== 'videovector'
+          ) {
+            throw new Error('OCI image did not start with the declared stdio transport');
+          }
+          NODE
 
       - name: Start HTTP server
         run: |
@@ -105,8 +151,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "20.20.2"
+          node-version: "24.14.0"
           cache: npm
+
+      - name: Use the supported npm toolchain
+        run: bash scripts/install_pinned_npm.sh
 
       - name: Install dependencies
         run: npm ci --ignore-scripts

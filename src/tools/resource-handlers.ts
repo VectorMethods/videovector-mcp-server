@@ -1034,10 +1034,10 @@ function buildPromptRunRequest(args: Record<string, unknown>): ExecutePromptRequ
     'audio_segment_duration'
   );
   const processingModel = args.processing_model as string | undefined;
-  const enableTranscription = validateOptional(args, 'enable_transcription', 'boolean', true);
-  const enableImageEmbedding = validateOptional(args, 'enable_image_embedding', 'boolean', true);
+  const enableTranscription = validateOptional<boolean | undefined>(args, 'enable_transcription', 'boolean', undefined);
+  const enableImageEmbedding = validateOptional<boolean | undefined>(args, 'enable_image_embedding', 'boolean', undefined);
 
-  const validVideoSegmentationTypes = ['smart', 'fixed', 'content_aware'];
+  const validVideoSegmentationTypes = ['fixed', 'content_aware'];
   const validAudioSegmentationTypes = ['fixed', 'content_aware'];
 
   if (
@@ -1067,7 +1067,6 @@ function buildPromptRunRequest(args: Record<string, unknown>): ExecutePromptRequ
     prompt_id: promptId,
     target,
     video_segmentation_type: videoSegmentationType as
-      | 'smart'
       | 'fixed'
       | 'content_aware'
       | undefined,

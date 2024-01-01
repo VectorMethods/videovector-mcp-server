@@ -1,12 +1,18 @@
 # Installation
 
-Use `npx` unless your runtime requires a global install.
+For a remote MCP client, connect to `https://api.vectormethods.com/mcp` with
+browser OAuth. No local installation or API key is needed. Follow
+[hosted OAuth setup](hosted-oauth.md) for account linking and client configuration.
+
+For local stdio, use `npx` unless your runtime requires a global install.
 
 ```bash
 npx -y @vectormethods/videovector-mcp-server
 ```
 
-Claude Desktop and Cursor both use the stdio transport by default. Configure them with the examples in `examples/`.
+Claude Desktop and Cursor can run this local stdio server. Use the local
+configuration examples in [`examples/`](../examples/) when choosing this path;
+their remote OAuth configurations are described in the [README](../README.md#connect-to-hosted-videovector).
 
 The only required runtime value for local stdio clients is `VIDEOVECTOR_API_KEY`.
 

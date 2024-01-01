@@ -30,3 +30,8 @@ release-bundle/
 # Package manager locks (use npm)
 yarn.lock
 pnpm-lock.yaml
+
+# Generated release verification and package artifacts
+__pycache__/
+*.pyc
+*.tgz

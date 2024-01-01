@@ -2,17 +2,30 @@
 
 ## 2.1.0
 
+- Documented browser OAuth account linking for the separately hosted MCP service,
+  including client setup, discovery, PKCE, refresh, account permissions, and
+  troubleshooting. The npm package continues to use API keys for stdio and
+  self-hosted HTTP.
+- Replaced stateful HTTP sessions with independent authenticated requests,
+  bounded API-key validation, and safe idempotent retries.
+- Aligned publication with the company release controller: immutable annotated
+  tags, verified resumable draft bundles, reproducible npm/OCI artifacts,
+  npm provenance, and explicit secret-marked MCP Registry credential inputs.
+  The build uses pinned Node 24 and npm 11; the npm runtime requirement remains
+  Node 18 or newer.
 - Added the simplified `upload_media`, `define_prompt`, `process_media`, and
   `search_media` workflow tools backed by the additive `/api/v2/workflow`
   facade.
 - Added `simple` and `full` tool profiles. `full` remains the compatibility
   default; `simple` exposes only the four workflow tools.
 - Restricted local file upload to stdio, configured upload roots, regular
-  files, and stable file identity across retries. Hosted HTTP never advertises
-  or executes `upload_media`.
-- Added simplified processing controls for `smart`, `content_aware`, and
-  `fixed` segmentation, with advanced transcription and image embeddings
-  opt-in by default.
+  files, and stable file identity across retries. The self-hosted package HTTP
+  transport never advertises or executes `upload_media`.
+- Aligned processing controls with deployed `content_aware` and `fixed`
+  segmentation. Omitted processing, execution, and estimation settings preserve
+  saved prompt and backend defaults; explicit boolean overrides remain intact.
+- Accept the deployed export `result_scope` metadata (`all` or `matches`) in
+  status and list responses while retaining authenticated download validation.
 - Added cursor continuation for workflow search and automatic stable
   idempotency keys for all initial workflow mutations and searches.
 - Refreshed the locked dependency graph within the existing declared ranges so

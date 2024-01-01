@@ -139,7 +139,7 @@
     },
     {
       "name": "process_media",
-      "description": "Process media with one prompt using a minimal target contract.\n\nProvide prompt_id or an inline prompt_instruction. With no target, the entire Playground is processed. Provide index_id/index_name for an index, or video_ids for selected media. Segmentation defaults to smart; advanced transcription and image embeddings default to false.",
+      "description": "Process media with one prompt using a minimal target contract.\n\nProvide prompt_id or an inline prompt_instruction. With no target, the entire Playground is processed. Provide index_id/index_name for an index, or video_ids for selected media. Omit execution settings to retain saved prompt and backend defaults. Explicit shortcut settings use content_aware or fixed segmentation, with transcription and image embeddings disabled unless enabled.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -176,12 +176,10 @@
           "segmentation_mode": {
             "type": "string",
             "enum": [
-              "smart",
               "content_aware",
               "fixed"
             ],
-            "default": "smart",
-            "description": "Unified segmentation mode. smart maps audio to content-aware segmentation."
+            "description": "Optional unified segmentation override. Omit execution settings to retain saved prompt and backend defaults."
           },
           "fixed_segment_duration_seconds": {
             "type": "integer",
@@ -191,13 +189,11 @@
           },
           "advanced_transcription": {
             "type": "boolean",
-            "default": false,
-            "description": "Enable advanced transcription during processing."
+            "description": "Enable advanced transcription during processing. Omit all execution settings to retain saved prompt and backend defaults."
           },
           "create_image_embeddings": {
             "type": "boolean",
-            "default": false,
-            "description": "Create image embeddings during processing."
+            "description": "Create image embeddings during processing. Omit all execution settings to retain saved prompt and backend defaults."
           },
           "idempotency_key": {
             "type": "string",
@@ -1838,12 +1834,10 @@
           "video_segmentation_type": {
             "type": "string",
             "enum": [
-              "smart",
               "fixed",
               "content_aware"
             ],
-            "default": "smart",
-            "description": "How to segment videos before extraction."
+            "description": "Optional video segmentation override; omitted settings retain saved prompt and backend defaults."
           },
           "video_segment_duration": {
             "type": "number",
@@ -1857,8 +1851,7 @@
               "fixed",
               "content_aware"
             ],
-            "default": "content_aware",
-            "description": "How to segment audio files."
+            "description": "Optional audio segmentation override; omitted settings retain saved prompt and backend defaults."
           },
           "audio_segment_duration": {
             "type": "number",
@@ -1872,13 +1865,11 @@
           },
           "enable_transcription": {
             "type": "boolean",
-            "default": true,
-            "description": "Enable transcription for videos and audio."
+            "description": "Enable transcription for videos and audio. Omit to retain saved prompt and backend defaults."
           },
           "enable_image_embedding": {
             "type": "boolean",
-            "default": true,
-            "description": "Enable image embeddings for image-search workflows."
+            "description": "Enable image embeddings for image-search workflows. Omit to retain saved prompt and backend defaults."
           }
         },
         "required": [
@@ -1946,12 +1937,10 @@
           "video_segmentation_type": {
             "type": "string",
             "enum": [
-              "smart",
               "fixed",
               "content_aware"
             ],
-            "default": "smart",
-            "description": "How to segment videos: smart (scene detection), fixed (fixed duration), content_aware (pre-computed)"
+            "description": "Optional video segmentation override: fixed (fixed duration) or content_aware. Omit to retain saved prompt and backend defaults."
           },
           "video_segment_duration": {
             "type": "number",
@@ -1965,8 +1954,7 @@
               "fixed",
               "content_aware"
             ],
-            "default": "content_aware",
-            "description": "How to segment audio files."
+            "description": "Optional audio segmentation override; omitted settings retain saved prompt and backend defaults."
           },
           "audio_segment_duration": {
             "type": "number",
@@ -1980,13 +1968,11 @@
           },
           "enable_transcription": {
             "type": "boolean",
-            "default": true,
-            "description": "Enable audio transcription for videos"
+            "description": "Enable audio transcription for videos. Omit to retain saved prompt and backend defaults."
           },
           "enable_image_embedding": {
             "type": "boolean",
-            "default": true,
-            "description": "Enable image embeddings for visual search workflows."
+            "description": "Enable image embeddings for visual search workflows. Omit to retain saved prompt and backend defaults."
           },
           "idempotency_key": {
             "type": "string",

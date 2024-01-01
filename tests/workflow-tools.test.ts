@@ -235,7 +235,7 @@ describe('simplified workflow tool surface', () => {
     expect((client as any).workflowSearchMedia).not.toHaveBeenCalled();
   });
 
-  it('maps smart processing defaults without enabling costly optional work', async () => {
+  it('preserves backend and saved prompt defaults when processing settings are omitted', async () => {
     const client = {
       workflowProcessMedia: vi.fn().mockResolvedValue({ run_id: 'run_1' }),
     } as unknown as VideoVectorClient;
@@ -253,15 +253,12 @@ describe('simplified workflow tool surface', () => {
       {
         prompt_id: 'prompt_1',
         video_ids: ['video_1', 'video_2'],
-        segmentation_mode: 'smart',
-        advanced_transcription: false,
-        create_image_embeddings: false,
       },
       undefined
     );
   });
 
-  it('maps fixed segmentation to a shared default duration', async () => {
+  it('leaves omitted fixed duration to the backend default', async () => {
     const client = {
       workflowProcessMedia: vi.fn().mockResolvedValue({ run_id: 'run_2' }),
     } as unknown as VideoVectorClient;
@@ -281,12 +278,54 @@ describe('simplified workflow tool surface', () => {
       {
         prompt_instruction: 'Describe the scene',
         segmentation_mode: 'fixed',
-        fixed_segment_duration_seconds: 10,
         advanced_transcription: true,
         create_image_embeddings: true,
       },
       undefined
     );
+  });
+
+  it.each(['content_aware', 'fixed'] as const)('forwards explicit %s settings and false toggles', async (mode) => {
+    const client = {
+      workflowProcessMedia: vi.fn().mockResolvedValue({ run_id: 'run_3' }),
+    } as unknown as VideoVectorClient;
+    const options = {
+      prompt_id: 'prompt_1',
+      segmentation_mode: mode,
+      ...(mode === 'fixed' ? { fixed_segment_duration_seconds: 15 } : {}),
+      advanced_transcription: false,
+      create_image_embeddings: false,
+    };
+
+    const response = await executeTool('process_media', options, client);
+
+    expect(response.isError).toBeUndefined();
+    expect((client as any).workflowProcessMedia).toHaveBeenCalledWith(options, undefined);
+  });
+
+  it('rejects retired smart segmentation before making a paid submission', async () => {
+    const client = { workflowProcessMedia: vi.fn() } as unknown as VideoVectorClient;
+    const response = await executeTool('process_media', {
+      prompt_id: 'prompt_1', segmentation_mode: 'smart',
+    }, client);
+
+    expect(response.isError).toBe(true);
+    expect(String(parseContent(response).message)).toContain('content_aware, fixed');
+    expect((client as any).workflowProcessMedia).not.toHaveBeenCalled();
+  });
+
+  it('advertises only canonical segmentation without injecting optional execution defaults', () => {
+    for (const name of ['process_media', 'estimate_prompt_run', 'execute_prompt']) {
+      const definition = getToolDefinitions('full', true).find((tool) => tool.name === name);
+      const properties = definition?.inputSchema.properties as Record<string, Record<string, unknown>>;
+      const segmentation = properties[name === 'process_media' ? 'segmentation_mode' : 'video_segmentation_type'];
+      expect(segmentation.enum).toEqual(expect.arrayContaining(['content_aware', 'fixed']));
+      expect(segmentation.enum).not.toContain('smart');
+      for (const field of ['segmentation_mode', 'video_segmentation_type', 'audio_segmentation_type',
+        'advanced_transcription', 'create_image_embeddings', 'enable_transcription', 'enable_image_embedding']) {
+        if (properties[field]) expect(properties[field]).not.toHaveProperty('default');
+      }
+    }
   });
 
   it('rejects fixed duration outside fixed mode before calling the API', async () => {
