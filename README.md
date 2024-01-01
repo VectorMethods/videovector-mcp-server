@@ -68,8 +68,10 @@ Endpoints:
 
 - `GET /health`
 - `POST /mcp`
-- `GET /mcp`
-- `DELETE /mcp`
+
+The `/mcp` endpoint is stateless. Each POST is independent and may be routed
+to any healthy instance. `GET /mcp` and `DELETE /mcp` return `405`; clients
+must not send or persist `MCP-Session-Id`.
 
 HTTP requests must include either:
 
@@ -84,20 +86,19 @@ HTTP hardening variables:
 | `MCP_HTTP_HOST` | `0.0.0.0` | Bind host. |
 | `MCP_HTTP_ALLOWED_HOSTS` | empty | Optional comma-separated host allowlist. |
 | `MCP_HTTP_ALLOWED_ORIGINS` | empty | Optional comma-separated browser origin allowlist. |
-| `MCP_HTTP_MAX_SESSIONS` | `200` | In-memory session cap. |
-| `MCP_HTTP_MAX_SESSIONS_PER_KEY` | `5` | Concurrent session cap for one API key. |
-| `MCP_HTTP_SESSION_IDLE_TTL_SECONDS` | `1800` | Reclaim an inactive session after this interval. |
-| `MCP_HTTP_SESSION_ABSOLUTE_TTL_SECONDS` | `28800` | Reclaim a session after this lifetime even while active. |
-| `MCP_HTTP_API_KEY_CANDIDATES_PER_PEER` | `5` | Distinct uncached key candidates admitted per minute from the direct network peer; hard-capped at 11 and also subject to a process-wide guard. Forwarding headers are not trusted. |
 | `MCP_HTTP_ENABLE_JSON_RESPONSE` | `false` | SDK JSON response mode. |
+| `MCP_HTTP_SHUTDOWN_DRAIN_SECONDS` | `25` | Maximum graceful drain before active request contexts are closed. |
 
 Both stdio and HTTP modes accept canonical production keys only (`sk_live_` followed by
 exactly 48 lowercase hexadecimal characters). Invalid candidates are rejected
-before normal API use. In HTTP mode, invalid candidates are rejected or
-hash-cached before backend verification; plaintext keys are never written to
-the verification caches or logs. Sessions expire at both the configured idle
-and absolute deadlines. When both supported HTTP headers are present,
-`X-API-Key` takes precedence, matching the VideoVector API.
+before normal API use. In HTTP mode, validation uses the side-effect-free
+`GET /auth/validate` API operation. Successful keys are cached for 60 seconds,
+confirmed invalid keys for 10 minutes, and transient failures for five
+seconds. Same-key checks are singleflighted and backend validation is bounded
+to 16 concurrent calls plus a 64-request queue with a five-second timeout.
+Plaintext keys are never written to caches or logs. When both supported HTTP
+headers are present, `X-API-Key` takes precedence, matching the VideoVector
+API.
 
 Do not advertise a public hosted remote MCP endpoint until OAuth and MCP protected-resource metadata are enabled for that deployment.
 

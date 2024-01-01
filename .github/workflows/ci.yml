@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   node:
@@ -17,22 +16,22 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 20
+          node-version: "20.20.2"
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Verify
         run: npm run verify
 
-      - name: Runtime dependency audit
-        run: npm audit --omit=dev --audit-level=high
+      - name: Full dependency audit
+        run: npm audit --audit-level=high
 
       - name: Pack dry run
         run: npm pack --dry-run
@@ -43,10 +42,33 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Build image
-        run: docker build -t videovector-mcp-server:ci .
+        run: |
+          set -euo pipefail
+          sentinel='credential-sentinel-must-never-enter-image'
+          printf '%s\n' "$sentinel" > gha-creds-ci-sentinel.json
+          trap 'rm -f gha-creds-ci-sentinel.json' EXIT
+          docker build -t videovector-mcp-server:ci .
+          container_id="$(docker create videovector-mcp-server:ci)"
+          trap 'rm -f gha-creds-ci-sentinel.json; docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          docker export "$container_id" -o /tmp/videovector-mcp-filesystem.tar
+          forbidden_paths="$(tar -tf /tmp/videovector-mcp-filesystem.tar |
+            grep -Ei '(^|/)(gha-creds[^/]*\.json|.*service[-_]?account[^/]*\.json|\.env(\.[^/]*)?|\.npmrc|.*\.(pem|p12|pfx|key))$' || true)"
+          unexpected_paths="$(printf '%s\n' "$forbidden_paths" |
+            grep -Ev '^usr/local/lib/node_modules/npm/\.npmrc$' || true)"
+          if [[ -n "$unexpected_paths" ]]; then
+            printf '%s\n' "$unexpected_paths" >&2
+            echo "Credential-pattern filename entered the image." >&2
+            exit 1
+          fi
+          docker run --rm videovector-mcp-server:ci \
+            sh -c 'test ! -s /usr/local/lib/node_modules/npm/.npmrc'
+          if grep -aF "$sentinel" /tmp/videovector-mcp-filesystem.tar; then
+            echo "Credential sentinel entered the image." >&2
+            exit 1
+          fi
 
       - name: Start HTTP server
         run: |
@@ -59,7 +81,7 @@ jobs:
 
       - name: Smoke health endpoint
         run: |
-          for i in $(seq 1 20); do
+          for _attempt in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:8080/health; then
               exit 0
             fi
@@ -78,19 +100,19 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 20
+          node-version: "20.20.2"
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
-      - name: Runtime dependency audit
-        run: npm audit --omit=dev --audit-level=high
+      - name: Full dependency audit
+        run: npm audit --audit-level=high
 
   secret-scan:
     name: Secret scan
@@ -98,7 +120,20 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
 
-      - name: Gitleaks
-        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest detect --source /repo --no-git --redact
+      - name: Scan history and filesystem with checksum-pinned Gitleaks
+        run: |
+          set -euo pipefail
+          mkdir -m 0700 /tmp/gitleaks
+          curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -fsSLo /tmp/gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+          tar --no-same-owner -xzf /tmp/gitleaks.tar.gz -C /tmp/gitleaks gitleaks
+          test -f /tmp/gitleaks/gitleaks
+          test ! -L /tmp/gitleaks/gitleaks
+          echo '9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks/gitleaks' | sha256sum --check -
+          test "$(/tmp/gitleaks/gitleaks version)" = "8.24.3"
+          /tmp/gitleaks/gitleaks git --no-banner --redact --log-opts=--all .
+          /tmp/gitleaks/gitleaks dir --no-banner --redact .

@@ -10,9 +10,9 @@ personal GitHub account, or a manual public workflow dispatch.
 2. Run local checks:
 
    ```bash
-   npm ci
+   npm ci --ignore-scripts
    npm run verify
-   npm audit --omit=dev --audit-level=high
+   npm audit --audit-level=high
    npm pack --dry-run
    ```
 
@@ -23,6 +23,43 @@ personal GitHub account, or a manual public workflow dispatch.
    dispatches this repository's `Release` workflow, waits for npm, GHCR, and MCP
    Registry publish checks to pass, then creates the GitHub Release with scanned
    release text and generated notes disabled.
+
+## Immutable Release Bundle
+
+The workflow builds one `mcp-release-bundle` before it receives any registry
+write permission. The bundle contains:
+
+- the exact npm tarball;
+- a deterministic, single-platform OCI archive;
+- the exact MCP Registry `server.json`;
+- `registry-metadata.json`; and
+- `release-manifest.json`.
+
+`release-manifest.json` binds the source and tag SHA, commit-derived
+`SOURCE_DATE_EPOCH`, release-body SHA-256, every artifact byte hash, the OCI
+manifest digest, canonical source repository, registry-metadata hash, and the exact tool versions. The
+npm tarball and OCI archive are each built once. Every publication job downloads
+that bundle; it never runs `npm pack` or `docker build`.
+
+Before a write, the workflow classifies the target version as either missing or
+an exact replay:
+
+- npm requires identical tarball bytes, package identity, executable map, and
+  engine metadata;
+- GHCR requires the exact OCI manifest digest and provenance labels; and
+- MCP Registry requires the exact publication-owned server and package
+  metadata.
+
+An existing mismatch or an unavailable registry fails closed. A failed
+publication can be resumed without rebuilding: exact targets are skipped and
+only missing targets consume the already tested bundle. The GHCR package must
+be configured as public before its first release; every run proves anonymous
+readability and rechecks the exact digest after publication.
+
+The private bot must verify the same tag SHA and release-body hash, attach the
+two manifest files to the GitHub Release, and treat an existing release as
+successful only when its tag, body, and attached manifest bytes match. The
+public workflow deliberately has read-only GitHub Release permission.
 
 ## First npm Publish
 
@@ -36,7 +73,7 @@ registry. For the first publish only:
 4. Configure trusted publishing:
 
    ```bash
-   npm install -g npm@^11.15.0
+   npm install -g npm@11.15.0
    npm trust github @vectormethods/videovector-mcp-server \
      --repo VectorMethods/videovector-mcp-server \
      --file release.yml \
@@ -48,6 +85,4 @@ registry. For the first publish only:
 6. In npm package settings, require 2FA and disallow token publishing.
 
 After that bootstrap, releases must rely on OIDC trusted publishing only.
-The workflow only uses `NPM_BOOTSTRAP_TOKEN` when the npm package does not
-already exist. Future version publishes use npm trusted publishing with GitHub
-OIDC.
+Future version publishes use npm trusted publishing with GitHub OIDC.

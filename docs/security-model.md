@@ -10,18 +10,17 @@ In stdio mode, the MCP host starts the server process locally and passes `VIDEOV
 
 ## Streamable HTTP
 
-In HTTP mode, every MCP request must authenticate with a canonical production
-VideoVector API key. Sessions retain the key in process memory only while it is
-needed to call the API and are bound to a one-way hash of the initialization
-key, so a session cannot be reused with another key. Per-key and process session
-caps plus idle and absolute expiry bound abandoned-session capacity.
+In HTTP mode, every MCP POST authenticates with a VideoVector API key. The
+transport is stateless: no session identifier, API key, or server object is
+retained after the response closes. This allows requests to move safely across
+instances and restarts.
 
-Before allocating a session, the HTTP transport validates the key format and
-performs one backend verification attempt. Positive, negative, and transient
-results are cached only by one-way key hash. Distinct uncached candidates are
-bounded per direct network peer and process; untrusted forwarding headers are
-not used as identity. Verification errors are logged by status/code, never by
-backend response text.
+Before an MCP request context is allocated, the server validates the key with
+the API's side-effect-free authentication endpoint. Validation caches and
+singleflight coordination use a process-secret HMAC fingerprint rather than
+plaintext credentials. Backend validation concurrency and queue depth are
+bounded independently of client IP, so one shared proxy cannot deny valid
+tenants admission merely by presenting other credentials.
 
 HTTP mode has optional host and origin allowlists:
 

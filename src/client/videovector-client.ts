@@ -287,9 +287,16 @@ export class VideoVectorClient {
       query?: Record<string, string | number | boolean | string[] | undefined>;
       headers?: Record<string, string>;
       retryCount?: number;
+      allowEmptyResponse?: boolean;
     } = {}
   ): Promise<T> {
-    const { body, query, headers: extraHeaders, retryCount = 0 } = options;
+    const {
+      body,
+      query,
+      headers: extraHeaders,
+      retryCount = 0,
+      allowEmptyResponse = false,
+    } = options;
     const allowRetry = isAutomaticRetryAllowed(method, extraHeaders);
 
     // Build URL with query parameters
@@ -353,6 +360,7 @@ export class VideoVectorClient {
             query,
             headers: extraHeaders,
             retryCount: retryCount + 1,
+            allowEmptyResponse,
           });
         }
 
@@ -368,6 +376,9 @@ export class VideoVectorClient {
       // Parse successful response
       const text = await response.text();
       if (!text) {
+        if (allowEmptyResponse) {
+          return undefined as T;
+        }
         // Empty response body is unexpected for this JSON API - all endpoints should return valid JSON
         // Throwing an error surfaces the issue immediately rather than causing confusing downstream errors
         // (e.g., returning {} when T is an array type would crash on iteration)
@@ -401,6 +412,7 @@ export class VideoVectorClient {
             query,
             headers: extraHeaders,
             retryCount: retryCount + 1,
+            allowEmptyResponse,
           });
         }
         throw new VideoVectorApiError(
@@ -720,6 +732,12 @@ export class VideoVectorClient {
   // ==========================================================================
   // Index Operations
   // ==========================================================================
+
+  async validateApiKey(): Promise<void> {
+    await this.request<void>('GET', '/auth/validate', {
+      allowEmptyResponse: true,
+    });
+  }
 
   async listIndexes(includeDefaults: boolean = true): Promise<Index[]> {
     return this.request<Index[]>('GET', '/indexes', {
