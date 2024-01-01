@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { VideoVectorClient } from '../src/client/index.js';
+import { PACKAGE_VERSION } from '../src/version.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -38,6 +39,9 @@ describe('VideoVectorClient request encoding', () => {
       destination_subpath: 'daily/',
     });
     expect((init.headers as Record<string, string>)['X-API-Key']).toBe('sk_test_abc');
+    expect((init.headers as Record<string, string>)['User-Agent']).toBe(
+      `videovector-mcp/${PACKAGE_VERSION}`
+    );
     expect((init.headers as Record<string, string>)['Idempotency-Key']).toMatch(/^export-index-create:/);
   });
 
@@ -339,6 +343,80 @@ describe('VideoVectorClient request encoding', () => {
     ).rejects.toMatchObject({ code: 'http_503', statusCode: 503 });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry cost-bearing POST requests after a retryable server response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'temporary outage' }), {
+        status: 503,
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new VideoVectorClient({
+      apiKey: 'sk_test_abc',
+      baseUrl: 'https://example.com/api/v2',
+      timeout: 1000,
+      maxRetries: 3,
+    });
+
+    await expect(
+      client.searchVideos('idx_1', { query: 'find the moment' })
+    ).rejects.toMatchObject({ code: 'http_503', statusCode: 503 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a cost-bearing POST after an ambiguous network failure', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new VideoVectorClient({
+      apiKey: 'sk_test_abc',
+      baseUrl: 'https://example.com/api/v2',
+      timeout: 1000,
+      maxRetries: 3,
+    });
+
+    await expect(
+      client.searchVideos('idx_1', { query: 'find the moment' })
+    ).rejects.toMatchObject({ code: 'network_error' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries idempotent writes with the same stable idempotency key', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'temporary outage' }), {
+          status: 503,
+          headers: { 'Retry-After': '0' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ index_id: 'idx_1', name: 'Archive' }), {
+          status: 200,
+        })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new VideoVectorClient({
+      apiKey: 'sk_test_abc',
+      baseUrl: 'https://example.com/api/v2',
+      timeout: 1000,
+      maxRetries: 1,
+    });
+
+    await expect(client.createIndex({ name: 'Archive' }, 'index-create-1')).resolves.toMatchObject({
+      index_id: 'idx_1',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    const secondHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
+    expect(firstHeaders['Idempotency-Key']).toBe('index-create-1');
+    expect(secondHeaders['Idempotency-Key']).toBe('index-create-1');
   });
 
   it('applies client-side limit when listing prompt runs for a video', async () => {

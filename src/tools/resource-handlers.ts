@@ -2442,7 +2442,11 @@ async function handleGetExportStatus(
   } else if (job.status === 'processing') {
     tip = 'Export is still processing. Check again in a few moments.';
   } else if (job.status === 'completed' && job.download_url) {
-    tip = 'Export is ready. Use the download_url to retrieve the file. The URL expires after a period.';
+    tip =
+      'Export is ready through a short-lived, byte-bounded first-party bearer URL. ' +
+      'Treat the URL as sensitive and do not log or share it. ' +
+      'For large files, use the authenticated VideoVector SDK/API streaming download ' +
+      'or a connector destination instead of loading the export into MCP context.';
   } else if (job.status === 'failed') {
     tip = 'Export failed. Check error_message for details.';
   }

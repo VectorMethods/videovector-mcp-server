@@ -16,11 +16,21 @@ Endpoints:
 - `GET /mcp`
 - `DELETE /mcp`
 
-Every `/mcp` request must include `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+Every `/mcp` request must include `Authorization: Bearer <key>` or `X-API-Key:
+<key>`. HTTP mode accepts a canonical production API key: `sk_live_` followed
+by exactly 48 lowercase hexadecimal characters. The local stdio transport
+continues to support development keys.
 
 Recommended hardening:
 
 - Set `MCP_HTTP_ALLOWED_HOSTS` for deployed services.
 - Set `MCP_HTTP_ALLOWED_ORIGINS` before allowing browser clients.
+- Keep the default global and per-key session limits, idle/absolute expiry, and
+  API-key candidate admission guards enabled. Their environment variables are
+  documented in the README and `.env.example`.
+- Candidate limits use the direct socket peer and intentionally ignore
+  caller-controlled forwarding headers. Put a trusted edge rate limiter in
+  front of a broadly shared proxy deployment if client-specific limits are
+  required.
 - Keep service deployment secrets, service accounts, and cloud project IDs outside this public repo.
 - Do not publish a hosted remote MCP endpoint until OAuth and MCP protected-resource metadata are implemented for that deployment.

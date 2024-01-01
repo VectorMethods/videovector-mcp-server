@@ -25,6 +25,11 @@
  *   MCP_HTTP_ALLOWED_HOSTS - Optional: comma-separated allowed hostnames
  *   MCP_HTTP_ALLOWED_ORIGINS - Optional: comma-separated allowed origins
  *   MCP_HTTP_MAX_SESSIONS - Optional: max in-memory HTTP sessions (default: 200)
+ *   MCP_HTTP_MAX_SESSIONS_PER_KEY - Optional: per-key session cap (default: 5)
+ *   MCP_HTTP_SESSION_IDLE_TTL_SECONDS - Optional: idle session TTL (default: 1800)
+ *   MCP_HTTP_SESSION_ABSOLUTE_TTL_SECONDS - Optional: absolute session TTL (default: 28800)
+ *   MCP_HTTP_API_KEY_CANDIDATES_PER_PEER - Optional: uncached candidates/minute
+ *     from the direct network peer (default: 5, hard-capped at 11)
  *   MCP_HTTP_ENABLE_JSON_RESPONSE - Optional: true|false (default: false)
  */
 
@@ -46,6 +51,7 @@ import {
 import { VideoVectorClient } from './client/index.js';
 import { VideoVectorApiError } from './types/index.js';
 import { TOOL_DEFINITIONS, executeTool } from './tools/index.js';
+import { PACKAGE_VERSION } from './version.js';
 
 // ============================================================================
 // Configuration
@@ -71,6 +77,10 @@ export interface HttpConfig extends BaseConfig {
   allowedHosts: string[];
   allowedOrigins: string[];
   maxSessions: number;
+  maxSessionsPerKey: number;
+  sessionIdleTtlMs: number;
+  sessionAbsoluteTtlMs: number;
+  apiKeyCandidatesPerPeer: number;
   enableJsonResponse: boolean;
 }
 
@@ -79,6 +89,10 @@ interface SessionContext {
   transport: StreamableHTTPServerTransport;
   server: Server;
   keyHash: Buffer;
+  createdAtMs: number;
+  lastActivityAtMs: number;
+  absoluteExpiresAtMs: number;
+  touch: (nowMs?: number) => void;
   close: (options?: SessionCloseOptions) => Promise<void>;
 }
 
@@ -91,6 +105,7 @@ interface SessionCloseOptions {
 export interface HttpAppContext {
   app: ReturnType<typeof createMcpExpressApp>;
   sessions: Map<string, SessionContext>;
+  cleanupExpiredSessions: (nowMs?: number) => Promise<number>;
 }
 
 type HttpRequest = IncomingMessage & { body?: unknown; headers: IncomingHttpHeaders };
@@ -101,6 +116,14 @@ type HttpResponse = ServerResponse<IncomingMessage> & {
 type HttpNext = () => void;
 
 const DEFAULT_BASE_URL = 'https://api.vectormethods.com/api/v2';
+const PUBLIC_API_KEY_PATTERN = /^sk_live_[0-9a-f]{48}$/;
+const API_KEY_CANDIDATE_WINDOW_MS = 60_000;
+const API_KEY_GLOBAL_CANDIDATE_LIMIT = 10;
+const API_KEY_NEGATIVE_CACHE_TTL_MS = 10 * 60_000;
+const API_KEY_POSITIVE_CACHE_TTL_MS = 60_000;
+const API_KEY_TRANSIENT_CACHE_TTL_MS = 5_000;
+const API_KEY_PEER_CACHE_LIMIT = 1_000;
+const MAX_TIMER_DELAY_MS = 2_147_000_000;
 
 export function readTransportMode(): TransportMode {
   const mode = (process.env.MCP_TRANSPORT_MODE ?? 'stdio').trim().toLowerCase();
@@ -177,7 +200,11 @@ export function loadBaseConfig(): BaseConfig {
 }
 
 export function isValidApiKeyFormat(apiKey: string): boolean {
-  return apiKey.startsWith('sk_live_') || apiKey.startsWith('sk_test_');
+  return isValidPublicApiKeyFormat(apiKey);
+}
+
+export function isValidPublicApiKeyFormat(apiKey: string): boolean {
+  return PUBLIC_API_KEY_PATTERN.test(apiKey);
 }
 
 export function loadStdioConfig(baseConfig: BaseConfig): StdioConfig {
@@ -191,7 +218,9 @@ export function loadStdioConfig(baseConfig: BaseConfig): StdioConfig {
   }
 
   if (!isValidApiKeyFormat(apiKey)) {
-    console.error('Error: Invalid API key format. Keys must start with sk_live_ or sk_test_');
+    console.error(
+      'Error: Invalid API key format. Expected sk_live_ followed by 48 lowercase hexadecimal characters'
+    );
     process.exit(1);
   }
 
@@ -203,13 +232,26 @@ export function loadStdioConfig(baseConfig: BaseConfig): StdioConfig {
 }
 
 export function loadHttpConfig(baseConfig: BaseConfig): HttpConfig {
+  const maxSessions = readPositiveInteger('MCP_HTTP_MAX_SESSIONS', 200);
   return {
     mode: 'http',
     port: readPositiveInteger('PORT', 8080),
     host: process.env.MCP_HTTP_HOST ?? '0.0.0.0',
     allowedHosts: readCsv('MCP_HTTP_ALLOWED_HOSTS'),
     allowedOrigins: readCsv('MCP_HTTP_ALLOWED_ORIGINS'),
-    maxSessions: readPositiveInteger('MCP_HTTP_MAX_SESSIONS', 200),
+    maxSessions,
+    maxSessionsPerKey: Math.min(
+      readPositiveInteger('MCP_HTTP_MAX_SESSIONS_PER_KEY', 5),
+      maxSessions
+    ),
+    sessionIdleTtlMs:
+      readPositiveInteger('MCP_HTTP_SESSION_IDLE_TTL_SECONDS', 1_800) * 1_000,
+    sessionAbsoluteTtlMs:
+      readPositiveInteger('MCP_HTTP_SESSION_ABSOLUTE_TTL_SECONDS', 28_800) * 1_000,
+    apiKeyCandidatesPerPeer: Math.min(
+      readPositiveInteger('MCP_HTTP_API_KEY_CANDIDATES_PER_PEER', 5),
+      API_KEY_GLOBAL_CANDIDATE_LIMIT + 1
+    ),
     enableJsonResponse: readBoolean('MCP_HTTP_ENABLE_JSON_RESPONSE', false),
     ...baseConfig,
   };
@@ -225,6 +267,15 @@ function createClient(apiKey: string, config: BaseConfig): VideoVectorClient {
 }
 
 export function extractApiKeyFromHeaders(headers: IncomingHttpHeaders): string | null {
+  // Match the API's canonical authentication precedence. Browser clients can
+  // carry an ambient Firebase bearer while explicitly selecting a tenant API
+  // key for MCP; the explicit X-API-Key must remain authoritative.
+  const xApiKey = headers['x-api-key'];
+  const headerValue = Array.isArray(xApiKey) ? xApiKey[0] : xApiKey;
+  if (typeof headerValue === 'string' && headerValue.trim().length > 0) {
+    return headerValue.trim();
+  }
+
   const authorization = headers.authorization;
   const authValue = Array.isArray(authorization) ? authorization[0] : authorization;
   if (typeof authValue === 'string') {
@@ -232,12 +283,6 @@ export function extractApiKeyFromHeaders(headers: IncomingHttpHeaders): string |
     if (match?.[1]) {
       return match[1].trim();
     }
-  }
-
-  const xApiKey = headers['x-api-key'];
-  const headerValue = Array.isArray(xApiKey) ? xApiKey[0] : xApiKey;
-  if (typeof headerValue === 'string' && headerValue.trim().length > 0) {
-    return headerValue.trim();
   }
 
   return null;
@@ -252,13 +297,41 @@ function readSessionId(headers: IncomingHttpHeaders): string | null {
   return sessionId.trim();
 }
 
+function acceptsStreamableHttpResponse(headers: IncomingHttpHeaders): boolean {
+  const rawAccept = headers.accept;
+  const accept = Array.isArray(rawAccept) ? rawAccept.join(',') : rawAccept;
+  if (typeof accept !== 'string') {
+    return false;
+  }
+
+  const mediaTypes = new Set(
+    accept
+      .split(',')
+      .map((value) => value.split(';', 1)[0]?.trim().toLowerCase())
+      .filter((value): value is string => Boolean(value))
+  );
+  return mediaTypes.has('application/json') && mediaTypes.has('text/event-stream');
+}
+
 function hashApiKey(apiKey: string): Buffer {
   return createHash('sha256').update(apiKey).digest();
+}
+
+function hashApiKeyForCache(apiKey: string): string {
+  return hashApiKey(apiKey).toString('hex');
 }
 
 function apiKeyMatchesHash(apiKey: string, expectedHash: Buffer): boolean {
   const receivedHash = hashApiKey(apiKey);
   return receivedHash.length === expectedHash.length && timingSafeEqual(receivedHash, expectedHash);
+}
+
+function hashDirectPeer(req: HttpRequest): string {
+  // Never trust client-controlled forwarding headers here. The direct socket
+  // peer is the only identity available without an explicitly configured,
+  // verifiable proxy chain.
+  const directPeer = req.socket.remoteAddress ?? 'unknown-direct-peer';
+  return createHash('sha256').update(`peer:${directPeer}`).digest('hex');
 }
 
 function appendVaryHeader(res: HttpResponse, value: string): void {
@@ -278,26 +351,62 @@ function appendVaryHeader(res: HttpResponse, value: string): void {
 
 type HttpSessionAuthCheckResult =
   | { client: VideoVectorClient }
-  | { status: number; error: string; message: string };
+  | {
+      status: number;
+      error: string;
+      message: string;
+      retryAfterSeconds?: number;
+    };
 
-async function verifyApiKeyForHttpSession(
+type HttpSessionAuthFailure = Exclude<HttpSessionAuthCheckResult, { client: VideoVectorClient }>;
+
+function invalidApiKeyResult(): HttpSessionAuthFailure {
+  return {
+    status: 401,
+    error: 'invalid_api_key',
+    message: 'API key is invalid or revoked.',
+  };
+}
+
+function peerCandidateLimitResult(): HttpSessionAuthFailure {
+  return {
+    status: 429,
+    error: 'api_key_candidate_rate_limited',
+    message: 'Too many distinct API key candidates from this network peer. Retry shortly.',
+    retryAfterSeconds: 60,
+  };
+}
+
+function globalCandidateGuardResult(): HttpSessionAuthFailure {
+  return {
+    status: 503,
+    error: 'api_key_verification_guard_open',
+    message: 'API key verification is temporarily unavailable. Retry shortly.',
+    retryAfterSeconds: 60,
+  };
+}
+
+async function verifyApiKeyAgainstBackend(
   apiKey: string,
   config: BaseConfig
 ): Promise<HttpSessionAuthCheckResult> {
-  const client = createClient(apiKey, config);
+  // Verification is deliberately single-shot. Retrying a rejected candidate
+  // would amplify the backend's shared-IP invalid-key circuit.
+  const verificationClient = new VideoVectorClient({
+    apiKey,
+    baseUrl: config.baseUrl,
+    timeout: config.timeout,
+    maxRetries: 0,
+  });
 
   try {
     // Verify API key validity before allocating session/server objects.
-    await client.listIndexes(false);
-    return { client };
+    await verificationClient.listIndexes(false);
+    return { client: createClient(apiKey, config) };
   } catch (error) {
     if (error instanceof VideoVectorApiError) {
       if (error.isAuthError()) {
-        return {
-          status: 401,
-          error: 'invalid_api_key',
-          message: 'API key is invalid or revoked.',
-        };
+        return invalidApiKeyResult();
       }
 
       if (error.statusCode === 429) {
@@ -309,16 +418,132 @@ async function verifyApiKeyForHttpSession(
       }
     }
 
-    console.error(
-      '[videovector-mcp] API key verification failed:',
-      error instanceof Error ? error.message : String(error)
-    );
+    // Do not log backend response text here. Authentication failures can carry
+    // caller-controlled content, while API keys must never be recoverable from
+    // verification logs or cache diagnostics.
+    const failureLabel =
+      error instanceof VideoVectorApiError
+        ? `${error.code} (HTTP ${error.statusCode})`
+        : error instanceof Error
+          ? error.name
+          : 'unknown_error';
+    console.error('[videovector-mcp] API key verification failed:', failureLabel);
 
     return {
       status: 502,
       error: 'api_key_verification_failed',
       message: 'Unable to verify API key at this time.',
     };
+  }
+}
+
+interface CachedAuthFailure {
+  expiresAtMs: number;
+  result: HttpSessionAuthFailure;
+}
+
+class HttpApiKeyCandidateVerifier {
+  private readonly positiveCache = new Map<string, number>();
+  private readonly negativeCache = new Map<string, number>();
+  private readonly transientFailureCache = new Map<string, CachedAuthFailure>();
+  private readonly inFlight = new Map<string, Promise<HttpSessionAuthCheckResult>>();
+  private readonly globalCandidates = new Map<string, number>();
+  private readonly peerCandidates = new Map<string, Map<string, number>>();
+
+  constructor(
+    private readonly config: BaseConfig,
+    private readonly perPeerLimit: number
+  ) {}
+
+  private prune(nowMs: number): void {
+    for (const [keyHash, expiresAtMs] of this.positiveCache) {
+      if (expiresAtMs <= nowMs) this.positiveCache.delete(keyHash);
+    }
+    for (const [keyHash, expiresAtMs] of this.negativeCache) {
+      if (expiresAtMs <= nowMs) this.negativeCache.delete(keyHash);
+    }
+    for (const [keyHash, cached] of this.transientFailureCache) {
+      if (cached.expiresAtMs <= nowMs) this.transientFailureCache.delete(keyHash);
+    }
+    for (const [keyHash, expiresAtMs] of this.globalCandidates) {
+      if (expiresAtMs <= nowMs) this.globalCandidates.delete(keyHash);
+    }
+    for (const [peerHash, candidates] of this.peerCandidates) {
+      for (const [keyHash, expiresAtMs] of candidates) {
+        if (expiresAtMs <= nowMs) candidates.delete(keyHash);
+      }
+      if (candidates.size === 0) this.peerCandidates.delete(peerHash);
+    }
+  }
+
+  async verify(
+    apiKey: string,
+    peerHash: string,
+    nowMs: number = Date.now()
+  ): Promise<HttpSessionAuthCheckResult> {
+    this.prune(nowMs);
+    const keyHash = hashApiKeyForCache(apiKey);
+
+    if ((this.positiveCache.get(keyHash) ?? 0) > nowMs) {
+      return { client: createClient(apiKey, this.config) };
+    }
+    if ((this.negativeCache.get(keyHash) ?? 0) > nowMs) {
+      return invalidApiKeyResult();
+    }
+    const transient = this.transientFailureCache.get(keyHash);
+    if (transient && transient.expiresAtMs > nowMs) {
+      return transient.result;
+    }
+    const existingFlight = this.inFlight.get(keyHash);
+    if (existingFlight) {
+      return existingFlight;
+    }
+
+    const existingPeerCandidates = this.peerCandidates.get(peerHash);
+    const peerAlreadyCounted = existingPeerCandidates?.has(keyHash) ?? false;
+    if (!peerAlreadyCounted && (existingPeerCandidates?.size ?? 0) >= this.perPeerLimit) {
+      return peerCandidateLimitResult();
+    }
+    if (!existingPeerCandidates && this.peerCandidates.size >= API_KEY_PEER_CACHE_LIMIT) {
+      return peerCandidateLimitResult();
+    }
+
+    const globallyCounted = this.globalCandidates.has(keyHash);
+    if (!globallyCounted && this.globalCandidates.size >= API_KEY_GLOBAL_CANDIDATE_LIMIT) {
+      return globalCandidateGuardResult();
+    }
+
+    const expiresAtMs = nowMs + API_KEY_CANDIDATE_WINDOW_MS;
+    if (!globallyCounted) {
+      this.globalCandidates.set(keyHash, expiresAtMs);
+    }
+    if (!peerAlreadyCounted) {
+      const candidates = existingPeerCandidates ?? new Map<string, number>();
+      candidates.set(keyHash, expiresAtMs);
+      this.peerCandidates.set(peerHash, candidates);
+    }
+
+    const verification = verifyApiKeyAgainstBackend(apiKey, this.config);
+    this.inFlight.set(keyHash, verification);
+    try {
+      const result = await verification;
+      const completedAtMs = Date.now();
+      if ('client' in result) {
+        this.positiveCache.set(keyHash, completedAtMs + API_KEY_POSITIVE_CACHE_TTL_MS);
+      } else if (result.error === 'invalid_api_key') {
+        this.negativeCache.set(keyHash, completedAtMs + API_KEY_NEGATIVE_CACHE_TTL_MS);
+      } else {
+        this.transientFailureCache.set(keyHash, {
+          expiresAtMs: completedAtMs + API_KEY_TRANSIENT_CACHE_TTL_MS,
+          result,
+        });
+      }
+      return result;
+    } finally {
+      if (this.inFlight.get(keyHash) === verification) {
+        this.inFlight.delete(keyHash);
+      }
+    }
   }
 }
 
@@ -348,7 +573,7 @@ function createMcpServer(client: VideoVectorClient): Server {
   const server = new Server(
     {
       name: 'videovector',
-      version: '2.0.0',
+      version: PACKAGE_VERSION,
     },
     {
       capabilities: {
@@ -427,10 +652,10 @@ export function authenticateRequestHeaders(
     };
   }
 
-  if (!isValidApiKeyFormat(apiKey)) {
+  if (!isValidPublicApiKeyFormat(apiKey)) {
     return {
       error: 'invalid_api_key',
-      message: 'API key must start with sk_live_ or sk_test_.',
+      message: 'API key must use the canonical public sk_live_ format.',
     };
   }
 
@@ -444,6 +669,56 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
   });
 
   const sessions = new Map<string, SessionContext>();
+  const apiKeyVerifier = new HttpApiKeyCandidateVerifier(
+    config,
+    config.apiKeyCandidatesPerPeer
+  );
+  const pendingSessionsByKey = new Map<string, number>();
+  let pendingSessionCount = 0;
+
+  const activeSessionCountForKey = (keyHash: Buffer): number => {
+    let count = 0;
+    for (const session of sessions.values()) {
+      if (
+        session.keyHash.length === keyHash.length &&
+        timingSafeEqual(session.keyHash, keyHash)
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  };
+
+  const sessionLoadForKey = (keyHash: Buffer, keyHashHex: string): number =>
+    activeSessionCountForKey(keyHash) + (pendingSessionsByKey.get(keyHashHex) ?? 0);
+
+  const releasePendingSession = (keyHashHex: string): void => {
+    pendingSessionCount = Math.max(0, pendingSessionCount - 1);
+    const remaining = (pendingSessionsByKey.get(keyHashHex) ?? 1) - 1;
+    if (remaining <= 0) {
+      pendingSessionsByKey.delete(keyHashHex);
+    } else {
+      pendingSessionsByKey.set(keyHashHex, remaining);
+    }
+  };
+
+  const cleanupExpiredSessions = async (nowMs: number = Date.now()): Promise<number> => {
+    const expired = Array.from(sessions.values()).filter(
+      (session) =>
+        session.absoluteExpiresAtMs <= nowMs ||
+        session.lastActivityAtMs + config.sessionIdleTtlMs <= nowMs
+    );
+    await Promise.all(
+      expired.map((session) =>
+        session.close({
+          closeTransport: true,
+          closeServer: true,
+          reason: 'session_expired',
+        })
+      )
+    );
+    return expired.length;
+  };
 
   if (config.allowedOrigins.length > 0) {
     const allowedHeaders = [
@@ -496,6 +771,7 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
   });
 
   app.post('/mcp', async (req: HttpRequest, res: HttpResponse) => {
+    await cleanupExpiredSessions();
     const auth = authenticateRequestHeaders(req.headers);
     if ('error' in auth) {
       res.status(401).json(auth);
@@ -522,6 +798,7 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
         return;
       }
 
+      existing.touch();
       await handleExistingSessionRequest(existing.transport, req, res, req.body);
       return;
     }
@@ -534,7 +811,20 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       return;
     }
 
-    if (sessions.size >= config.maxSessions) {
+    // Reject protocol-incompatible requests before a caller-controlled key can
+    // consume a backend verification attempt.
+    if (!acceptsStreamableHttpResponse(req.headers)) {
+      res.status(406).json({
+        error: 'not_acceptable',
+        message: 'Client must accept both application/json and text/event-stream.',
+      });
+      return;
+    }
+
+    const requestedKeyHash = hashApiKey(auth.apiKey);
+    const requestedKeyHashHex = requestedKeyHash.toString('hex');
+
+    if (sessions.size + pendingSessionCount >= config.maxSessions) {
       res.status(503).json({
         error: 'session_capacity_reached',
         message: 'MCP session capacity reached. Retry later.',
@@ -542,8 +832,25 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       return;
     }
 
-    const authCheck = await verifyApiKeyForHttpSession(auth.apiKey, config);
+    if (
+      sessionLoadForKey(requestedKeyHash, requestedKeyHashHex) >=
+      config.maxSessionsPerKey
+    ) {
+      res.status(429).json({
+        error: 'session_key_capacity_reached',
+        message: 'This API key has reached its concurrent MCP session limit.',
+      });
+      return;
+    }
+
+    const authCheck = await apiKeyVerifier.verify(
+      auth.apiKey,
+      hashDirectPeer(req)
+    );
     if ('error' in authCheck) {
+      if (authCheck.retryAfterSeconds) {
+        res.setHeader('Retry-After', String(authCheck.retryAfterSeconds));
+      }
       res.status(authCheck.status).json({
         error: authCheck.error,
         message: authCheck.message,
@@ -551,17 +858,90 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       return;
     }
 
+    await cleanupExpiredSessions();
+    if (sessions.size + pendingSessionCount >= config.maxSessions) {
+      res.status(503).json({
+        error: 'session_capacity_reached',
+        message: 'MCP session capacity reached. Retry later.',
+      });
+      return;
+    }
+    if (
+      sessionLoadForKey(requestedKeyHash, requestedKeyHashHex) >=
+      config.maxSessionsPerKey
+    ) {
+      res.status(429).json({
+        error: 'session_key_capacity_reached',
+        message: 'This API key has reached its concurrent MCP session limit.',
+      });
+      return;
+    }
+
+    pendingSessionCount += 1;
+    pendingSessionsByKey.set(
+      requestedKeyHashHex,
+      (pendingSessionsByKey.get(requestedKeyHashHex) ?? 0) + 1
+    );
+    let pendingReservationReleased = false;
+    const releasePendingReservation = (): void => {
+      if (pendingReservationReleased) {
+        return;
+      }
+      pendingReservationReleased = true;
+      releasePendingSession(requestedKeyHashHex);
+    };
+    res.once('finish', releasePendingReservation);
+    res.once('close', releasePendingReservation);
+
     const client = authCheck.client;
     const server = createMcpServer(client);
     let initializedSessionId: string | null = null;
     let closePromise: Promise<void> | null = null;
+    let expirationTimer: NodeJS.Timeout | null = null;
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       enableJsonResponse: config.enableJsonResponse,
       onsessioninitialized: (newSessionId) => {
         initializedSessionId = newSessionId;
-        const keyHash = hashApiKey(auth.apiKey);
+        const createdAtMs = Date.now();
+        const scheduleExpiration = (): void => {
+          if (expirationTimer) {
+            clearTimeout(expirationTimer);
+          }
+          const nowMs = Date.now();
+          const expiresAtMs = Math.min(
+            context.lastActivityAtMs + config.sessionIdleTtlMs,
+            context.absoluteExpiresAtMs
+          );
+          const delayMs = Math.min(
+            Math.max(1, expiresAtMs - nowMs),
+            MAX_TIMER_DELAY_MS
+          );
+          expirationTimer = setTimeout(() => {
+            const current = sessions.get(newSessionId);
+            if (current !== context) {
+              return;
+            }
+            const currentTimeMs = Date.now();
+            if (
+              context.absoluteExpiresAtMs <= currentTimeMs ||
+              context.lastActivityAtMs + config.sessionIdleTtlMs <= currentTimeMs
+            ) {
+              void context
+                .close({
+                  closeTransport: true,
+                  closeServer: true,
+                  reason: 'session_expired',
+                })
+                .catch(() => undefined);
+              return;
+            }
+            scheduleExpiration();
+          }, delayMs);
+          expirationTimer.unref();
+        };
+
         const closeSession = async (options: SessionCloseOptions = {}): Promise<void> => {
           const {
             closeTransport = true,
@@ -569,6 +949,10 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
             reason = 'session_close',
           } = options;
 
+          if (expirationTimer) {
+            clearTimeout(expirationTimer);
+            expirationTimer = null;
+          }
           if (closePromise) {
             return closePromise;
           }
@@ -606,13 +990,25 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
           return closePromise;
         };
 
-        sessions.set(newSessionId, {
+        const context: SessionContext = {
           sessionId: newSessionId,
           transport,
           server,
-          keyHash,
+          keyHash: requestedKeyHash,
+          createdAtMs,
+          lastActivityAtMs: createdAtMs,
+          absoluteExpiresAtMs: createdAtMs + config.sessionAbsoluteTtlMs,
+          touch: (nowMs: number = Date.now()) => {
+            if (closePromise) {
+              return;
+            }
+            context.lastActivityAtMs = Math.max(context.lastActivityAtMs, nowMs);
+            scheduleExpiration();
+          },
           close: closeSession,
-        });
+        };
+        sessions.set(newSessionId, context);
+        scheduleExpiration();
       },
     });
 
@@ -672,10 +1068,13 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
         });
       }
       await closePromise;
+    } finally {
+      releasePendingReservation();
     }
   });
 
   app.get('/mcp', async (req: HttpRequest, res: HttpResponse) => {
+    await cleanupExpiredSessions();
     const auth = authenticateRequestHeaders(req.headers);
     if ('error' in auth) {
       res.status(401).json(auth);
@@ -708,10 +1107,12 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       return;
     }
 
+    existing.touch();
     await handleExistingSessionRequest(existing.transport, req, res);
   });
 
   app.delete('/mcp', async (req: HttpRequest, res: HttpResponse) => {
+    await cleanupExpiredSessions();
     const auth = authenticateRequestHeaders(req.headers);
     if ('error' in auth) {
       res.status(401).json(auth);
@@ -744,10 +1145,11 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
       return;
     }
 
+    existing.touch();
     await handleExistingSessionRequest(existing.transport, req, res);
   });
 
-  return { app, sessions };
+  return { app, sessions, cleanupExpiredSessions };
 }
 
 export async function runHttpServer(config: HttpConfig): Promise<void> {

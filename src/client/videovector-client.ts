@@ -10,6 +10,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 
+import { PACKAGE_VERSION } from '../version.js';
 import {
   type Index,
   type Video,
@@ -78,6 +79,7 @@ const DEFAULT_TIMEOUT = 90000;
 const DEFAULT_MAX_RETRIES = 3;
 const RETRY_STATUS_CODES = [429, 500, 502, 503, 504];
 const INITIAL_RETRY_DELAY_MS = 1000;
+const AUTOMATIC_RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 function createIdempotencyKey(prefix: string, providedKey?: string): string {
   const candidate = providedKey?.trim();
@@ -113,6 +115,23 @@ function normalizeConnectorCreateBody<T extends { export_base_path?: unknown }>(
     delete body.export_base_path;
   }
   return body;
+}
+
+function hasStableIdempotencyKey(headers?: Record<string, string>): boolean {
+  return Object.entries(headers ?? {}).some(
+    ([name, value]) =>
+      name.toLowerCase() === 'idempotency-key' && value.trim().length > 0
+  );
+}
+
+function isAutomaticRetryAllowed(
+  method: string,
+  headers?: Record<string, string>
+): boolean {
+  return (
+    AUTOMATIC_RETRY_METHODS.has(method.toUpperCase()) ||
+    hasStableIdempotencyKey(headers)
+  );
 }
 
 // ============================================================================
@@ -157,6 +176,7 @@ export class VideoVectorClient {
     } = {}
   ): Promise<T> {
     const { body, query, headers: extraHeaders, retryCount = 0 } = options;
+    const allowRetry = isAutomaticRetryAllowed(method, extraHeaders);
 
     // Build URL with query parameters
     const url = new URL(`${this.baseUrl}${path}`);
@@ -180,7 +200,7 @@ export class VideoVectorClient {
     const headers: Record<string, string> = {
       'X-API-Key': this.apiKey,
       'Accept': 'application/json',
-      'User-Agent': 'videovector-mcp/2.0.0',
+      'User-Agent': `videovector-mcp/${PACKAGE_VERSION}`,
       ...extraHeaders,
     };
 
@@ -208,6 +228,7 @@ export class VideoVectorClient {
 
         // Check if we should retry
         if (
+          allowRetry &&
           retryCount < this.maxRetries &&
           RETRY_STATUS_CODES.includes(response.status)
         ) {
@@ -258,7 +279,7 @@ export class VideoVectorClient {
 
       // Handle network errors
       if (error instanceof TypeError && error.message.includes('fetch')) {
-        if (retryCount < this.maxRetries) {
+        if (allowRetry && retryCount < this.maxRetries) {
           const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, retryCount);
           await this.sleep(delay);
           return this.request<T>(method, path, {
@@ -972,7 +993,7 @@ export class VideoVectorClient {
     const headers: Record<string, string> = {
       'X-API-Key': this.apiKey,
       'Accept': 'application/json',
-      'User-Agent': 'videovector-mcp/2.0.0',
+      'User-Agent': `videovector-mcp/${PACKAGE_VERSION}`,
       ...extraHeaders,
       // Note: Content-Type is not set - fetch will set it with boundary for FormData
     };

@@ -3,19 +3,19 @@
   "name": "io.github.VectorMethods/videovector-mcp-server",
   "title": "VideoVector MCP Server",
   "description": "Model Context Protocol server for the VectorMethods VideoVector media intelligence API.",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@vectormethods/videovector-mcp-server",
-      "version": "2.0.1",
+      "version": "2.0.2",
       "transport": {
         "type": "stdio"
       }
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/vectormethods/videovector-mcp-server:2.0.1",
+      "identifier": "ghcr.io/vectormethods/videovector-mcp-server:2.0.2",
       "transport": {
         "type": "stdio"
       }

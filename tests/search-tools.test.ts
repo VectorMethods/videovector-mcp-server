@@ -269,6 +269,11 @@ describe('search tool handlers', () => {
   });
 
   it('search_videos preserves preview fields for video-level results', async () => {
+    const boundedMediaToken = ['pm2', 'opaque-grant', 'signature'].join('.');
+    const boundedMediaUrl = new URL(
+      `/api/v2/media/stream?${new URLSearchParams({ token: boundedMediaToken })}`,
+      'https://api.vectormethods.com'
+    ).toString();
     const client = {
       searchVideos: vi.fn().mockResolvedValue([
         {
@@ -287,13 +292,13 @@ describe('search tool handlers', () => {
           preview_start_time: 12.5,
           preview_end_time: 18,
           preview_segment_uri: 'gs://segments/seg_9.mp4',
-          preview_thumbnail_uri: 'https://example.com/thumb.jpg',
-          preview_gif_uri: 'https://example.com/preview.gif',
+          preview_thumbnail_uri: boundedMediaUrl,
+          preview_gif_uri: boundedMediaUrl,
           segment_uri: null,
-          thumbnail_uri: 'https://example.com/thumb.jpg',
+          thumbnail_uri: boundedMediaUrl,
           thumbnail_data: null,
           thumbnail_available: true,
-          gif_uri: 'https://example.com/preview.gif',
+          gif_uri: boundedMediaUrl,
           gif_data: null,
           gif_available: true,
           extracted_metadata: { summary: 'video-level summary' },
@@ -324,8 +329,10 @@ describe('search tool handlers', () => {
       preview_start_time: 12.5,
       preview_end_time: 18,
       preview_segment_uri: 'gs://segments/seg_9.mp4',
-      preview_thumbnail_uri: 'https://example.com/thumb.jpg',
-      preview_gif_uri: 'https://example.com/preview.gif',
+      preview_thumbnail_uri: boundedMediaUrl,
+      preview_gif_uri: boundedMediaUrl,
+      thumbnail_uri: boundedMediaUrl,
+      gif_uri: boundedMediaUrl,
       prompt_run_id: 'run_1',
       source_run_id: 'run_1',
     });
@@ -754,5 +761,56 @@ describe('search tool handlers', () => {
     expect(payload.code).toBe('invalid_api_key');
     expect(payload.recoverable).toBe(false);
     expect(String(payload.suggestion)).toContain('VIDEOVECTOR_API_KEY');
+  });
+
+  it.each([
+    {
+      statusCode: 409,
+      code: 'resource_quota_exceeded',
+      details: { resource: 'indexes', limit: 5, used: 5, reserved: 0 },
+      recoverable: true,
+      suggestion: 'Delete unused resources or upgrade',
+    },
+    {
+      statusCode: 429,
+      code: 'resource_rate_quota_exceeded',
+      details: { resource: 'ingested_bytes_per_day', reset_time: '2026-07-18T00:00:00Z' },
+      recoverable: true,
+      suggestion: 'quota reset time',
+    },
+    {
+      statusCode: 503,
+      code: 'llm_budget_guard_open',
+      details: undefined,
+      recoverable: true,
+      suggestion: 'global budget guard',
+    },
+  ])('preserves structured containment error $code', async ({
+    statusCode,
+    code,
+    details,
+    recoverable,
+    suggestion,
+  }) => {
+    const client = {
+      searchVideos: vi
+        .fn()
+        .mockRejectedValue(
+          new VideoVectorApiError('Containment guard rejected the request', code, statusCode, details)
+        ),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'search_videos',
+      { query: 'anything', index_id: 'idx_primary' },
+      client
+    );
+
+    const payload = parseContent(result);
+    expect(result.isError).toBe(true);
+    expect(payload.code).toBe(code);
+    expect(payload.details).toEqual(details);
+    expect(payload.recoverable).toBe(recoverable);
+    expect(String(payload.suggestion)).toContain(suggestion);
   });
 });

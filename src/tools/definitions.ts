@@ -261,6 +261,13 @@ const READ_ONLY_TOOLS = new Set<ToolName>([
   TOOL_NAMES.LIST_WEBHOOK_DELIVERIES,
 ]);
 
+// These operations do not mutate tenant state, but the backend deliberately
+// gates them behind write scope. Keep the MCP read-only annotation independent
+// from the API authorization contract.
+const WRITE_SCOPE_READ_ONLY_TOOLS = new Set<ToolName>([
+  TOOL_NAMES.TEST_PROMPT_SCHEMA,
+]);
+
 const DESTRUCTIVE_TOOLS = new Set<ToolName>([
   TOOL_NAMES.CANCEL_PROMPT_RUN,
   TOOL_NAMES.RETRY_PROMPT_RUN_SEGMENT,
@@ -274,11 +281,14 @@ export function getToolCategory(name: string): string {
 }
 
 export function getToolRequiredScope(name: string): ToolRequiredScope {
+  if (WRITE_SCOPE_READ_ONLY_TOOLS.has(name as ToolName)) {
+    return 'write';
+  }
   return READ_ONLY_TOOLS.has(name as ToolName) ? 'read' : 'write';
 }
 
 export function getToolAnnotations(name: string): NonNullable<Tool['annotations']> {
-  const readOnly = getToolRequiredScope(name) === 'read';
+  const readOnly = READ_ONLY_TOOLS.has(name as ToolName);
 
   return {
     readOnlyHint: readOnly,
@@ -1716,15 +1726,19 @@ Creates an asynchronous export job for the results of a single prompt execution.
   },
   {
     name: TOOL_NAMES.GET_EXPORT_STATUS,
-    description: `Get the status and download URL of an export job.
+    description: `Get the status and bounded download URL of an export job.
 
 Returns:
 - status: processing, completed, or failed
-- download_url: URL to download the exported file (when completed)
+- download_url: short-lived first-party URL for the completed exported file
 - file_size_bytes: size of the exported file
 - error_message: details if the export failed
 
-The download URL is temporary and expires after a period.`,
+The first-party download URL is a temporary bearer credential fixed to this
+export. Treat it as sensitive and do not log or share it. It expires shortly
+and is subject to request and byte ceilings. Do not load a large export into
+MCP context; use the VideoVector SDK/API streaming download or a connector
+destination instead.`,
     inputSchema: {
       type: 'object',
       properties: {

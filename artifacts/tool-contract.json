@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "server": {
     "name": "videovector",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "protocol": "mcp",
     "primary_transport": "stdio",
     "supported_transports": [
@@ -12,7 +12,7 @@
   },
   "package": {
     "name": "@vectormethods/videovector-mcp-server",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "bin": "videovector-mcp",
     "npm_install_command": "npx -y @vectormethods/videovector-mcp-server"
   },
@@ -1862,7 +1862,7 @@
         "openWorldHint": true
       },
       "category": "Prompt management",
-      "required_scope": "read"
+      "required_scope": "write"
     },
     {
       "name": "get_prompt_usage",
@@ -2502,7 +2502,7 @@
     },
     {
       "name": "get_export_status",
-      "description": "Get the status and download URL of an export job.\n\nReturns:\n- status: processing, completed, or failed\n- download_url: URL to download the exported file (when completed)\n- file_size_bytes: size of the exported file\n- error_message: details if the export failed\n\nThe download URL is temporary and expires after a period.",
+      "description": "Get the status and bounded download URL of an export job.\n\nReturns:\n- status: processing, completed, or failed\n- download_url: short-lived first-party URL for the completed exported file\n- file_size_bytes: size of the exported file\n- error_message: details if the export failed\n\nThe first-party download URL is a temporary bearer credential fixed to this\nexport. Treat it as sensitive and do not log or share it. It expires shortly\nand is subject to request and byte ceilings. Do not load a large export into\nMCP context; use the VideoVector SDK/API streaming download or a connector\ndestination instead.",
       "inputSchema": {
         "type": "object",
         "properties": {

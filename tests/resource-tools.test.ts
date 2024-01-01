@@ -61,6 +61,14 @@ describe('resource tool handlers', () => {
     expect(definition?.annotations?.idempotentHint).toBe(false);
   });
 
+  it('advertises the backend write scope for read-only prompt schema tests', () => {
+    const definition = getToolDefinition('test_prompt_schema');
+
+    expect(getToolRequiredScope('test_prompt_schema')).toBe('write');
+    expect(definition?.annotations?.readOnlyHint).toBe(true);
+    expect(definition?.annotations?.idempotentHint).toBe(true);
+  });
+
   it('execute_prompt requires canonical target and forwards expanded options', async () => {
     const client = {
       executePrompt: vi.fn().mockResolvedValue({
@@ -903,6 +911,31 @@ describe('resource tool handlers', () => {
       },
       'export-2'
     );
+  });
+
+  it('returns bounded export metadata without loading the export into MCP context', async () => {
+    const client = {
+      getExportStatus: vi.fn().mockResolvedValue({
+        export_id: 'exp_1',
+        export_type: 'index',
+        target_id: 'idx_1',
+        created_at: '2026-07-17T00:00:00Z',
+        status: 'completed',
+        download_url:
+          'https://api.vectormethods.com/api/v2/exports/exp_1/download?token=bounded-test-token',
+        file_size_bytes: 104857600,
+        error_message: null,
+      }),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool('get_export_status', { export_id: 'exp_1' }, client);
+    const payload = parseContent(result);
+
+    expect((client as any).getExportStatus).toHaveBeenCalledWith('exp_1');
+    expect(payload.file_size_bytes).toBe(104857600);
+    expect(String(payload.download_url)).toContain('/exports/exp_1/download?token=');
+    expect(String(payload.tip)).toContain('Treat the URL as sensitive');
+    expect(String(payload.tip)).toContain('instead of loading the export into MCP context');
   });
 
   it('deduplicates GCS connector creation retries when idempotency_key is reused', async () => {
