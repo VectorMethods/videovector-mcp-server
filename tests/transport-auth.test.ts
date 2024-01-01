@@ -573,6 +573,10 @@ describe('bounded API-key verifier', () => {
     });
 
     const active = verifier.verify(publicApiKey(200));
+    await vi.waitFor(() => {
+      expect(validate).toHaveBeenCalledTimes(1);
+      expect(verifier.getStats()).toMatchObject({ active: 1, queued: 0 });
+    });
     const queued = verifier.verify(publicApiKey(201));
     await vi.waitFor(() => expect(verifier.getStats().queued).toBe(1));
     const rejected = await verifier.verify(publicApiKey(202));
@@ -606,6 +610,10 @@ describe('bounded API-key verifier', () => {
     });
 
     const active = verifier.verify(publicApiKey(210));
+    await vi.waitFor(() => {
+      expect(validate).toHaveBeenCalledTimes(1);
+      expect(verifier.getStats()).toMatchObject({ active: 1, queued: 0 });
+    });
     const timedOut = await verifier.verify(publicApiKey(211));
     expect(timedOut).toMatchObject({
       ok: false,
