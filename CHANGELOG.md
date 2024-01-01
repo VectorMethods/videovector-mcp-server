@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.0.1 — Large discovery release smoke
+
+- Read the complete artifact discovery response through stdin so release validation supports tool schemas larger than the operating system environment-entry limit.
+- Validate the exact public tools plus the canonical app-only helper tools exposed by the runtime. Preserve the exact tool/version checks and the 4.0 application contract. The 4.0.0 tag remains unchanged and unpublished because its release smoke failed before registry publication.
+
 ## 4.0.0 — Standalone imported parts and grounded extraction
 
 This is a breaking contract release paired with the corresponding VideoVector API deployment.

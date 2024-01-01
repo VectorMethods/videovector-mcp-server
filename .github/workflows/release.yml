@@ -236,18 +236,16 @@ jobs:
           grep -Fq 'VIDEOVECTOR_API_KEY environment variable is required' \
             /tmp/npm-no-key.stderr
           api_key="sk_live_$(printf '0%.0s' {1..48})"
-          response="$(
-            {
-              printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"npm-release-smoke","version":"1.0.0"}}}'
-              printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-              printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-            } |
-              timeout 20s env VIDEOVECTOR_API_KEY="$api_key" \
-                node_modules/.bin/videovector-mcp
-          )"
-          RESPONSE="$response" node \
-            "$GITHUB_WORKSPACE/scripts/validate-stdio-smoke.mjs" \
-            "$GITHUB_WORKSPACE/artifacts/tool-contract.json"
+          response_file="$RUNNER_TEMP/npm-artifact-smoke-response.jsonl"
+          {
+            printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"npm-release-smoke","version":"1.0.0"}}}'
+            printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          } |
+            timeout 20s env VIDEOVECTOR_API_KEY="$api_key" \
+              node_modules/.bin/videovector-mcp > "$response_file"
+          node "$GITHUB_WORKSPACE/scripts/validate-stdio-smoke.mjs" \
+            "$GITHUB_WORKSPACE/artifacts/tool-contract.json" < "$response_file"
 
       - name: Archive and independently verify the fresh bundle
         if: ${{ needs.guard.outputs.resume != 'true' }}
