@@ -298,11 +298,18 @@ jobs:
               echo "First npm publish requires NPM_BOOTSTRAP_TOKEN in the npm environment." >&2
               exit 1
             fi
-            npm_config_userconfig="$(mktemp)"
-            export npm_config_userconfig
-            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_BOOTSTRAP_TOKEN" > "$npm_config_userconfig"
-            npm publish --access public
-            rm -f "$npm_config_userconfig"
+            bootstrap_userconfig="$(mktemp)"
+            trap 'rm -f "$bootstrap_userconfig"' EXIT
+            {
+              printf 'registry=https://registry.npmjs.org/\n'
+              printf '@vectormethods:registry=https://registry.npmjs.org/\n'
+              printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_BOOTSTRAP_TOKEN"
+              printf 'always-auth=true\n'
+            } > "$bootstrap_userconfig"
+            export NPM_CONFIG_USERCONFIG="$bootstrap_userconfig"
+            unset NODE_AUTH_TOKEN
+            npm whoami >/dev/null
+            npm publish --access public --registry https://registry.npmjs.org/
           fi
 
       - name: Install smoke from npm
