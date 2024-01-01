@@ -90,6 +90,7 @@ export interface Video {
   processing_status?: PromptRunProcessingStatus[] | null;
   created_at: string;
   updated_at: string;
+  duration_seconds?: number | null;
   metadata_keys: string[] | null;
   media_type: MediaType;
   marker: MarkerInfo;
@@ -235,80 +236,37 @@ export interface MultimodalSearchResult extends SearchResult {
 // Filter Search Types
 // ============================================================================
 
-// Backend canonical operators are normalized server-side, but we keep a union here for docs/tooling.
-// Note: legacy MCP aliases (eq/ne/gt/gte/lt/lte) are still accepted by the backend.
+// Backend canonical operators exposed by the public MCP filter_videos contract.
 export type FilterOperator =
   | 'equals'
-  | 'not_equals'
   | 'greater_than'
   | 'greater_equal'
   | 'less_than'
   | 'less_equal'
   | 'contains'
-  | 'not_contains'
-  | 'contains_word'
-  | 'not_contains_word'
   | 'starts_with'
-  | 'not_starts_with'
   | 'ends_with'
-  | 'not_ends_with'
-  | 'longer_than'
-  | 'shorter_than'
   | 'is_empty'
   | 'is_not_empty'
-  | 'is_null'
-  | 'is_not_null'
   | 'item_equals'
-  | 'item_not_equals'
   | 'item_contains'
-  | 'item_not_contains'
-  | 'item_starts_with'
-  | 'item_not_starts_with'
-  | 'item_ends_with'
-  | 'item_not_ends_with'
-  | 'item_contains_word'
-  | 'item_not_contains_word'
-  | 'all_items_contain'
-  | 'none_items_contain'
-  | 'all_items_contain_word'
-  | 'none_items_contain_word'
-  | 'all_items_equal'
   | 'length_equals'
-  | 'length_not_equals'
   | 'length_greater'
-  | 'length_less'
-  | 'length_greater_equal'
-  | 'length_less_equal'
-  // Legacy aliases (accepted server-side)
-  | 'eq'
-  | 'ne'
-  | 'gt'
-  | 'gte'
-  | 'lt'
-  | 'lte'
-  | 'not_item_equals'
-  | 'not_item_contains'
-  | 'not_item_starts_with'
-  | 'not_item_ends_with'
-  | 'all_contain'
-  | 'none_contain'
-  | 'all_contain_word'
-  | 'none_contain_word';
-export type FilterValueType = 'unknown' | 'string' | 'integer' | 'number' | 'boolean' | 'array';
+  | 'length_less';
+export type FilterValueType = 'string' | 'integer' | 'number' | 'boolean' | 'array';
 
 export interface FilterCondition {
   field: string;
   operator: FilterOperator;
-  value: unknown;
+  value?: unknown;
   type: FilterValueType;
-  fuzzyMatch?: boolean;
 }
 
 export interface FilterSearchRequest {
   conditions: FilterCondition[];
   page_size?: number;
-  start_after?: string | null;
-  run_ids?: string[] | null;
+  cursor?: string | null;
+  run_ids: string[];
   index_ids?: string[] | null;
 }
 

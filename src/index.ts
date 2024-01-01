@@ -19,8 +19,6 @@
  *   VIDEOVECTOR_TIMEOUT - Optional: Request timeout in ms (default: 90000)
  *   VIDEOVECTOR_MAX_RETRIES - Optional: Max retry attempts (default: 3)
  *
- * Legacy VIDEOSEARCH_* environment variables are still accepted as aliases.
- *
  * HTTP mode environment variables:
  *   PORT - Optional: HTTP port (default: 8080)
  *   MCP_HTTP_HOST - Optional: bind host (default: 0.0.0.0)
@@ -104,14 +102,6 @@ type HttpNext = () => void;
 
 const DEFAULT_BASE_URL = 'https://api.vectormethods.com/api/v2';
 
-function readEnv(name: string, legacyName?: string): string | undefined {
-  return process.env[name] ?? (legacyName ? process.env[legacyName] : undefined);
-}
-
-function displayEnvName(name: string, legacyName?: string): string {
-  return legacyName ? `${name} (or legacy ${legacyName})` : name;
-}
-
 export function readTransportMode(): TransportMode {
   const mode = (process.env.MCP_TRANSPORT_MODE ?? 'stdio').trim().toLowerCase();
 
@@ -123,30 +113,30 @@ export function readTransportMode(): TransportMode {
   process.exit(1);
 }
 
-export function readPositiveInteger(name: string, defaultValue: number, legacyName?: string): number {
-  const raw = readEnv(name, legacyName);
+export function readPositiveInteger(name: string, defaultValue: number): number {
+  const raw = process.env[name];
   if (raw === undefined) {
     return defaultValue;
   }
 
   const parsed = parseInt(raw, 10);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    console.error(`Error: ${displayEnvName(name, legacyName)} must be a positive integer, got "${raw}"`);
+    console.error(`Error: ${name} must be a positive integer, got "${raw}"`);
     process.exit(1);
   }
 
   return parsed;
 }
 
-export function readNonNegativeInteger(name: string, defaultValue: number, legacyName?: string): number {
-  const raw = readEnv(name, legacyName);
+export function readNonNegativeInteger(name: string, defaultValue: number): number {
+  const raw = process.env[name];
   if (raw === undefined) {
     return defaultValue;
   }
 
   const parsed = parseInt(raw, 10);
   if (!Number.isInteger(parsed) || parsed < 0) {
-    console.error(`Error: ${displayEnvName(name, legacyName)} must be a non-negative integer, got "${raw}"`);
+    console.error(`Error: ${name} must be a non-negative integer, got "${raw}"`);
     process.exit(1);
   }
 
@@ -180,9 +170,9 @@ export function readCsv(name: string): string[] {
 
 export function loadBaseConfig(): BaseConfig {
   return {
-    baseUrl: readEnv('VIDEOVECTOR_BASE_URL', 'VIDEOSEARCH_BASE_URL') ?? DEFAULT_BASE_URL,
-    timeout: readPositiveInteger('VIDEOVECTOR_TIMEOUT', 90000, 'VIDEOSEARCH_TIMEOUT'),
-    maxRetries: readNonNegativeInteger('VIDEOVECTOR_MAX_RETRIES', 3, 'VIDEOSEARCH_MAX_RETRIES'),
+    baseUrl: process.env.VIDEOVECTOR_BASE_URL ?? DEFAULT_BASE_URL,
+    timeout: readPositiveInteger('VIDEOVECTOR_TIMEOUT', 90000),
+    maxRetries: readNonNegativeInteger('VIDEOVECTOR_MAX_RETRIES', 3),
   };
 }
 
@@ -191,10 +181,9 @@ export function isValidApiKeyFormat(apiKey: string): boolean {
 }
 
 export function loadStdioConfig(baseConfig: BaseConfig): StdioConfig {
-  const apiKey = readEnv('VIDEOVECTOR_API_KEY', 'VIDEOSEARCH_API_KEY');
+  const apiKey = process.env.VIDEOVECTOR_API_KEY;
   if (!apiKey) {
     console.error('Error: VIDEOVECTOR_API_KEY environment variable is required in stdio mode');
-    console.error('Legacy VIDEOSEARCH_API_KEY is also accepted during the migration window.');
     console.error('');
     console.error('Usage:');
     console.error('  VIDEOVECTOR_API_KEY=sk_live_xxx videovector-mcp');

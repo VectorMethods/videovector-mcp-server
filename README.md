@@ -45,8 +45,6 @@ Environment variables:
 | `VIDEOVECTOR_MAX_RETRIES` | No | `3` | Retry count for retryable API failures. |
 | `MCP_TRANSPORT_MODE` | No | `stdio` | `stdio` or `http`. |
 
-Legacy `VIDEOSEARCH_*` aliases are accepted during migration, but new installs should use `VIDEOVECTOR_*`.
-
 ## Client Examples
 
 - Claude Desktop: [examples/claude-desktop.json](examples/claude-desktop.json)

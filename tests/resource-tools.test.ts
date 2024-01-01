@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { executeTool } from '../src/tools/index.js';
+import { executeTool, getToolDefinition, getToolRequiredScope } from '../src/tools/index.js';
 import type { VideoVectorClient } from '../src/client/index.js';
 
 function parseContent(result: Awaited<ReturnType<typeof executeTool>>): Record<string, unknown> {
@@ -53,6 +53,14 @@ function makeWebhookDelivery(status: 'pending' | 'processing' | 'delivered' | 'f
 }
 
 describe('resource tool handlers', () => {
+  it('marks test_connector as write-scoped because it mutates connector status', () => {
+    const definition = getToolDefinition('test_connector');
+
+    expect(getToolRequiredScope('test_connector')).toBe('write');
+    expect(definition?.annotations?.readOnlyHint).toBe(false);
+    expect(definition?.annotations?.idempotentHint).toBe(false);
+  });
+
   it('execute_prompt requires canonical target and forwards expanded options', async () => {
     const client = {
       executePrompt: vi.fn().mockResolvedValue({
@@ -230,6 +238,7 @@ describe('resource tool handlers', () => {
         ],
         created_at: '2026-01-01T00:00:00Z',
         updated_at: '2026-01-01T00:00:01Z',
+        duration_seconds: 61.25,
         metadata_keys: ['summary'],
         media_type: 'video',
         marker: {
@@ -245,6 +254,7 @@ describe('resource tool handlers', () => {
     const payload = parseContent(result);
 
     expect((client as any).getVideo).toHaveBeenCalledWith('vid_1');
+    expect(payload.duration_seconds).toBe(61.25);
     expect((payload.marker as Record<string, unknown>).marker_id).toBe('marker_1');
     const processingStatus = (payload.processing_status as Array<Record<string, unknown>>)[0];
     expect(processingStatus.attempt_id).toBe('attempt_1');

@@ -19,7 +19,7 @@
     "check:contract": "npm run build && node scripts/generate-contract.mjs --check",
     "check:examples": "node scripts/validate-examples.mjs",
     "verify": "npm run typecheck && npm run lint && npm run build && npm test && npm run check:contract && npm run check:examples",
-    "prepack": "npm run verify"
+    "prepack": "npm run generate:contract && npm run verify"
   },
   "keywords": [
     "mcp",

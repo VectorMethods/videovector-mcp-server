@@ -15,10 +15,12 @@ import type {
   ImageSearchResult,
   MultimodalSearchResult,
   FilterCondition,
+  FilterOperator,
+  FilterValueType,
   Segment,
   MarkerInfo,
 } from '../types/index.js';
-import { TOOL_NAMES } from './definitions.js';
+import { FILTER_CONDITION_VALIDATION, TOOL_NAMES } from './definitions.js';
 import { formatError, validateRequired } from '../utils/helpers.js';
 
 // ============================================================================
@@ -27,6 +29,24 @@ import { formatError, validateRequired } from '../utils/helpers.js';
 
 const SEGMENT_ENRICHMENT_MAX_PAGES = 10;
 const SEGMENT_ENRICHMENT_MIN_PAGE_SIZE = 20;
+const FILTER_OPERATORS_BY_TYPE = Object.fromEntries(
+  Object.entries(FILTER_CONDITION_VALIDATION.operators_by_type).map(([type, operators]) => [
+    type,
+    new Set(operators.map((operator) => operator.value)),
+  ])
+) as unknown as Record<FilterValueType, ReadonlySet<FilterOperator>>;
+const VALUELESS_FILTER_OPERATORS = new Set<FilterOperator>(
+  Object.values(FILTER_CONDITION_VALIDATION.operators_by_type)
+    .flat()
+    .filter((operator) => !operator.requires_value)
+    .map((operator) => operator.value)
+);
+const FILTER_CONDITION_ALLOWED_FIELDS = new Set<string>(
+  FILTER_CONDITION_VALIDATION.allowed_condition_fields
+);
+const FILTER_REQUEST_ALLOWED_FIELDS = new Set<string>(
+  FILTER_CONDITION_VALIDATION.allowed_request_fields
+);
 
 function formatMarker(marker?: MarkerInfo | null): Record<string, unknown> | null {
   if (!marker) {
@@ -224,6 +244,148 @@ function validateOptionalStringArray(
   }
 
   return value;
+}
+
+function validateRequiredStringArray(args: Record<string, unknown>, field: string): string[] {
+  const value = validateOptionalStringArray(args, field);
+  if (!value || value.length === 0) {
+    throw new Error(`Required parameter '${field}' must be a non-empty array of strings`);
+  }
+  return value;
+}
+
+function hasConditionValue(value: unknown): boolean {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (typeof value === 'string') {
+    return value.trim().length > 0;
+  }
+  return true;
+}
+
+function isJsonNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isJsonInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value);
+}
+
+function validateFilterValueType(
+  type: FilterValueType,
+  operator: FilterOperator,
+  value: unknown,
+  index: number
+): void {
+  const prefix = `Condition ${index + 1}`;
+  if (type === 'string') {
+    if (typeof value !== 'string') {
+      throw new Error(`${prefix}: value for type 'string' must be a string`);
+    }
+    return;
+  }
+  if (type === 'integer') {
+    if (!isJsonInteger(value)) {
+      throw new Error(`${prefix}: value for type 'integer' must be an integer`);
+    }
+    return;
+  }
+  if (type === 'number') {
+    if (!isJsonNumber(value)) {
+      throw new Error(`${prefix}: value for type 'number' must be a finite number`);
+    }
+    return;
+  }
+  if (type === 'boolean') {
+    if (typeof value !== 'boolean') {
+      throw new Error(`${prefix}: value for type 'boolean' must be a boolean`);
+    }
+    return;
+  }
+  if (type === 'array') {
+    if (operator === 'length_equals' || operator === 'length_greater' || operator === 'length_less') {
+      if (!isJsonInteger(value) || value < 0) {
+        throw new Error(`${prefix}: value for array length operators must be a non-negative integer`);
+      }
+      return;
+    }
+    if (operator === 'item_contains' && typeof value !== 'string') {
+      throw new Error(`${prefix}: value for operator 'item_contains' must be a string`);
+    }
+    if (
+      operator === 'item_equals' &&
+      (value === null ||
+        Array.isArray(value) ||
+        typeof value === 'object' ||
+        !['string', 'number', 'boolean'].includes(typeof value))
+    ) {
+      throw new Error(`${prefix}: value for operator 'item_equals' must be a string, number, or boolean`);
+    }
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new Error(`${prefix}: value for operator '${operator}' must be finite`);
+    }
+  }
+}
+
+function validateFilterCondition(cond: unknown, index: number): FilterCondition {
+  if (!cond || typeof cond !== 'object' || Array.isArray(cond)) {
+    throw new Error(`Condition ${index + 1}: must be an object`);
+  }
+
+  const condition = cond as Record<string, unknown>;
+  const unsupportedFields = Object.keys(condition).filter(
+    (field) => !FILTER_CONDITION_ALLOWED_FIELDS.has(field)
+  );
+  if (unsupportedFields.length > 0) {
+    throw new Error(
+      `Condition ${index + 1}: unsupported fields: ${unsupportedFields.sort().join(', ')}`
+    );
+  }
+  if (!condition.field || typeof condition.field !== 'string') {
+    throw new Error(`Condition ${index + 1}: 'field' is required and must be a string`);
+  }
+  if (!condition.operator || typeof condition.operator !== 'string') {
+    throw new Error(`Condition ${index + 1}: 'operator' is required and must be a string`);
+  }
+  if (!condition.type || typeof condition.type !== 'string') {
+    throw new Error(`Condition ${index + 1}: 'type' is required and must be a string`);
+  }
+
+  const type = condition.type as FilterValueType;
+  const operators = FILTER_OPERATORS_BY_TYPE[type];
+  if (!operators) {
+    throw new Error(`Condition ${index + 1}: unsupported filter type '${condition.type}'`);
+  }
+
+  const operator = condition.operator as FilterOperator;
+  if (!operators.has(operator)) {
+    throw new Error(`Condition ${index + 1}: unsupported operator '${condition.operator}' for type '${type}'`);
+  }
+
+  const hasValue = hasConditionValue(condition.value);
+  if (VALUELESS_FILTER_OPERATORS.has(operator)) {
+    if ('value' in condition) {
+      throw new Error(`Condition ${index + 1}: operator '${operator}' does not accept a value`);
+    }
+    return {
+      field: condition.field,
+      operator,
+      type,
+    };
+  }
+
+  if (!hasValue) {
+    throw new Error(`Condition ${index + 1}: operator '${operator}' requires a value`);
+  }
+  validateFilterValueType(type, operator, condition.value, index);
+
+  return {
+    field: condition.field,
+    operator,
+    value: condition.value,
+    type,
+  };
 }
 
 interface SegmentLookupGroup {
@@ -567,10 +729,22 @@ async function handleFilterVideos(
   args: Record<string, unknown>,
   client: VideoVectorClient
 ): Promise<ToolHandlerResult> {
+  if (FILTER_CONDITION_VALIDATION.pagination.forbidden_fields.some((field) => field in args)) {
+    throw new Error("'start_after' is not supported; use 'cursor'");
+  }
+  const unsupportedFields = Object.keys(args).filter(
+    (field) => !FILTER_REQUEST_ALLOWED_FIELDS.has(field)
+  );
+  if (unsupportedFields.length > 0) {
+    throw new Error(`Unsupported filter_videos fields: ${unsupportedFields.sort().join(', ')}`);
+  }
   const indexId = validateRequired<string>(args, 'index_id', 'string');
   const conditions = validateRequired<unknown[]>(args, 'conditions', 'object');
-  const startAfter = args.start_after as string | undefined;
-  const runIds = validateOptionalStringArray(args, 'run_ids');
+  const cursor = args.cursor;
+  if (cursor !== undefined && cursor !== null && typeof cursor !== 'string') {
+    throw new Error('cursor must be a string');
+  }
+  const runIds = validateRequiredStringArray(args, 'run_ids');
   const indexIds = validateOptionalStringArray(args, 'index_ids');
   const rawPageSize = args.page_size;
   const pageSize = rawPageSize !== undefined ? Number(rawPageSize) : 50;
@@ -579,45 +753,22 @@ async function handleFilterVideos(
   }
 
   // Validate conditions
-  if (!Array.isArray(conditions) || conditions.length === 0 || conditions.length > 5) {
-    throw new Error('conditions must be an array with 1-5 filter conditions');
+  if (
+    !Array.isArray(conditions) ||
+    conditions.length === 0 ||
+    conditions.length > FILTER_CONDITION_VALIDATION.max_conditions
+  ) {
+    throw new Error(
+      `conditions must be an array with 1-${FILTER_CONDITION_VALIDATION.max_conditions} filter conditions`
+    );
   }
 
-  const validatedConditions: FilterCondition[] = conditions.map((cond, index) => {
-    const condition = cond as Record<string, unknown>;
-    if (!condition.field || typeof condition.field !== 'string') {
-      throw new Error(`Condition ${index + 1}: 'field' is required and must be a string`);
-    }
-    if (!condition.operator || typeof condition.operator !== 'string') {
-      throw new Error(`Condition ${index + 1}: 'operator' is required and must be a string`);
-    }
-    if (condition.value === undefined) {
-      throw new Error(`Condition ${index + 1}: 'value' is required`);
-    }
-    if (!condition.type || typeof condition.type !== 'string') {
-      throw new Error(`Condition ${index + 1}: 'type' is required and must be a string`);
-    }
-    if (
-      condition.fuzzyMatch !== undefined &&
-      condition.fuzzyMatch !== null &&
-      typeof condition.fuzzyMatch !== 'boolean'
-    ) {
-      throw new Error(`Condition ${index + 1}: 'fuzzyMatch' must be a boolean when provided`);
-    }
-
-    return {
-      field: condition.field as string,
-      operator: condition.operator as FilterCondition['operator'],
-      value: condition.value,
-      type: condition.type as FilterCondition['type'],
-      fuzzyMatch: condition.fuzzyMatch as boolean | undefined,
-    };
-  });
+  const validatedConditions: FilterCondition[] = conditions.map(validateFilterCondition);
 
   const response = await client.filterSearch(indexId, {
     conditions: validatedConditions,
     page_size: Math.min(Math.max(pageSize, 1), 100),
-    start_after: startAfter,
+    cursor: cursor ?? undefined,
     run_ids: runIds,
     index_ids: indexIds,
   });

@@ -24,12 +24,6 @@
         "VIDEOVECTOR_BASE_URL",
         "VIDEOVECTOR_TIMEOUT",
         "VIDEOVECTOR_MAX_RETRIES"
-      ],
-      "legacy_aliases": [
-        "VIDEOSEARCH_API_KEY",
-        "VIDEOSEARCH_BASE_URL",
-        "VIDEOSEARCH_TIMEOUT",
-        "VIDEOSEARCH_MAX_RETRIES"
       ]
     }
   },
@@ -88,7 +82,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Search"
+      "category": "Search",
+      "required_scope": "read"
     },
     {
       "name": "search_videos_by_image",
@@ -137,7 +132,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Search"
+      "category": "Search",
+      "required_scope": "read"
     },
     {
       "name": "multimodal_search",
@@ -210,11 +206,12 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Search"
+      "category": "Search",
+      "required_scope": "read"
     },
     {
       "name": "filter_videos",
-      "description": "Filter video segments by metadata field values using exact matches, ranges, or contains queries.\n\nUse this tool for precise filtering when:\n- You need exact matches (e.g., object_type = \"vehicle\")\n- You need numeric ranges (e.g., confidence > 0.8)\n- You need to check if an array contains a value\n\nSupports up to 5 filter conditions combined with AND logic.",
+      "description": "Filter video segments by metadata field values using exact matches, ranges, or contains queries.\n\nUse this tool for precise filtering when:\n- You need exact matches (e.g., object_type = \"vehicle\")\n- You need numeric ranges (e.g., confidence > 0.8)\n- You need to check if an array contains a value\n\nSupports up to 4 filter conditions combined with AND logic.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -225,7 +222,7 @@
           "conditions": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 5,
+            "maxItems": 4,
             "items": {
               "type": "object",
               "properties": {
@@ -235,28 +232,619 @@
                 },
                 "operator": {
                   "type": "string",
-                  "description": "Canonical backend filter operator or accepted legacy alias. Validation is performed by the backend."
+                  "enum": [
+                    "contains",
+                    "ends_with",
+                    "equals",
+                    "greater_equal",
+                    "greater_than",
+                    "is_empty",
+                    "is_not_empty",
+                    "item_contains",
+                    "item_equals",
+                    "length_equals",
+                    "length_greater",
+                    "length_less",
+                    "less_equal",
+                    "less_than",
+                    "starts_with"
+                  ],
+                  "description": "Canonical backend filter operator."
                 },
                 "value": {
                   "description": "Value to compare against"
                 },
                 "type": {
                   "type": "string",
-                  "description": "Backend filter value type. Use the canonical backend value when possible."
-                },
-                "fuzzyMatch": {
-                  "type": "boolean",
-                  "description": "Enable fuzzy matching for string/array filters when supported by the backend."
+                  "enum": [
+                    "array",
+                    "boolean",
+                    "integer",
+                    "number",
+                    "string"
+                  ],
+                  "description": "Backend filter value type."
                 }
               },
               "required": [
                 "field",
                 "operator",
-                "value",
                 "type"
+              ],
+              "additionalProperties": false,
+              "oneOf": [
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "string"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "equals"
+                      ]
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "string"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "contains"
+                      ]
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "string"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "starts_with"
+                      ]
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "string"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "ends_with"
+                      ]
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "string"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "is_empty"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type"
+                  ],
+                  "not": {
+                    "required": [
+                      "value"
+                    ]
+                  }
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "string"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "is_not_empty"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type"
+                  ],
+                  "not": {
+                    "required": [
+                      "value"
+                    ]
+                  }
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "integer"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "equals"
+                      ]
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "integer"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "greater_than"
+                      ]
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "integer"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "greater_equal"
+                      ]
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "integer"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "less_than"
+                      ]
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "integer"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "less_equal"
+                      ]
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "number"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "equals"
+                      ]
+                    },
+                    "value": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "number"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "greater_than"
+                      ]
+                    },
+                    "value": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "number"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "greater_equal"
+                      ]
+                    },
+                    "value": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "number"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "less_than"
+                      ]
+                    },
+                    "value": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "number"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "less_equal"
+                      ]
+                    },
+                    "value": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "boolean"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "equals"
+                      ]
+                    },
+                    "value": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "array"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "item_equals"
+                      ]
+                    },
+                    "value": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "boolean"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "array"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "item_contains"
+                      ]
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "array"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "length_equals"
+                      ]
+                    },
+                    "value": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "array"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "length_greater"
+                      ]
+                    },
+                    "value": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "array"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "length_less"
+                      ]
+                    },
+                    "value": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type",
+                    "value"
+                  ]
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "array"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "is_empty"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type"
+                  ],
+                  "not": {
+                    "required": [
+                      "value"
+                    ]
+                  }
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "array"
+                      ]
+                    },
+                    "operator": {
+                      "enum": [
+                        "is_not_empty"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "field",
+                    "operator",
+                    "type"
+                  ],
+                  "not": {
+                    "required": [
+                      "value"
+                    ]
+                  }
+                }
               ]
             },
-            "description": "Filter conditions (1-5 conditions, combined with AND)"
+            "description": "Filter conditions (1-4 conditions, combined with AND)"
           },
           "page_size": {
             "type": "number",
@@ -265,15 +853,16 @@
             "maximum": 100,
             "description": "Number of results per page"
           },
-          "start_after": {
+          "cursor": {
             "type": "string",
-            "description": "Pagination cursor token from a previous filter response."
+            "description": "Opaque pagination cursor from a previous filter_videos response."
           },
           "run_ids": {
             "type": "array",
             "items": {
               "type": "string"
             },
+            "minItems": 1,
             "description": "Limit filtering to specific prompt runs."
           },
           "index_ids": {
@@ -286,8 +875,10 @@
         },
         "required": [
           "index_id",
+          "run_ids",
           "conditions"
-        ]
+        ],
+        "additionalProperties": false
       },
       "annotations": {
         "readOnlyHint": true,
@@ -295,7 +886,151 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Search"
+      "category": "Search",
+      "required_scope": "read",
+      "validation": {
+        "filter_conditions": {
+          "max_conditions": 4,
+          "allowed_request_fields": [
+            "index_id",
+            "conditions",
+            "page_size",
+            "cursor",
+            "run_ids",
+            "index_ids"
+          ],
+          "allowed_condition_fields": [
+            "field",
+            "operator",
+            "value",
+            "type"
+          ],
+          "supported_types": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "array"
+          ],
+          "operators_by_type": {
+            "string": [
+              {
+                "value": "equals",
+                "requires_value": true
+              },
+              {
+                "value": "contains",
+                "requires_value": true
+              },
+              {
+                "value": "starts_with",
+                "requires_value": true
+              },
+              {
+                "value": "ends_with",
+                "requires_value": true
+              },
+              {
+                "value": "is_empty",
+                "requires_value": false
+              },
+              {
+                "value": "is_not_empty",
+                "requires_value": false
+              }
+            ],
+            "integer": [
+              {
+                "value": "equals",
+                "requires_value": true
+              },
+              {
+                "value": "greater_than",
+                "requires_value": true
+              },
+              {
+                "value": "greater_equal",
+                "requires_value": true
+              },
+              {
+                "value": "less_than",
+                "requires_value": true
+              },
+              {
+                "value": "less_equal",
+                "requires_value": true
+              }
+            ],
+            "number": [
+              {
+                "value": "equals",
+                "requires_value": true
+              },
+              {
+                "value": "greater_than",
+                "requires_value": true
+              },
+              {
+                "value": "greater_equal",
+                "requires_value": true
+              },
+              {
+                "value": "less_than",
+                "requires_value": true
+              },
+              {
+                "value": "less_equal",
+                "requires_value": true
+              }
+            ],
+            "boolean": [
+              {
+                "value": "equals",
+                "requires_value": true
+              }
+            ],
+            "array": [
+              {
+                "value": "item_equals",
+                "requires_value": true
+              },
+              {
+                "value": "item_contains",
+                "requires_value": true
+              },
+              {
+                "value": "length_equals",
+                "requires_value": true
+              },
+              {
+                "value": "length_greater",
+                "requires_value": true
+              },
+              {
+                "value": "length_less",
+                "requires_value": true
+              },
+              {
+                "value": "is_empty",
+                "requires_value": false
+              },
+              {
+                "value": "is_not_empty",
+                "requires_value": false
+              }
+            ]
+          },
+          "forbidden_condition_fields": [
+            "fuzzyMatch"
+          ],
+          "pagination": {
+            "cursor_field": "cursor",
+            "forbidden_fields": [
+              "start_after"
+            ]
+          }
+        }
+      }
     },
     {
       "name": "list_indexes",
@@ -316,7 +1051,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Discovery"
+      "category": "Discovery",
+      "required_scope": "read"
     },
     {
       "name": "get_index",
@@ -339,7 +1075,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Discovery"
+      "category": "Discovery",
+      "required_scope": "read"
     },
     {
       "name": "list_prompts",
@@ -365,11 +1102,12 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Discovery"
+      "category": "Discovery",
+      "required_scope": "read"
     },
     {
       "name": "get_video",
-      "description": "Get detailed information about a specific video.\n\nReturns video metadata including title, overall status, and per-prompt-run segment processing snapshots (pending/processing/successful/failed), plus media type and timestamps.",
+      "description": "Get detailed information about a specific video.\n\nReturns video metadata including title, overall status, media type, duration_seconds, timestamps, and per-prompt-run segment processing snapshots (pending/processing/successful/failed).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -388,7 +1126,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Video"
+      "category": "Video",
+      "required_scope": "read"
     },
     {
       "name": "get_video_segments",
@@ -427,7 +1166,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Video"
+      "category": "Video",
+      "required_scope": "read"
     },
     {
       "name": "list_prompt_runs",
@@ -461,11 +1201,12 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "read"
     },
     {
       "name": "estimate_prompt_run",
-      "description": "Estimate the billing cost of a prompt run using the same configuration as execution.\n\nThis does not start processing. Use it before execute_prompt when the user wants pricing or balance confirmation.",
+      "description": "Estimate the billing cost of a prompt run using the same configuration as execution.\n\nThis does not start processing. Video/audio targets must already have server-measured duration metadata; otherwise the backend returns a duration validation error. Use it before execute_prompt when the user wants pricing or balance confirmation.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -559,11 +1300,12 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "read"
     },
     {
       "name": "execute_prompt",
-      "description": "Execute an analysis prompt against an index, specific videos, or playground media.\n\nThis starts an asynchronous processing job that analyzes videos with the specified prompt. The prompt defines what information to extract using its JSON schema.\n\nReturns immediately with a run_id. Use get_prompt_run_status to check progress.\n\nNote: For large indexes, processing may take several minutes. Consider using webhooks for production workflows.",
+      "description": "Execute an analysis prompt against an index, specific videos, or playground media.\n\nThis starts an asynchronous processing job that analyzes videos with the specified prompt. The prompt defines what information to extract using its JSON schema.\n\nVideo/audio targets must already have server-measured duration metadata before execution. Returns immediately with a run_id. Use get_prompt_run_status to check progress.\n\nNote: For large indexes, processing may take several minutes. Consider using webhooks for production workflows.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -633,7 +1375,7 @@
           },
           "processing_model": {
             "type": "string",
-            "description": "Optional model override for prompt execution (e.g., gemini-2.5-flash, gemini-2.5-pro, gemini-3-pro-preview)."
+            "description": "Optional model override for prompt execution. Supported values are published by /billing/pricing processing_model_options."
           },
           "enable_transcription": {
             "type": "boolean",
@@ -661,7 +1403,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "write"
     },
     {
       "name": "get_prompt_run_status",
@@ -684,7 +1427,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "read"
     },
     {
       "name": "cancel_prompt_run",
@@ -711,7 +1455,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "write"
     },
     {
       "name": "get_prompt_run_results",
@@ -746,7 +1491,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "read"
     },
     {
       "name": "get_prompt_run_video_result",
@@ -774,7 +1520,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "read"
     },
     {
       "name": "get_prompt_run_failed_segments",
@@ -797,7 +1544,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "read"
     },
     {
       "name": "retry_prompt_run_segment",
@@ -834,7 +1582,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "write"
     },
     {
       "name": "get_prompt_run_segment_retry_status",
@@ -872,7 +1621,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt runs"
+      "category": "Prompt runs",
+      "required_scope": "read"
     },
     {
       "name": "create_prompt",
@@ -961,7 +1711,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Prompt management"
+      "category": "Prompt management",
+      "required_scope": "write"
     },
     {
       "name": "get_prompt",
@@ -984,7 +1735,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt management"
+      "category": "Prompt management",
+      "required_scope": "read"
     },
     {
       "name": "update_prompt",
@@ -1080,7 +1832,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Prompt management"
+      "category": "Prompt management",
+      "required_scope": "write"
     },
     {
       "name": "test_prompt_schema",
@@ -1108,7 +1861,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt management"
+      "category": "Prompt management",
+      "required_scope": "read"
     },
     {
       "name": "get_prompt_usage",
@@ -1131,7 +1885,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Prompt management"
+      "category": "Prompt management",
+      "required_scope": "read"
     },
     {
       "name": "create_gcs_connector",
@@ -1202,7 +1957,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Cloud connectors"
+      "category": "Cloud connectors",
+      "required_scope": "write"
     },
     {
       "name": "create_s3_connector",
@@ -1278,7 +2034,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Cloud connectors"
+      "category": "Cloud connectors",
+      "required_scope": "write"
     },
     {
       "name": "create_azure_connector",
@@ -1359,7 +2116,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Cloud connectors"
+      "category": "Cloud connectors",
+      "required_scope": "write"
     },
     {
       "name": "list_connectors",
@@ -1374,7 +2132,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Cloud connectors"
+      "category": "Cloud connectors",
+      "required_scope": "read"
     },
     {
       "name": "test_connector",
@@ -1392,12 +2151,13 @@
         ]
       },
       "annotations": {
-        "readOnlyHint": true,
+        "readOnlyHint": false,
         "destructiveHint": false,
-        "idempotentHint": true,
+        "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Cloud connectors"
+      "category": "Cloud connectors",
+      "required_scope": "write"
     },
     {
       "name": "browse_connector_files",
@@ -1435,7 +2195,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Cloud connectors"
+      "category": "Cloud connectors",
+      "required_scope": "read"
     },
     {
       "name": "create_import_job",
@@ -1482,7 +2243,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Import jobs"
+      "category": "Import jobs",
+      "required_scope": "write"
     },
     {
       "name": "list_import_jobs",
@@ -1510,7 +2272,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Import jobs"
+      "category": "Import jobs",
+      "required_scope": "read"
     },
     {
       "name": "get_import_job",
@@ -1533,7 +2296,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Import jobs"
+      "category": "Import jobs",
+      "required_scope": "read"
     },
     {
       "name": "cancel_import_job",
@@ -1560,7 +2324,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Import jobs"
+      "category": "Import jobs",
+      "required_scope": "write"
     },
     {
       "name": "create_index",
@@ -1589,7 +2354,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Indexes"
+      "category": "Indexes",
+      "required_scope": "write"
     },
     {
       "name": "list_videos",
@@ -1623,7 +2389,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Videos"
+      "category": "Videos",
+      "required_scope": "read"
     },
     {
       "name": "get_videos_status",
@@ -1651,7 +2418,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Videos"
+      "category": "Videos",
+      "required_scope": "read"
     },
     {
       "name": "export_index_metadata",
@@ -1693,7 +2461,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Exports"
+      "category": "Exports",
+      "required_scope": "write"
     },
     {
       "name": "export_prompt_run",
@@ -1728,7 +2497,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Exports"
+      "category": "Exports",
+      "required_scope": "write"
     },
     {
       "name": "get_export_status",
@@ -1751,7 +2521,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Exports"
+      "category": "Exports",
+      "required_scope": "read"
     },
     {
       "name": "create_webhook",
@@ -1805,7 +2576,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Webhooks"
+      "category": "Webhooks",
+      "required_scope": "write"
     },
     {
       "name": "list_webhooks",
@@ -1820,7 +2592,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Webhooks"
+      "category": "Webhooks",
+      "required_scope": "read"
     },
     {
       "name": "get_webhook",
@@ -1843,7 +2616,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Webhooks"
+      "category": "Webhooks",
+      "required_scope": "read"
     },
     {
       "name": "update_webhook",
@@ -1907,7 +2681,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Webhooks"
+      "category": "Webhooks",
+      "required_scope": "write"
     },
     {
       "name": "list_webhook_events",
@@ -1922,7 +2697,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Webhooks"
+      "category": "Webhooks",
+      "required_scope": "read"
     },
     {
       "name": "test_webhook",
@@ -1949,7 +2725,8 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "category": "Webhooks"
+      "category": "Webhooks",
+      "required_scope": "write"
     },
     {
       "name": "list_webhook_deliveries",
@@ -1990,7 +2767,8 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "category": "Webhooks"
+      "category": "Webhooks",
+      "required_scope": "read"
     }
   ]
 }

@@ -2,7 +2,14 @@
  * Tools exports
  */
 
-export { TOOL_NAMES, TOOL_DEFINITIONS, getToolDefinition, type ToolName } from './definitions.js';
+export {
+  TOOL_NAMES,
+  TOOL_DEFINITIONS,
+  getToolDefinition,
+  getToolRequiredScope,
+  type ToolName,
+  type ToolRequiredScope,
+} from './definitions.js';
 export {
   SEARCH_HANDLERS,
   isSearchTool,

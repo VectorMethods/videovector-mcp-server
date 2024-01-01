@@ -35,7 +35,12 @@ function writeOrCheck(relativePath, value) {
 
 const packageJson = readJson('package.json');
 const definitionsUrl = pathToFileURL(path.join(rootDir, 'dist', 'tools', 'definitions.js'));
-const { TOOL_DEFINITIONS, getToolCategory } = await import(definitionsUrl.href);
+const {
+  FILTER_CONDITION_VALIDATION,
+  TOOL_DEFINITIONS,
+  getToolCategory,
+  getToolRequiredScope,
+} = await import(definitionsUrl.href);
 
 const contract = {
   schema_version: '1.0.0',
@@ -56,13 +61,23 @@ const contract = {
     default_base_url: 'https://api.vectormethods.com/api/v2',
     env: {
       canonical: ['VIDEOVECTOR_API_KEY', 'VIDEOVECTOR_BASE_URL', 'VIDEOVECTOR_TIMEOUT', 'VIDEOVECTOR_MAX_RETRIES'],
-      legacy_aliases: ['VIDEOSEARCH_API_KEY', 'VIDEOSEARCH_BASE_URL', 'VIDEOSEARCH_TIMEOUT', 'VIDEOSEARCH_MAX_RETRIES'],
     },
   },
-  tools: TOOL_DEFINITIONS.map((tool) => ({
-    ...tool,
-    category: getToolCategory(tool.name),
-  })),
+  tools: TOOL_DEFINITIONS.map((tool) => {
+    const contractTool = {
+      ...tool,
+      category: getToolCategory(tool.name),
+      required_scope: getToolRequiredScope(tool.name),
+    };
+
+    if (tool.name === 'filter_videos') {
+      contractTool.validation = {
+        filter_conditions: FILTER_CONDITION_VALIDATION,
+      };
+    }
+
+    return contractTool;
+  }),
 };
 
 const releaseMetadata = {

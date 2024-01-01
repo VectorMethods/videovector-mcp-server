@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 
 import {
   createHttpApp,
+  loadBaseConfig,
   loadStdioConfig,
   authenticateRequestHeaders,
   type BaseConfig,
@@ -232,9 +233,7 @@ describe('http transport origin policy and preflight', () => {
 describe('stdio transport configuration', () => {
   it('requires VIDEOVECTOR_API_KEY in stdio mode', () => {
     const original = process.env.VIDEOVECTOR_API_KEY;
-    const originalLegacy = process.env.VIDEOSEARCH_API_KEY;
     delete process.env.VIDEOVECTOR_API_KEY;
-    delete process.env.VIDEOSEARCH_API_KEY;
 
     const exitSpy = vi
       .spyOn(process, 'exit')
@@ -252,18 +251,11 @@ describe('stdio transport configuration', () => {
     } else {
       process.env.VIDEOVECTOR_API_KEY = original;
     }
-    if (originalLegacy === undefined) {
-      delete process.env.VIDEOSEARCH_API_KEY;
-    } else {
-      process.env.VIDEOSEARCH_API_KEY = originalLegacy;
-    }
   });
 
   it('accepts valid API key format for stdio mode', () => {
     const original = process.env.VIDEOVECTOR_API_KEY;
-    const originalLegacy = process.env.VIDEOSEARCH_API_KEY;
     process.env.VIDEOVECTOR_API_KEY = 'sk_live_v';
-    delete process.env.VIDEOSEARCH_API_KEY;
 
     const config = loadStdioConfig(baseConfig);
     expect(config.apiKey).toBe('sk_live_v');
@@ -273,31 +265,57 @@ describe('stdio transport configuration', () => {
     } else {
       process.env.VIDEOVECTOR_API_KEY = original;
     }
-    if (originalLegacy === undefined) {
-      delete process.env.VIDEOSEARCH_API_KEY;
-    } else {
-      process.env.VIDEOSEARCH_API_KEY = originalLegacy;
-    }
   });
 
-  it('accepts legacy VIDEOSEARCH_API_KEY during migration', () => {
+  it('ignores obsolete API key environment aliases', () => {
     const original = process.env.VIDEOVECTOR_API_KEY;
-    const originalLegacy = process.env.VIDEOSEARCH_API_KEY;
+    const obsoleteApiKeyEnv = 'VIDEO' + 'SEARCH_API_KEY';
+    const originalObsolete = process.env[obsoleteApiKeyEnv];
     delete process.env.VIDEOVECTOR_API_KEY;
-    process.env.VIDEOSEARCH_API_KEY = 'sk_test_l';
+    process.env[obsoleteApiKeyEnv] = 'sk_test_l';
 
-    const config = loadStdioConfig(baseConfig);
-    expect(config.apiKey).toBe('sk_test_l');
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation(((code?: number) => {
+        throw new Error(`process.exit:${code ?? 0}`);
+      }) as never);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(() => loadStdioConfig(baseConfig)).toThrow('process.exit:1');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith('Error: VIDEOVECTOR_API_KEY environment variable is required in stdio mode');
 
     if (original === undefined) {
       delete process.env.VIDEOVECTOR_API_KEY;
     } else {
       process.env.VIDEOVECTOR_API_KEY = original;
     }
-    if (originalLegacy === undefined) {
-      delete process.env.VIDEOSEARCH_API_KEY;
+    if (originalObsolete === undefined) {
+      delete process.env[obsoleteApiKeyEnv];
     } else {
-      process.env.VIDEOSEARCH_API_KEY = originalLegacy;
+      process.env[obsoleteApiKeyEnv] = originalObsolete;
+    }
+  });
+
+  it('ignores obsolete base URL environment aliases', () => {
+    const original = process.env.VIDEOVECTOR_BASE_URL;
+    const obsoleteBaseUrlEnv = 'VIDEO' + 'SEARCH_BASE_URL';
+    const originalObsolete = process.env[obsoleteBaseUrlEnv];
+    delete process.env.VIDEOVECTOR_BASE_URL;
+    process.env[obsoleteBaseUrlEnv] = 'https://obsolete.example/api/v2';
+
+    const config = loadBaseConfig();
+    expect(config.baseUrl).toBe(baseConfig.baseUrl);
+
+    if (original === undefined) {
+      delete process.env.VIDEOVECTOR_BASE_URL;
+    } else {
+      process.env.VIDEOVECTOR_BASE_URL = original;
+    }
+    if (originalObsolete === undefined) {
+      delete process.env[obsoleteBaseUrlEnv];
+    } else {
+      process.env[obsoleteBaseUrlEnv] = originalObsolete;
     }
   });
 });

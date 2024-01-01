@@ -394,6 +394,7 @@ function formatVideo(video: Video, includeSegmentStatuses = false): Record<strin
     ),
     created_at: video.created_at,
     updated_at: video.updated_at,
+    duration_seconds: video.duration_seconds ?? null,
     metadata_keys: video.metadata_keys,
     marker: formatMarker(video.marker),
   };

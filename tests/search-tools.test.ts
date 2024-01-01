@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { executeTool } from '../src/tools/index.js';
+import { executeTool, getToolDefinition } from '../src/tools/index.js';
 import type { VideoVectorClient } from '../src/client/index.js';
 import { VideoVectorApiError } from '../src/types/index.js';
 
@@ -461,7 +461,7 @@ describe('search tool handlers', () => {
     expect((client as any).searchMultimodal).not.toHaveBeenCalled();
   });
 
-  it('filter_videos forwards fuzzyMatch, run_ids, index_ids, and start_after', async () => {
+  it('filter_videos forwards cursor, run_ids, and index_ids', async () => {
     const client = {
       filterSearch: vi.fn().mockResolvedValue({
         results: [baseSearchResult],
@@ -477,14 +477,13 @@ describe('search tool handlers', () => {
         conditions: [
           {
             field: 'title',
-            operator: 'contains_word',
+            operator: 'contains',
             value: 'launch',
-            type: 'unknown',
-            fuzzyMatch: true,
+            type: 'string',
           },
         ],
         page_size: 75,
-        start_after: 'cursor_1',
+        cursor: 'cursor_1',
         run_ids: ['run_1'],
         index_ids: ['idx_primary'],
       },
@@ -495,20 +494,19 @@ describe('search tool handlers', () => {
       conditions: [
         {
           field: 'title',
-          operator: 'contains_word',
+          operator: 'contains',
           value: 'launch',
-          type: 'unknown',
-          fuzzyMatch: true,
+          type: 'string',
         },
       ],
       page_size: 75,
-      start_after: 'cursor_1',
+      cursor: 'cursor_1',
       run_ids: ['run_1'],
       index_ids: ['idx_primary'],
     });
   });
 
-  it('filter_videos accepts up to five backend-valid conditions', async () => {
+  it('filter_videos accepts up to four backend-valid conditions', async () => {
     const client = {
       filterSearch: vi.fn().mockResolvedValue({
         results: [baseSearchResult],
@@ -521,19 +519,221 @@ describe('search tool handlers', () => {
       'filter_videos',
       {
         index_id: 'idx_primary',
+        run_ids: ['run_1'],
         conditions: [
           { field: 'title', operator: 'contains', value: 'launch', type: 'string' },
           { field: 'duration', operator: 'greater_equal', value: 10, type: 'number' },
-          { field: 'status', operator: 'not_equals', value: 'failed', type: 'string' },
           { field: 'labels', operator: 'item_contains', value: 'car', type: 'array' },
-          { field: 'custom_field', operator: 'is_not_null', value: true, type: 'unknown' },
+          { field: 'transcript', operator: 'is_not_empty', type: 'string' },
         ],
       },
       client
     );
 
     expect((client as any).filterSearch).toHaveBeenCalled();
-    expect(((client as any).filterSearch.mock.calls[0]?.[1]?.conditions as unknown[]).length).toBe(5);
+    expect(((client as any).filterSearch.mock.calls[0]?.[1]?.conditions as unknown[]).length).toBe(4);
+  });
+
+  it('filter_videos schema encodes condition value requirements', () => {
+    const definition = getToolDefinition('filter_videos');
+    expect(definition?.inputSchema.additionalProperties).toBe(false);
+    const conditionsSchema = (definition?.inputSchema.properties?.conditions as any)?.items;
+    const variants = conditionsSchema?.oneOf as Array<Record<string, any>>;
+
+    const containsVariant = variants.find(
+      (variant) =>
+        variant.properties?.type?.enum?.[0] === 'string' &&
+        variant.properties?.operator?.enum?.[0] === 'contains'
+    );
+    const emptyVariant = variants.find(
+      (variant) =>
+        variant.properties?.type?.enum?.[0] === 'string' &&
+        variant.properties?.operator?.enum?.[0] === 'is_empty'
+    );
+    const numberVariant = variants.find(
+      (variant) =>
+        variant.properties?.type?.enum?.[0] === 'number' &&
+        variant.properties?.operator?.enum?.[0] === 'greater_equal'
+    );
+    const lengthVariant = variants.find(
+      (variant) =>
+        variant.properties?.type?.enum?.[0] === 'array' &&
+        variant.properties?.operator?.enum?.[0] === 'length_greater'
+    );
+
+    expect(containsVariant?.required).toContain('value');
+    expect(containsVariant?.properties?.value).toEqual({ type: 'string' });
+    expect(numberVariant?.properties?.value).toEqual({ type: 'number' });
+    expect(lengthVariant?.properties?.value).toEqual({ type: 'integer', minimum: 0 });
+    expect(emptyVariant?.required).not.toContain('value');
+    expect(emptyVariant?.not).toEqual({ required: ['value'] });
+    expect(conditionsSchema?.additionalProperties).toBe(false);
+  });
+
+  it('filter_videos rejects value-bearing operators without a value', async () => {
+    const client = {
+      filterSearch: vi.fn(),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'filter_videos',
+      {
+        index_id: 'idx_primary',
+        run_ids: ['run_1'],
+        conditions: [{ field: 'title', operator: 'contains', type: 'string' }],
+      },
+      client
+    );
+
+    const payload = parseContent(result);
+    expect(result.isError).toBe(true);
+    expect(String(payload.message)).toContain("operator 'contains' requires a value");
+    expect((client as any).filterSearch).not.toHaveBeenCalled();
+  });
+
+  it('filter_videos rejects any value field on value-less operators', async () => {
+    const client = {
+      filterSearch: vi.fn(),
+    } as unknown as VideoVectorClient;
+
+    for (const value of ['x', null, '']) {
+      const result = await executeTool(
+        'filter_videos',
+        {
+          index_id: 'idx_primary',
+          run_ids: ['run_1'],
+          conditions: [{ field: 'transcript', operator: 'is_empty', value, type: 'string' }],
+        },
+        client
+      );
+
+      const payload = parseContent(result);
+      expect(result.isError).toBe(true);
+      expect(String(payload.message)).toContain("operator 'is_empty' does not accept a value");
+    }
+    expect((client as any).filterSearch).not.toHaveBeenCalled();
+  });
+
+  it('filter_videos rejects invalid operator and type combinations', async () => {
+    const client = {
+      filterSearch: vi.fn(),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'filter_videos',
+      {
+        index_id: 'idx_primary',
+        run_ids: ['run_1'],
+        conditions: [{ field: 'title', operator: 'greater_equal', value: 'launch', type: 'string' }],
+      },
+      client
+    );
+
+    const payload = parseContent(result);
+    expect(result.isError).toBe(true);
+    expect(String(payload.message)).toContain("unsupported operator 'greater_equal' for type 'string'");
+    expect((client as any).filterSearch).not.toHaveBeenCalled();
+  });
+
+  it('filter_videos rejects values that do not match canonical JSON types', async () => {
+    const client = {
+      filterSearch: vi.fn(),
+    } as unknown as VideoVectorClient;
+
+    for (const condition of [
+      { field: 'score', operator: 'greater_equal', value: '0.8', type: 'number' },
+      { field: 'enabled', operator: 'equals', value: 'false', type: 'boolean' },
+      { field: 'count', operator: 'greater_than', value: 1.2, type: 'integer' },
+      { field: 'tags', operator: 'item_contains', value: 3, type: 'array' },
+      { field: 'tags', operator: 'length_greater', value: -1, type: 'array' },
+    ]) {
+      const result = await executeTool(
+        'filter_videos',
+        {
+          index_id: 'idx_primary',
+          run_ids: ['run_1'],
+          conditions: [condition],
+        },
+        client
+      );
+
+      expect(result.isError).toBe(true);
+    }
+
+    expect((client as any).filterSearch).not.toHaveBeenCalled();
+  });
+
+  it('filter_videos rejects obsolete filter fields and types', async () => {
+    const client = {
+      filterSearch: vi.fn(),
+    } as unknown as VideoVectorClient;
+
+    for (const args of [
+      {
+        index_id: 'idx_primary',
+        run_ids: ['run_1'],
+        start_after: 'cursor_1',
+        conditions: [{ field: 'title', operator: 'contains', value: 'launch', type: 'string' }],
+      },
+      {
+        index_id: 'idx_primary',
+        run_ids: ['run_1'],
+        conditions: [
+          {
+            field: 'title',
+            operator: 'contains',
+            value: 'launch',
+            type: 'string',
+            fuzzyMatch: true,
+          },
+        ],
+      },
+      {
+        index_id: 'idx_primary',
+        run_ids: ['run_1'],
+        conditions: [{ field: 'title', operator: 'contains', value: 'launch', type: 'unknown' }],
+      },
+      {
+        index_id: 'idx_primary',
+        run_ids: ['run_1'],
+        legacy: true,
+        conditions: [{ field: 'title', operator: 'contains', value: 'launch', type: 'string' }],
+      },
+      {
+        index_id: 'idx_primary',
+        run_ids: ['run_1'],
+        conditions: [
+          { field: 'title', operator: 'contains', value: 'launch', type: 'string', extra: true },
+        ],
+      },
+    ]) {
+      const result = await executeTool('filter_videos', args, client);
+      expect(result.isError).toBe(true);
+    }
+
+    expect((client as any).filterSearch).not.toHaveBeenCalled();
+  });
+
+  it('filter_videos requires run_ids', async () => {
+    const client = {
+      filterSearch: vi.fn(),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'filter_videos',
+      {
+        index_id: 'idx_primary',
+        conditions: [
+          { field: 'title', operator: 'contains', value: 'launch', type: 'string' },
+        ],
+      },
+      client
+    );
+
+    const payload = parseContent(result);
+    expect(result.isError).toBe(true);
+    expect(String(payload.message)).toContain("Required parameter 'run_ids'");
+    expect((client as any).filterSearch).not.toHaveBeenCalled();
   });
 
   it('maps backend API errors to MCP-friendly error payloads', async () => {

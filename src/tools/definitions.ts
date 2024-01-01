@@ -83,6 +83,7 @@ export const TOOL_NAMES = {
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
+export type ToolRequiredScope = 'read' | 'write';
 
 export const TOOL_CATEGORIES: Record<ToolName, string> = {
   [TOOL_NAMES.SEARCH_VIDEOS]: 'Search',
@@ -134,6 +135,99 @@ export const TOOL_CATEGORIES: Record<ToolName, string> = {
   [TOOL_NAMES.LIST_WEBHOOK_DELIVERIES]: 'Webhooks',
 };
 
+export const FILTER_CONDITION_VALIDATION = {
+  max_conditions: 4,
+  allowed_request_fields: ['index_id', 'conditions', 'page_size', 'cursor', 'run_ids', 'index_ids'],
+  allowed_condition_fields: ['field', 'operator', 'value', 'type'],
+  supported_types: ['string', 'integer', 'number', 'boolean', 'array'],
+  operators_by_type: {
+    string: [
+      { value: 'equals', requires_value: true },
+      { value: 'contains', requires_value: true },
+      { value: 'starts_with', requires_value: true },
+      { value: 'ends_with', requires_value: true },
+      { value: 'is_empty', requires_value: false },
+      { value: 'is_not_empty', requires_value: false },
+    ],
+    integer: [
+      { value: 'equals', requires_value: true },
+      { value: 'greater_than', requires_value: true },
+      { value: 'greater_equal', requires_value: true },
+      { value: 'less_than', requires_value: true },
+      { value: 'less_equal', requires_value: true },
+    ],
+    number: [
+      { value: 'equals', requires_value: true },
+      { value: 'greater_than', requires_value: true },
+      { value: 'greater_equal', requires_value: true },
+      { value: 'less_than', requires_value: true },
+      { value: 'less_equal', requires_value: true },
+    ],
+    boolean: [{ value: 'equals', requires_value: true }],
+    array: [
+      { value: 'item_equals', requires_value: true },
+      { value: 'item_contains', requires_value: true },
+      { value: 'length_equals', requires_value: true },
+      { value: 'length_greater', requires_value: true },
+      { value: 'length_less', requires_value: true },
+      { value: 'is_empty', requires_value: false },
+      { value: 'is_not_empty', requires_value: false },
+    ],
+  },
+  forbidden_condition_fields: ['fuzzyMatch'],
+  pagination: {
+    cursor_field: 'cursor',
+    forbidden_fields: ['start_after'],
+  },
+} as const;
+
+const ARRAY_LENGTH_FILTER_OPERATORS = new Set(['length_equals', 'length_greater', 'length_less']);
+
+function getFilterConditionValueSchema(type: string, operator: string): Record<string, unknown> {
+  if (type === 'string') {
+    return { type: 'string' };
+  }
+  if (type === 'integer') {
+    return { type: 'integer' };
+  }
+  if (type === 'number') {
+    return { type: 'number' };
+  }
+  if (type === 'boolean') {
+    return { type: 'boolean' };
+  }
+  if (type === 'array' && ARRAY_LENGTH_FILTER_OPERATORS.has(operator)) {
+    return { type: 'integer', minimum: 0 };
+  }
+  if (type === 'array' && operator === 'item_contains') {
+    return { type: 'string' };
+  }
+  if (type === 'array' && operator === 'item_equals') {
+    return {
+      oneOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }],
+    };
+  }
+  return {};
+}
+
+const FILTER_CONDITION_SCHEMA_VARIANTS = Object.entries(
+  FILTER_CONDITION_VALIDATION.operators_by_type
+).flatMap(([type, operators]) =>
+  operators.map((operator) => ({
+    properties: {
+      type: { enum: [type] },
+      operator: { enum: [operator.value] },
+      ...(operator.requires_value
+        ? { value: getFilterConditionValueSchema(type, operator.value) }
+        : {}),
+    },
+    required: operator.requires_value
+      ? ['field', 'operator', 'type', 'value']
+      : ['field', 'operator', 'type'],
+    ...(operator.requires_value ? {} : { not: { required: ['value'] } }),
+  }))
+);
+
 const READ_ONLY_TOOLS = new Set<ToolName>([
   TOOL_NAMES.SEARCH_VIDEOS,
   TOOL_NAMES.SEARCH_VIDEOS_BY_IMAGE,
@@ -155,7 +249,6 @@ const READ_ONLY_TOOLS = new Set<ToolName>([
   TOOL_NAMES.TEST_PROMPT_SCHEMA,
   TOOL_NAMES.GET_PROMPT_USAGE,
   TOOL_NAMES.LIST_CONNECTORS,
-  TOOL_NAMES.TEST_CONNECTOR,
   TOOL_NAMES.BROWSE_CONNECTOR_FILES,
   TOOL_NAMES.LIST_IMPORT_JOBS,
   TOOL_NAMES.GET_IMPORT_JOB,
@@ -180,13 +273,16 @@ export function getToolCategory(name: string): string {
   return TOOL_CATEGORIES[name as ToolName] ?? 'Other';
 }
 
+export function getToolRequiredScope(name: string): ToolRequiredScope {
+  return READ_ONLY_TOOLS.has(name as ToolName) ? 'read' : 'write';
+}
+
 export function getToolAnnotations(name: string): NonNullable<Tool['annotations']> {
-  const toolName = name as ToolName;
-  const readOnly = READ_ONLY_TOOLS.has(toolName);
+  const readOnly = getToolRequiredScope(name) === 'read';
 
   return {
     readOnlyHint: readOnly,
-    destructiveHint: DESTRUCTIVE_TOOLS.has(toolName),
+    destructiveHint: DESTRUCTIVE_TOOLS.has(name as ToolName),
     idempotentHint: readOnly,
     openWorldHint: true,
   };
@@ -370,7 +466,7 @@ Use this tool for precise filtering when:
 - You need numeric ranges (e.g., confidence > 0.8)
 - You need to check if an array contains a value
 
-Supports up to 5 filter conditions combined with AND logic.`,
+Supports up to 4 filter conditions combined with AND logic.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -381,7 +477,7 @@ Supports up to 5 filter conditions combined with AND logic.`,
         conditions: {
           type: 'array',
           minItems: 1,
-          maxItems: 5,
+          maxItems: 4,
           items: {
             type: 'object',
             properties: {
@@ -391,24 +487,39 @@ Supports up to 5 filter conditions combined with AND logic.`,
               },
               operator: {
                 type: 'string',
-                description:
-                  'Canonical backend filter operator or accepted legacy alias. Validation is performed by the backend.',
+                enum: [
+                  'contains',
+                  'ends_with',
+                  'equals',
+                  'greater_equal',
+                  'greater_than',
+                  'is_empty',
+                  'is_not_empty',
+                  'item_contains',
+                  'item_equals',
+                  'length_equals',
+                  'length_greater',
+                  'length_less',
+                  'less_equal',
+                  'less_than',
+                  'starts_with',
+                ],
+                description: 'Canonical backend filter operator.',
               },
               value: {
                 description: 'Value to compare against',
               },
               type: {
                 type: 'string',
-                description: 'Backend filter value type. Use the canonical backend value when possible.',
-              },
-              fuzzyMatch: {
-                type: 'boolean',
-                description: 'Enable fuzzy matching for string/array filters when supported by the backend.',
+                enum: ['array', 'boolean', 'integer', 'number', 'string'],
+                description: 'Backend filter value type.',
               },
             },
-            required: ['field', 'operator', 'value', 'type'],
+            required: ['field', 'operator', 'type'],
+            additionalProperties: false,
+            oneOf: FILTER_CONDITION_SCHEMA_VARIANTS,
           },
-          description: 'Filter conditions (1-5 conditions, combined with AND)',
+          description: 'Filter conditions (1-4 conditions, combined with AND)',
         },
         page_size: {
           type: 'number',
@@ -417,13 +528,14 @@ Supports up to 5 filter conditions combined with AND logic.`,
           maximum: 100,
           description: 'Number of results per page',
         },
-        start_after: {
+        cursor: {
           type: 'string',
-          description: 'Pagination cursor token from a previous filter response.',
+          description: 'Opaque pagination cursor from a previous filter_videos response.',
         },
         run_ids: {
           type: 'array',
           items: { type: 'string' },
+          minItems: 1,
           description: 'Limit filtering to specific prompt runs.',
         },
         index_ids: {
@@ -433,9 +545,10 @@ Supports up to 5 filter conditions combined with AND logic.`,
             'Optionally filter across multiple indexes. If provided, backend uses these IDs instead of index_id path context.',
         },
       },
-      required: ['index_id', 'conditions'],
+      required: ['index_id', 'run_ids', 'conditions'],
+      additionalProperties: false,
+      },
     },
-  },
 
   // --------------------------------------------------------------------------
   // Discovery Tools
@@ -505,7 +618,7 @@ Use this to discover what analysis capabilities are available before running exe
     name: TOOL_NAMES.GET_VIDEO,
     description: `Get detailed information about a specific video.
 
-Returns video metadata including title, overall status, and per-prompt-run segment processing snapshots (pending/processing/successful/failed), plus media type and timestamps.`,
+Returns video metadata including title, overall status, media type, duration_seconds, timestamps, and per-prompt-run segment processing snapshots (pending/processing/successful/failed).`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -587,7 +700,7 @@ Use this to discover prior prompt executions before drilling into status, result
     name: TOOL_NAMES.ESTIMATE_PROMPT_RUN,
     description: `Estimate the billing cost of a prompt run using the same configuration as execution.
 
-This does not start processing. Use it before execute_prompt when the user wants pricing or balance confirmation.`,
+This does not start processing. Video/audio targets must already have server-measured duration metadata; otherwise the backend returns a duration validation error. Use it before execute_prompt when the user wants pricing or balance confirmation.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -664,7 +777,7 @@ This does not start processing. Use it before execute_prompt when the user wants
 
 This starts an asynchronous processing job that analyzes videos with the specified prompt. The prompt defines what information to extract using its JSON schema.
 
-Returns immediately with a run_id. Use get_prompt_run_status to check progress.
+Video/audio targets must already have server-measured duration metadata before execution. Returns immediately with a run_id. Use get_prompt_run_status to check progress.
 
 Note: For large indexes, processing may take several minutes. Consider using webhooks for production workflows.`,
     inputSchema: {
@@ -723,7 +836,7 @@ Note: For large indexes, processing may take several minutes. Consider using web
         processing_model: {
           type: 'string',
           description:
-            'Optional model override for prompt execution (e.g., gemini-2.5-flash, gemini-2.5-pro, gemini-3-pro-preview).',
+            'Optional model override for prompt execution. Supported values are published by /billing/pricing processing_model_options.',
         },
         enable_transcription: {
           type: 'boolean',

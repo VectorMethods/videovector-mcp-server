@@ -6,7 +6,7 @@ It includes:
 
 - package name, version, and binary command
 - server name and supported transports
-- canonical and legacy environment variable names
+- canonical environment variable names
 - tool names, descriptions, input schemas, annotations, and categories
 
 Regenerate it after tool changes:

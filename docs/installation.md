@@ -9,5 +9,3 @@ npx -y @vectormethods/videovector-mcp-server
 Claude Desktop and Cursor both use the stdio transport by default. Configure them with the examples in `examples/`.
 
 The only required runtime value for local stdio clients is `VIDEOVECTOR_API_KEY`.
-
-Legacy `VIDEOSEARCH_*` environment variables are accepted temporarily for existing internal configs, but new documentation and examples should use `VIDEOVECTOR_*`.

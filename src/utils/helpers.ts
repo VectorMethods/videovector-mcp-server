@@ -80,7 +80,7 @@ export function formatError(error: unknown): ToolHandlerResult {
 
 function getErrorSuggestion(error: VideoVectorApiError): string {
   if (error.isAuthError()) {
-    return 'Check that VIDEOVECTOR_API_KEY is set correctly. Legacy VIDEOSEARCH_API_KEY is also accepted during migration.';
+    return 'Check that VIDEOVECTOR_API_KEY is set correctly.';
   }
 
   if (error.isNotFound()) {
