@@ -13,6 +13,51 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const response=(data:object)=>({content:[{type:'text',text:JSON.stringify(data)}],structuredContent:data});
 describe('native analysis protocol', () => {
+  it('forwards a supported 10 MiB image search through the HTTP transport intact', async () => {
+    const imageData = Buffer.alloc(10 * 1024 * 1024, 0x7a).toString('base64');
+    const arguments_ = { image_data: imageData, scope: { index_id: 'images' } };
+    const bodies: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/auth/validate')) return new Response(null, { status: 204 });
+      if (path.endsWith('/auth/processing-activity')) return new Response('{"accepted":true}');
+      if (path.endsWith('/workflow/mcp/search')) {
+        bodies.push(JSON.parse(init!.body as string));
+        return new Response(JSON.stringify(response({ search_id: 'image-search', matches: [] })));
+      }
+      throw new Error(`Unexpected backend path: ${path}`);
+    }));
+    const { app, activeRequests } = createHttpApp(config);
+    const result = await request(app).post('/mcp')
+      .set('X-API-Key', `sk_live_${'a'.repeat(48)}`)
+      .set('Accept', 'application/json, text/event-stream')
+      .send({ jsonrpc: '2.0', id: 'image', method: 'tools/call', params: { name: 'search', arguments: arguments_ } });
+    expect(result.status).toBe(200);
+    expect(result.body.result.isError).not.toBe(true);
+    expect(bodies).toEqual([expect.objectContaining(arguments_)]);
+    expect(activeRequests.size).toBe(0);
+  });
+
+  it('rejects oversized MCP bodies before authentication or backend work', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const { app } = createHttpApp(config);
+    const result = await request(app).post('/mcp')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ image_data: 'a'.repeat(16 * 1024 * 1024) }));
+    expect(result.status).toBe(413);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('validates the native host allowlist before parsing an invalid body', async () => {
+    const { app } = createHttpApp({ ...config, allowedHosts: ['allowed.example'] });
+    const result = await request(app).post('/mcp')
+      .set('Host', 'untrusted.example')
+      .set('Content-Type', 'application/json')
+      .send('invalid JSON');
+    expect(result.status).toBe(403);
+  });
+
   it('initializes, lists the eight-file contract, submits a batch and reads its status', async () => {
     const analysis = { analysis_id: 'batch', status: 'completed', stage: 'completed', message: 'Done', scope: { type: 'playground' }, progress: { total: 8, imported: 8, completed: 8, failed: 0 }, results: { revision: 'r1', included_videos: 8, final: true, download_url: null, expires_in_seconds: null }, next_action: { type: 'download_and_answer' } };
     const files = Array.from({ length: 8 }, (_, index) => ({ file_id: `host-${index}`, download_url: `https://files.example/${index}` }));

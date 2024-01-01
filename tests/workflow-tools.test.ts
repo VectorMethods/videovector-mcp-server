@@ -26,7 +26,7 @@ describe('single six-tool facade', () => {
     expect(backend.mcpTool).toHaveBeenCalledExactlyOnceWith('analyze',expect.objectContaining({source:{video_ids:['video-1']},wait_seconds:0,idempotency_key:expect.any(String)}),expect.objectContaining({idempotencyKey:expect.any(String),deadline:expect.any(Number)}));
   });
   it('admits once then observes the same identity and emits progress',async()=>{
-    const backend=client(); const onProgress=vi.fn();await executeTool('analyze',{prompt_id:'p',source:{index_id:'i'},execution:{enable_transcription:false}},backend,{onProgress});
+    const backend=client(); const onProgress=vi.fn();await executeTool('analyze',{prompt_id:'p',source:{index_id:'i'},execution:{enable_image_embedding:false}},backend,{onProgress});
     expect(vi.mocked(backend.mcpTool).mock.calls.map(c=>c[0])).toEqual(['analyze','get_analysis']);
     expect(vi.mocked(backend.mcpTool).mock.calls[1][1]).toEqual({analysis_id:'analysis-1',wait_seconds:30});
     expect(onProgress).toHaveBeenCalledWith('One video complete',1,2);
@@ -102,6 +102,17 @@ describe('single six-tool facade', () => {
   it('continues a saved search with its identity and optional cursor without a new submission key',async()=>{const backend=client();await executeTool('search',{search_id:'s',cursor:'next',page_size:5},backend);expect(backend.mcpTool).toHaveBeenCalledExactlyOnceWith('search',{search_id:'s',cursor:'next',page_size:5},expect.objectContaining({idempotencyKey:undefined}));});
   it('retries imports only with explicit identity and keeps that receipt on uncertainty',async()=>{
     const backend=client();vi.mocked(backend.mcpTool).mockRejectedValue(new Error('network'));const out=await executeTool('import_media',{import_id:'i',retry:true,idempotency_key:'retry-same'},backend);expect(parse(out).next_action).toMatchObject({type:'retry_same_submission',idempotency_key:'retry-same'});
+  });
+  it.each(['api-key', 'oauth'] as const)('renews only explicit failed-import attachment descriptors for %s', async authenticationKind => {
+    const backend = client();
+    const args = { import_id: 'i', retry: true, idempotency_key: 'renew-same', files: [{ file_id: 'original-file', download_url: 'https://files.example/fresh' }] };
+    await executeTool('import_media', args, backend, { authenticationKind, transportMode: 'http' });
+    expect(backend.mcpTool).toHaveBeenCalledExactlyOnceWith('import_media', args, expect.objectContaining({ idempotencyKey: 'renew-same' }));
+    for (const replacement of [{ destination: { index_id: 'other' } }, { title: 'changed' }, { source: { file_paths: ['other'] } }]) {
+      vi.mocked(backend.mcpTool).mockClear();
+      expect((await executeTool('import_media', { ...args, ...replacement }, backend, { authenticationKind, transportMode: 'http' })).isError).toBe(true);
+      expect(backend.mcpTool).not.toHaveBeenCalled();
+    }
   });
   it.each([
     ['analyze',{instruction:'x',prompt_id:'p'}],['analyze',{instruction:'x',video_ids:['v']}],['analyze',{instruction:'x',files:[{file_id:'f',download_url:'https://x'}],source:{video_ids:['v']}}],

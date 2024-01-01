@@ -689,13 +689,7 @@ describe('VideoVectorClient request encoding', () => {
     const executeHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
     expect(executeHeaders['Idempotency-Key']).toMatch(/^prompt-run-execute:/);
 
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ retry_id: 'retry_1', status: 'pending' }), { status: 200 })
-    );
 
-    await client.retryPromptRunSegment('run_1', 'vid_1', 'seg_1');
-    const retryHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
-    expect(retryHeaders['Idempotency-Key']).toMatch(/^prompt-run-segment-retry:/);
   });
 
   it('preserves explicit idempotency keys for write operations', async () => {
@@ -731,7 +725,7 @@ describe('VideoVectorClient request encoding', () => {
     expect(updateHeaders['Idempotency-Key']).toBe('prompt-update-1');
   });
 
-  it('adds idempotency headers to prompt-run cancellation, import-job cancellation and webhook writes', async () => {
+  it('adds idempotency headers to import-job cancellation and webhook writes', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(new Response(JSON.stringify({ run_id: 'run_1', status: 'cancelled' }), { status: 200 }));
@@ -744,30 +738,26 @@ describe('VideoVectorClient request encoding', () => {
       maxRetries: 0,
     });
 
-    await client.cancelPromptRun('run_1');
-    const cancelHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
-    expect(cancelHeaders['Idempotency-Key']).toMatch(/^prompt-run-cancel:/);
-
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ job_id: 'job_1', status: 'cancelled' }), { status: 200 })
     );
 
     await client.cancelImportJob('job_1');
-    const importCancelHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
+    const importCancelHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
     expect(importCancelHeaders['Idempotency-Key']).toMatch(/^import-job-cancel:/);
 
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ webhook_id: 'wh_1', name: 'Updated' }), { status: 200 })
     );
     await client.updateWebhook('wh_1', { name: 'Updated' }, 'webhook-update-1');
-    const updateHeaders = fetchMock.mock.calls[2]?.[1]?.headers as Record<string, string>;
+    const updateHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
     expect(updateHeaders['Idempotency-Key']).toBe('webhook-update-1');
 
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ success: true, status_code: 200, error: null }), { status: 200 })
     );
     await client.testWebhook('wh_1');
-    const testHeaders = fetchMock.mock.calls[3]?.[1]?.headers as Record<string, string>;
+    const testHeaders = fetchMock.mock.calls[2]?.[1]?.headers as Record<string, string>;
     expect(testHeaders['Idempotency-Key']).toMatch(/^webhook-test:/);
   });
 

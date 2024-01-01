@@ -6,6 +6,7 @@ import { ToolInputError } from '../utils/helpers.js';
 import { RESULTS_ARTIFACT_TOOL, RESULTS_MEDIA_TOOL, RESULTS_VIEW_TOOL, STUDIO_SCOPE_TOOL, STUDIO_PREVIEWS_TOOL, ANALYSIS_VIEW_TOOL } from './workflow-result-contract.js';
 import { projectWorkflowPayload, asRecord, appOrigin, resultLink } from './workflow-result-projection.js';
 import { addWorkflowPreviewReferences } from './workflow-result-previews.js';
+import type { WorkflowToolContext } from './workflow-handlers.js';
 
 function required(args: Record<string, unknown>, key: string): string {
   const value = args[key];
@@ -44,22 +45,31 @@ async function loadViewContext(runId: string, videoId: string, destination: unkn
   return {
     run: pick(run, ['run_id', 'prompt_id', 'prompt_name', 'prompt_type', 'executed_at', 'status',
       'video_segmentation_type', 'audio_segmentation_type', 'video_segment_duration', 'audio_segment_duration',
-      'total_videos', 'completed_videos', 'failed_videos', 'enable_transcription', 'enable_image_embedding',
-      'field_extraction_succeeded', 'transcription_succeeded', 'image_embedding_succeeded', 'video_level_enabled',
+      'total_videos', 'completed_videos', 'failed_videos', 'enable_image_embedding',
+      'field_extraction_succeeded', 'video_level_enabled',
       'selection_filter', 'selection_summary']),
     video: pick(video, ['video_id', 'title', 'status', 'created_at', 'media_type', 'duration_seconds']),
     video_level_output: videoLevelOutput,
   };
 }
 
-export async function executeResultsAppTool(name: string, args: Record<string, unknown>, client: VideoVectorClient): Promise<ToolHandlerResult> {
+export async function executeResultsAppTool(name: string, args: Record<string, unknown>, client: VideoVectorClient, requestContext: WorkflowToolContext = {}): Promise<ToolHandlerResult> {
   if (name === ANALYSIS_VIEW_TOOL) {
-    exact(args, ['analysis_id', 'import_id', 'detail', 'video_id', 'intent', 'cursor', 'page_size']);
-    if (args.import_id !== undefined) {
-      exact(args, ['import_id']);
-      const snapshot = await client.mcpImportProgress(required(args, 'import_id'));
-      return { content: [{ type: 'text', text: 'Import updated in Studio.' }], _meta: { import: snapshot } };
+    exact(args, ['analysis_id', 'import_id', 'detail', 'video_id', 'intent', 'cursor', 'page_size', 'observe', 'after_version', 'wait_seconds']);
+    if ((args.analysis_id === undefined) === (args.import_id === undefined)) throw new ToolInputError('Select one analysis or import identity');
+    if (args.observe !== undefined && args.observe !== true) throw new ToolInputError('observe must be true');
+    if (args.observe === true) {
+      exact(args, ['analysis_id', 'import_id', 'observe', 'after_version', 'wait_seconds']);
+      const identity = required(args, args.import_id === undefined ? 'analysis_id' : 'import_id');
+      const wait = args.wait_seconds ?? 25;
+      if (!Number.isInteger(wait) || Number(wait) < 0 || Number(wait) > 25) throw new ToolInputError('wait_seconds must be between 0 and 25');
+      const progress = await client.observeAnalysis(identity, {
+        wait_seconds: Number(wait), ...(args.after_version === undefined ? {} : { after_version: required(args, 'after_version') }),
+      }, requestContext.signal, requestContext.deadline);
+      return { content: [{ type: 'text', text: 'Processing state updated in Studio.' }], _meta: { progress } };
     }
+    if (args.after_version !== undefined || args.wait_seconds !== undefined) throw new ToolInputError('Observation options require observe=true');
+    if (args.import_id !== undefined) throw new ToolInputError('Import progress requires observe=true');
     if (args.intent !== undefined && args.intent !== 'download') throw new ToolInputError('Invalid analysis intent');
     const analysisId = required(args, 'analysis_id');
     const detail = args.detail ?? 'summary';
@@ -70,7 +80,7 @@ export async function executeResultsAppTool(name: string, args: Record<string, u
       ...(args.page_size === undefined ? {} : { page_size: Number(args.page_size) }),
       detail, include_download: args.intent === 'download',
       ...(args.video_id === undefined ? {} : { video_id: required(args, 'video_id') }),
-    });
+    }, requestContext.signal, requestContext.deadline);
     const videoId = optional(args, 'video_id') ?? (analysis.results.videos?.[0] as { video_id?: string } | undefined)?.video_id;
     const openInApp = videoId ? resultLink({ video_id: videoId, source_index_id: analysis.scope?.index_id }, analysisId, 'all', appOrigin()) : undefined;
     return { content: [{ type: 'text', text: 'Analysis updated in Studio.' }], _meta: { analysis: { ...analysis, ...(openInApp ? { links: { open_in_app: openInApp } } : {}) } } };
@@ -107,18 +117,14 @@ export async function executeResultsAppTool(name: string, args: Record<string, u
         if (!(error instanceof VideoVectorApiError) || error.code !== 'scope_too_large') throw error;
         return { ...emptyScope, scope_error: error.message };
       });
-    const targets = (scope as { browse_targets?: Array<{ video_id: string }> }).browse_targets;
-    const scopeError = (scope as { scope_error?: string }).scope_error;
-    const processedIds = targets && !scopeError ? new Set(targets.map(target => target.video_id)) : null;
-    const publicVideos = videos.data.filter(video => !processedIds || processedIds.has(video.video_id)).map(video => ({
+    // The library owns media visibility. Search targets independently select
+    // completed searchable executions; pending media must remain selectable.
+    const publicVideos = videos.data.map(video => ({
       ...Object.fromEntries(
         ['video_id', 'title', 'media_type', 'status', 'created_at', 'duration_seconds', 'thumbnail_gcs_uri', 'gif_gcs_uri'].flatMap(key =>
           (video as unknown as Record<string, unknown>)[key] === undefined ? [] : [[key, (video as unknown as Record<string, unknown>)[key]]]),
       ),
-      processing_status: (video.processing_status ?? []).map(run => ({
-        run_id: run.run_id, created_at: run.created_at, updated_at: run.updated_at,
-        segments: (run.segments ?? []).map(segment => ({ status: segment.status })),
-      })),
+      processing_status: video.processing_status ?? [],
     }));
     return {
       content: [{ type: 'text', text: 'Studio videos and searchable executions loaded.' }],

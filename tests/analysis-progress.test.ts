@@ -1,59 +1,52 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAnalysisProgressController, analysisResultView, readCompletedAnalysisVideo } from '../ui/analysis-progress';
+import { createAnalysisProgressController, analysisResultView, readAnalysisVideo, processingView } from '../ui/analysis-progress';
 
-const snapshot = (analysis_id = 'a', status = 'processing') => ({ analysis_id, status, next_action: { type: status === 'processing' ? 'continue_polling' : 'download_and_answer' } });
+const snapshot = (version = 'v1', idle = false) => ({ analysis_id: 'a', version, idle, records: [] });
+const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 function harness() {
-  vi.useFakeTimers();
   const visibility = Object.assign(new EventTarget(), { visibilityState: 'visible' });
-  const read = vi.fn().mockResolvedValue(snapshot()), apply = vi.fn(), unavailable = vi.fn();
+  const pending: Array<{ resolve: (value: any) => void; signal: AbortSignal }> = [];
+  const read = vi.fn((_id, _version, signal: AbortSignal) => new Promise((resolve, reject) => {
+    pending.push({ resolve, signal });
+    signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+  }));
+  const apply = vi.fn(), unavailable = vi.fn();
   const controller = createAnalysisProgressController({ read, apply, unavailable, visibility });
-  const hide = () => { visibility.visibilityState = 'hidden'; visibility.dispatchEvent(new Event('visibilitychange')); };
-  const show = () => { visibility.visibilityState = 'visible'; visibility.dispatchEvent(new Event('visibilitychange')); };
-  return { controller, read, apply, unavailable, hide, show };
+  const visible = (value: string) => { visibility.visibilityState = value; visibility.dispatchEvent(new Event('visibilitychange')); };
+  return { controller, read, apply, unavailable, pending, visible };
 }
 afterEach(() => vi.useRealTimers());
-describe('visible analysis progress', () => {
-  it('polls an import-only task with its own identity and stops at terminal without inventing analysis results', async () => {
-    const h = harness();
-    const importing = { import_id: 'imp-1', status: 'importing', progress: { imported: 0, total: 2 } };
-    h.read.mockResolvedValueOnce({ ...importing, progress: { imported: 1, total: 2 } })
-      .mockResolvedValueOnce({ ...importing, status: 'completed', progress: { imported: 2, total: 2 } });
-    h.controller.start(importing);
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(h.read).toHaveBeenCalledWith('imp-1', expect.any(AbortSignal));
-    h.hide(); await vi.advanceTimersByTimeAsync(15000); expect(h.read).toHaveBeenCalledTimes(1);
-    h.show(); await vi.advanceTimersByTimeAsync(0);
-    expect(h.apply).toHaveBeenLastCalledWith(expect.objectContaining({ import_id: 'imp-1', status: 'completed' }), expect.any(AbortSignal));
-    await vi.advanceTimersByTimeAsync(20000); expect(h.read).toHaveBeenCalledTimes(2);
+describe('visible native processing observation', () => {
+  it('bootstraps once, waits on the exact version, and observes enrichment after main completion', async () => {
+    const h = harness(); h.controller.start({ analysis_id: 'a', results: { final: true } });
+    expect(h.read).toHaveBeenCalledExactlyOnceWith('a', undefined, expect.any(AbortSignal));
+    h.pending[0].resolve({ ...snapshot(), records: [{ kind: 'run', state: { status: 'completed' } }] }); await flush();
+    expect(h.read).toHaveBeenLastCalledWith('a', 'v1', expect.any(AbortSignal));
+    expect(h.read).toHaveBeenCalledTimes(2);
+    h.pending[1].resolve(snapshot('v2', true)); await flush();
+    expect(h.apply).toHaveBeenLastCalledWith(snapshot('v2', true), expect.any(AbortSignal));
+    h.visible('hidden'); h.visible('visible'); await flush(); expect(h.read).toHaveBeenCalledTimes(2);
     h.controller.stop();
   });
-  it('reads every five seconds, pauses while hidden, resumes immediately, and stops on completion', async () => {
-    const h = harness(); h.controller.start(snapshot());
-    await vi.advanceTimersByTimeAsync(4999); expect(h.read).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1); expect(h.read).toHaveBeenCalledTimes(1);
-    h.hide(); await vi.advanceTimersByTimeAsync(20000); expect(h.read).toHaveBeenCalledTimes(1);
-    h.show(); await vi.advanceTimersByTimeAsync(0); expect(h.read).toHaveBeenCalledTimes(2);
-    h.read.mockResolvedValueOnce(snapshot('a', 'completed'));
-    await vi.advanceTimersByTimeAsync(5000); expect(h.apply).toHaveBeenLastCalledWith(snapshot('a', 'completed'), expect.any(AbortSignal));
-    await vi.advanceTimersByTimeAsync(20000); expect(h.read).toHaveBeenCalledTimes(3);
+  it('aborts hidden observation and resumes without overlapping reads or losing the version', async () => {
+    const h = harness(); h.controller.start({ import_id: 'imp-1' });
+    h.pending[0].resolve(snapshot()); await flush();
+    h.visible('hidden'); expect(h.pending[1].signal.aborted).toBe(true);
+    h.visible('visible'); await flush(); expect(h.read).toHaveBeenLastCalledWith('imp-1', 'v1', expect.any(AbortSignal));
+    h.controller.start({ analysis_id: 'other' }); await flush();
+    expect(h.pending[2].signal.aborted).toBe(true);
+    expect(h.read).toHaveBeenLastCalledWith('other', undefined, expect.any(AbortSignal));
+    h.pending[2].resolve(snapshot('old')); await flush();
+    expect(h.apply).toHaveBeenCalledTimes(1);
     h.controller.stop();
   });
-  it('discards a late response after changing analysis and never overlaps reads', async () => {
-    const h = harness(); let finish!: (value: any) => void;
-    h.read.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-    h.controller.start(snapshot()); await vi.advanceTimersByTimeAsync(5000);
-    const signal = h.read.mock.calls[0][1];
-    await vi.advanceTimersByTimeAsync(20000); expect(h.read).toHaveBeenCalledTimes(1);
-    h.controller.start(snapshot('b')); expect(signal.aborted).toBe(true);
-    finish(snapshot()); await vi.advanceTimersByTimeAsync(0); expect(h.apply).not.toHaveBeenCalled();
-    h.read.mockResolvedValue(snapshot('b')); await vi.advanceTimersByTimeAsync(5000);
-    expect(h.apply).toHaveBeenCalledExactlyOnceWith(snapshot('b'), expect.any(AbortSignal)); h.controller.stop();
-  });
-  it('reports unavailable updates and retries without inventing a stopped processing state', async () => {
-    const h = harness(); h.read.mockRejectedValueOnce(new Error('offline'));
-    h.controller.start(snapshot()); await vi.advanceTimersByTimeAsync(5000);
-    expect(h.unavailable).toHaveBeenCalledTimes(1); expect(h.apply).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(5000); expect(h.apply).toHaveBeenCalledWith(snapshot(), expect.any(AbortSignal)); h.controller.stop();
+  it('surfaces unavailable observation without a retry timer and allows an explicit reconnect', async () => {
+    vi.useFakeTimers(); const h = harness(); h.read.mockRejectedValueOnce(new Error('host disconnected'));
+    h.controller.start({ analysis_id: 'a' }); await flush();
+    expect(h.unavailable).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60000); expect(h.read).toHaveBeenCalledTimes(1);
+    void h.controller.refresh(); await flush(); expect(h.read).toHaveBeenCalledTimes(2);
+    h.controller.stop();
   });
 });
 
@@ -74,7 +67,7 @@ it('drains only one selected video, keeps its revision, and merges bounded segme
     .mockResolvedValueOnce({ _meta: { analysis: { analysis_id: 'a', results: { revision: 'fixed', data: [{ video_id: 'v1', video_level: { metadata: { title: 'Clip' } }, segments: [{ segment_id: 's1' }] }], pagination: { has_more: true, next_cursor: 'next' } } } } })
     .mockResolvedValueOnce({ _meta: { analysis: { analysis_id: 'a', results: { revision: 'fixed', data: [{ video_id: 'v1', segments: [{ segment_id: 's2' }] }], pagination: { has_more: false } } } } });
   const signal = new AbortController().signal;
-  const result = await readCompletedAnalysisVideo(call, 'a', 'v1', signal);
+  const result = await readAnalysisVideo(call, 'a', 'v1', signal);
   expect(call.mock.calls.map(call => call[1])).toEqual([
     { analysis_id: 'a', video_id: 'v1', detail: 'full' }, { analysis_id: 'a', video_id: 'v1', detail: 'full', cursor: 'next' },
   ]);
@@ -84,6 +77,20 @@ it('drains only one selected video, keeps its revision, and merges bounded segme
 it('does not read more selected-video pages after the selection is cancelled', async () => {
   const controller = new AbortController();
   const call = vi.fn(async () => { controller.abort(); return { _meta: { analysis: { results: { data: [], pagination: { has_more: true, next_cursor: 'next' } } } } }; });
-  await expect(readCompletedAnalysisVideo(call, 'a', 'v1', controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  await expect(readAnalysisVideo(call, 'a', 'v1', controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
   expect(call).toHaveBeenCalledTimes(1);
+});
+
+it('does not describe an idle upload waiting for files as completed processing', () => {
+  expect(processingView({ ...snapshot('idle', true), run_id: null,
+    records: [{ kind: 'import_job', state: { status: 'awaiting_upload', progress: { total_files: 2, imported: 0 } } }],
+  })).toMatchObject({ stage: 'awaiting_upload', counts: '0 of 2 received', message: 'Waiting for the selected files to upload.' });
+});
+
+it('shows a blocked analysis preparation while its native capture remains active', () => {
+  const view = processingView({ ...snapshot(), run_id: null,
+    records: [{ kind: 'import_job', state: { status: 'running', phase: 'capturing',
+      execution: { status: 'blocked', error_code: 'prompt_generation_failed', error: 'Prompt preparation failed.' } } }],
+  });
+  expect(view).toMatchObject({ stage: 'capturing', message: 'Prompt preparation failed.' });
 });

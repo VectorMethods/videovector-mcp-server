@@ -34,7 +34,7 @@
     {
       "name": "analyze",
       "title": "Analyze media",
-      "description": "Analyze attached or existing media using instruction or a saved prompt. Root files are native attachments; source selects existing media or a direct import; destination is only for new media. Omit files/source to open the picker. Returns analysis_id, progress, complete-video JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips directly without OAuth headers; claim a file was saved only after saving succeeds.",
+      "description": "Analyze attached or existing media using instruction or a saved prompt. Root files are native attachments; source selects existing media or a direct import; destination is only for new media. Omit files/source to open the picker. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips directly without OAuth headers; claim a file was saved only after saving succeeds.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -416,9 +416,6 @@
                 "minLength": 1,
                 "description": "Model ID published by the billing pricing API."
               },
-              "enable_transcription": {
-                "type": "boolean"
-              },
               "enable_image_embedding": {
                 "type": "boolean"
               }
@@ -713,7 +710,7 @@
     {
       "name": "get_analysis",
       "title": "Get analysis",
-      "description": "Read progress or results without rerunning analysis. Use analysis_id, or video_id for its latest complete analysis. Wait at most 30 seconds for progress; no revision argument is needed. Follow next_action using the same ID. Partial JSON includes complete videos only. Refresh expired JSON/clip grants here, or use full detail with page_size/cursor when files are unavailable.",
+      "description": "Read progress or results without rerunning analysis. Use analysis_id, or video_id for its latest complete analysis. Wait at most 30 seconds for progress; no revision argument is needed. Follow next_action using the same ID. Accepted parts are available while other parts continue; media and image indexing may finish after extraction. Refresh expired JSON/clip grants here, or use full detail with page_size/cursor when files are unavailable.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1806,7 +1803,7 @@
     {
       "name": "import_media",
       "title": "Import media",
-      "description": "Import media without analysis, inspect an existing import, or retry failed files where supported. Provide root files or source for new media; omit both to open the picker. destination selects its library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Direct integrations may retry with retry=true and an idempotency_key or request a terminal webhook. Keep the returned import_id; analysis can later use source.import_id.",
+      "description": "Import media without analysis, inspect an existing import, or retry failed files where supported. Provide root files or source for new media; omit both to open the picker. destination selects its library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry with retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2194,35 +2191,46 @@
               ]
             },
             "then": {
-              "not": {
-                "anyOf": [
-                  {
+              "allOf": [
+                {
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "source"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "destination"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "title"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "webhook"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "if": {
                     "required": [
                       "files"
                     ]
                   },
-                  {
+                  "then": {
                     "required": [
-                      "source"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "destination"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "title"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "webhook"
+                      "retry"
                     ]
                   }
-                ]
-              }
+                }
+              ]
             },
             "else": {
               "not": {
@@ -2300,6 +2308,10 @@
         "type": "object",
         "properties": {
           "import_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "analysis_id": {
             "type": "string",
             "minLength": 1
           },
@@ -2504,9 +2516,6 @@
                     ],
                     "minLength": 1,
                     "description": "Model ID published by the billing pricing API."
-                  },
-                  "enable_transcription": {
-                    "type": "boolean"
                   },
                   "enable_image_embedding": {
                     "type": "boolean"
@@ -3973,9 +3982,6 @@
                     ],
                     "minLength": 1,
                     "description": "Model ID published by the billing pricing API."
-                  },
-                  "enable_transcription": {
-                    "type": "boolean"
                   },
                   "enable_image_embedding": {
                     "type": "boolean"

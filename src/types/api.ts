@@ -54,6 +54,21 @@ export interface WorkflowUploadGrant {
   accept: string;
 }
 
+export interface AttachmentUploadDescriptor {
+  file_id: string;
+  file_name: string;
+  content_type: string;
+  size_bytes: number;
+  last_modified: number;
+  sample_sha256: string;
+  restart_expired?: boolean;
+}
+
+export interface AttachmentUploadSession {
+  job: WorkflowIntakeResponse;
+  upload: { transport: 'resumable'; url: string; offset: number; total_bytes: number; chunk_size: number; expires_at: string } | null;
+}
+
 export interface ImportJobOutput {
   file_id: string;
   file_name: string;
@@ -328,6 +343,13 @@ export interface VideoLevelProcessingStatus {
 }
 
 export interface PromptRunProcessingStatus {
+  total_parts?: number;
+  completed_parts?: number;
+  failed_parts?: number;
+  activity?: { phase?: string; started_at?: string; updated_at?: string };
+  readiness?: Record<string, boolean>;
+  result_revisions?: Record<string, string | number>;
+  enrichment?: { image?: { status: 'pending' | 'processing' | 'completed' | 'failed' | 'disabled'; completed: number; total: number; failed: number } };
   run_id: string;
   prompt_id?: string | null;
   status: string;
@@ -388,10 +410,8 @@ export interface Segment {
   marker: MarkerInfo;
   metadata_markers: Record<string, MarkerInfo>;
   field_extraction_succeeded: boolean | null;
-  transcription_succeeded: boolean | null;
-  image_embedding_succeeded: boolean | null;
+  image_embedding_status: 'pending' | 'processing' | 'completed' | 'failed' | 'not_applicable' | null;
   field_extraction_error: string | null;
-  transcription_error: string | null;
   image_embedding_error: string | null;
 }
 
@@ -619,7 +639,6 @@ export interface PromptExecutionConfig {
   video_segment_duration: number | null;
   audio_segment_duration: number | null;
   processing_model: string | null;
-  enable_transcription: boolean;
   enable_image_embedding: boolean;
 }
 
@@ -658,7 +677,6 @@ export interface ExecutePromptRequest {
   video_segment_duration?: number | null;
   audio_segment_duration?: number | null;
   processing_model?: string | null;
-  enable_transcription?: boolean;
   enable_image_embedding?: boolean;
 }
 
@@ -692,7 +710,6 @@ export interface PromptRun {
   created_new_segments: boolean;
   processing_model: string | null;
   total_video_seconds: number;
-  enable_transcription: boolean;
   enable_image_embedding: boolean;
   total_audios: number;
   total_images: number;
@@ -707,11 +724,7 @@ export interface PromptRun {
   total_segments: number;
   completed_segments: number;
   field_extraction_failures: number;
-  transcription_failures: number;
-  image_embedding_failures: number;
   field_extraction_succeeded: boolean | null;
-  transcription_succeeded: boolean | null;
-  image_embedding_succeeded: boolean | null;
   video_level_enabled: boolean;
   video_level_total_items: number;
   video_level_completed_items: number;
@@ -721,20 +734,12 @@ export interface PromptRun {
   billing_actual_mt: number;
   billing_status: string | null;
   billing_error: string | null;
-  stop_state?: PromptRunStopState | null;
   selection_summary?: PromptRunSelectionSummary;
   selection_filter?: PromptSelectionFilter | null;
   reuse_summary?: { target_media_count: number; reused_media_count: number; fresh_media_count: number };
   marker: MarkerInfo;
 }
 
-export interface PromptRunStopState {
-  requested_at?: string | null;
-  requested_by?: string | null;
-  mode?: string | null;
-  observed_at?: string | null;
-  completed_at?: string | null;
-}
 
 export interface SegmentRunResult {
   result_type: 'segment';
@@ -751,6 +756,9 @@ export interface SegmentRunResult {
   end_time?: number | null;
   segment_uri?: string | null;
   gcs_uri?: string | null;
+  playback_source_uri?: string | null;
+  playback_start_time?: number | null;
+  playback_end_time?: number | null;
   thumbnail_gcs_uri?: string | null;
   gif_gcs_uri?: string | null;
   thumbnail_uri?: string | null;
@@ -762,10 +770,8 @@ export interface SegmentRunResult {
   processing_warning: string | null;
   schema_used: string | null;
   field_extraction_succeeded: boolean;
-  transcription_succeeded: boolean | null;
-  image_embedding_succeeded: boolean | null;
+  image_embedding_status: 'pending' | 'processing' | 'completed' | 'failed' | 'not_applicable' | null;
   field_extraction_error: string | null;
-  transcription_error: string | null;
   image_embedding_error: string | null;
   marker?: MarkerInfo | null;
   extracted_metadata_markers?: Record<string, MarkerInfo> | null;
@@ -797,6 +803,9 @@ export interface PromptRunVideoResult {
   completed_at: string | null;
   segment_uri?: string | null;
   gcs_uri?: string | null;
+  playback_source_uri?: string | null;
+  playback_start_time?: number | null;
+  playback_end_time?: number | null;
   thumbnail_gcs_uri?: string | null;
   gif_gcs_uri?: string | null;
   thumbnail_uri?: string | null;
@@ -816,7 +825,6 @@ export interface PromptRunVideoResult {
 
 export interface PromptRunFailureOperationCounts {
   field_extraction: number;
-  transcription: number;
   image_embedding: number;
   processing: number;
 }
@@ -825,7 +833,6 @@ export interface PromptRunFailedSegment {
   segment_id: string;
   failed_operations: string[];
   field_extraction_error: string | null;
-  transcription_error: string | null;
   image_embedding_error: string | null;
   failure_stage: string | null;
   failure_message: string | null;
@@ -850,43 +857,6 @@ export interface PromptRunFailedSegmentsManifest {
   failed_segments: number;
   operation_counts: PromptRunFailureOperationCounts;
   videos: PromptRunFailedVideo[];
-}
-
-export interface PromptRunSegmentRetry {
-  run_id: string;
-  retry_id: string;
-  status: string;
-  message: string;
-  idempotency_key: string | null;
-  video_id: string;
-  segment_id: string;
-  created_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-  error: string | null;
-  billing_estimated_mt: number;
-  billing_actual_mt: number;
-  billing_status: string | null;
-  billing_error: string | null;
-}
-
-export interface PromptRunSegmentRetryStatus {
-  run_id: string;
-  retry_id: string;
-  status: string;
-  video_id: string;
-  segment_id: string;
-  created_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-  error: string | null;
-  billing_estimated_mt: number;
-  billing_actual_mt: number;
-  billing_status: string | null;
-  billing_error: string | null;
-  field_extraction_succeeded: boolean | null;
-  transcription_succeeded: boolean | null;
-  image_embedding_succeeded: boolean | null;
 }
 
 // ============================================================================

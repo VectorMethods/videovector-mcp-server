@@ -63,6 +63,7 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
   isActive = true, refreshKey, renderResult = renderDefaultResult,
 }) => {
   const parentActivity = useTabActivity();
+  const active = isActive && parentActivity.isActive;
   const [state, setState] = useState(() => normalizeStudioSearchState(initialState));
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -130,8 +131,10 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
   useEffect(() => { resultsChangeRef.current?.(visibleResults); }, [visibleResults]);
 
   useEffect(() => {
-    const controller = new AbortController();
+    if (!active) return;
     const changedScope = previousScopeKey.current !== scopeKey;
+    if (!changedScope && previousRefreshKey.current === refreshKey && libraryRef.current && !loadingCatalog) return;
+    const controller = new AbortController();
     previousScopeKey.current = scopeKey;
     if (changedScope) {
       ++scopeGeneration.current;
@@ -178,7 +181,7 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
     })().catch((failure) => { if (!controller.signal.aborted) setError(errorMessage(failure)); })
       .finally(() => { if (!controller.signal.aborted) setLoadingCatalog(false); });
     return () => controller.abort();
-  }, [transport, scopeKey, catalogRetry, refreshKey, update]);
+  }, [transport, scopeKey, catalogRetry, refreshKey, update, active]);
 
   const loadBrowse = useCallback(async (targets: StudioBrowseTarget[], reset = false) => {
     if (!targets.length) {

@@ -1,61 +1,74 @@
 const taskIdentity = value => value.analysis_id ?? value.import_id;
-const taskIsTerminal = value => value.results?.final === true
-  || ['download_and_answer', 'review_error'].includes(value.next_action?.type)
-  || (Boolean(value.import_id) && ['completed', 'partial_completed', 'failed', 'cancelled'].includes(value.status));
 
-/** The visible widget owns one sequential status read, independently of model turns. */
-export function createAnalysisProgressController({ read, apply, unavailable, visibility = document, interval = 5000 }) {
-  let identity, timer, controller, generation = 0, stopped = false, terminal = false;
+/** One host-mediated native watch request owns visible processing observation. */
+export function createAnalysisProgressController({ read, apply, unavailable, visibility = document }) {
+  let identity, controller, version, generation = 0, stopped = false, idle = false;
   const visible = () => visibility.visibilityState !== 'hidden';
-  const clear = () => { if (timer !== undefined) clearTimeout(timer); timer = undefined; };
-  const schedule = () => {
-    clear();
-    if (!stopped && identity && !terminal && visible()) timer = setTimeout(() => { void refresh(); }, interval);
-  };
+  const interrupt = () => { ++generation; controller?.abort(); controller = undefined; };
   async function refresh() {
     if (stopped || !identity || !visible() || controller) return;
+    idle = false;
     const current = generation;
     const request = new AbortController(); controller = request;
     try {
-      const value = await read(identity, request.signal);
-      if (current !== generation || request.signal.aborted) return;
-      terminal = taskIsTerminal(value);
-      await apply(value, request.signal);
+      while (!stopped && visible() && !idle && current === generation) {
+        const value = await read(identity, version, request.signal);
+        if (current !== generation || request.signal.aborted) return;
+        if (typeof value.version !== 'string' || typeof value.idle !== 'boolean' || !Array.isArray(value.records)) {
+          throw new Error('The processing observation is unavailable.');
+        }
+        version = value.version;
+        idle = value.idle;
+        await apply(value, request.signal);
+      }
     } catch (error) {
       if (current === generation && !request.signal.aborted) unavailable(error);
     } finally {
       if (controller === request) controller = undefined;
-      if (current === generation) schedule();
     }
   }
   const visibilityChanged = () => {
-    clear();
-    if (!visible()) { controller?.abort(); controller = undefined; ++generation; }
-    else if (!terminal) void refresh();
+    if (!visible()) interrupt();
+    else if (!idle) void refresh();
   };
   visibility.addEventListener?.('visibilitychange', visibilityChanged);
   return {
     start(value) {
-      if (identity !== taskIdentity(value)) {
-        ++generation; controller?.abort(); controller = undefined; clear();
-        identity = taskIdentity(value);
-      }
+      const next = taskIdentity(value);
+      if (identity !== next) { interrupt(); identity = next; version = undefined; idle = false; }
       stopped = false;
-      terminal = taskIsTerminal(value);
-      schedule();
+      if (!idle) void refresh();
     },
     refresh,
-    reset() {
-      ++generation; clear(); controller?.abort(); controller = undefined; identity = undefined;
-    },
-    stop() {
-      stopped = true; ++generation; clear(); controller?.abort(); controller = undefined;
-      visibility.removeEventListener?.('visibilitychange', visibilityChanged);
-    },
+    reset() { interrupt(); identity = undefined; version = undefined; idle = false; },
+    stop() { stopped = true; interrupt(); visibility.removeEventListener?.('visibilitychange', visibilityChanged); },
   };
 }
 
-/** Complete-video bundles are the sole analysis data source for this view. */
+/** Preserve the backend's independent extraction and enrichment state. */
+export function processingView(snapshot) {
+  const videos = snapshot.records.filter(row => row.kind === 'video').map(row => row.state);
+  const run = snapshot.records.find(row => row.kind === 'run' && row.id === snapshot.run_id)?.state;
+  const intake = snapshot.records.find(row => row.kind === 'import_job')?.state;
+  const entries = videos.map(video => ({ video, entry: video.processing_status?.find(row => row.run_id === snapshot.run_id) }));
+  const progress = intake?.progress ?? {};
+  return { videos, run, intake, entries, stage: run?.status ?? intake?.phase ?? intake?.status ?? 'preparing',
+    counts: run ? `${entries.filter(({ entry }) => entry?.readiness?.metadata_available).length} of ${videos.length} with metadata`
+      : typeof progress.total_files === 'number' ? `${progress.imported ?? 0} of ${progress.total_files} received` : '',
+    message: intake?.execution?.status === 'blocked' && !run ? (intake.execution.error || 'Analysis preparation failed. Upload progress is shown separately.')
+      : intake?.status === 'awaiting_upload' && !run ? 'Waiting for the selected files to upload.'
+      : intake?.error_message && !run ? intake.error_message
+      : snapshot.idle ? 'Processing updates complete.' : run && ['completed', 'completed_with_failures', 'failed', 'cancelled'].includes(run.status)
+      ? 'Extraction finished. Media and search updates are continuing.' : 'Processing updates are live.',
+  };
+}
+
+export function metadataRevision(entry) {
+  const revisions = entry?.result_revisions;
+  return revisions ? JSON.stringify([revisions.metadata, revisions.segments, revisions.video_level]) : undefined;
+}
+
+/** Canonical accepted-result bundles are the metadata source for this view. */
 export function analysisResultView(analysis) {
   const rows = [], matches = [], videos = [];
   const runId = analysis.analysis_id;
@@ -83,15 +96,15 @@ export function analysisResultView(analysis) {
   };
 }
 
-/** A selected video can span bounded pages; cursors pin the completed revision. */
-export async function readCompletedAnalysisVideo(callTool, analysisId, videoId, signal) {
+/** A selected video can span bounded pages; cursors pin its accepted revision. */
+export async function readAnalysisVideo(callTool, analysisId, videoId, signal) {
   const videos = new Map(), seen = new Set();
   let cursor, snapshot;
   do {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const response = await callTool('read_analysis', { analysis_id: analysisId, video_id: videoId, detail: 'full', ...(cursor ? { cursor } : {}) }, signal);
     const page = response._meta?.analysis;
-    if (response.isError || !Array.isArray(page?.results?.data)) throw new Error('This completed analysis is unavailable.');
+    if (response.isError || !Array.isArray(page?.results?.data)) throw new Error('This analysis is unavailable.');
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     if (snapshot && snapshot.results.revision !== page.results.revision) throw new Error('The analysis changed while loading. Select the video again to refresh it.');
     snapshot = page;

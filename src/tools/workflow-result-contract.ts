@@ -73,7 +73,7 @@ export const RESULTS_APP_DEFINITIONS: Tool[] = [
   {
     name: ANALYSIS_VIEW_TOOL,
     title: 'Read analysis progress',
-    description: 'Refresh this analysis in the visible Studio. Reads existing progress and completed-video results without starting work. A download intent renews the included JSON link only when requested.',
+    description: 'Observe native processing state in the visible Studio, or read accepted metadata for one selected video. Observation waits at most 25 seconds and includes independent media and image readiness. A download intent renews JSON only when requested.',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _meta: { ui: { visibility: ['app'] }, 'openai/visibility': 'private', 'openai/widgetAccessible': true },
     inputSchema: {
@@ -81,18 +81,26 @@ export const RESULTS_APP_DEFINITIONS: Tool[] = [
       properties: {
         analysis_id: { type: 'string', minLength: 1 },
         import_id: { type: 'string', minLength: 1 },
+        observe: { type: 'boolean', const: true },
+        after_version: { type: 'string', minLength: 1, maxLength: 512 },
+        wait_seconds: { type: 'integer', minimum: 0, maximum: 25 },
         detail: { type: 'string', enum: ['summary', 'full'] },
         cursor: { type: 'string', minLength: 1 },
         page_size: { type: 'integer', minimum: 1, maximum: 20 },
         intent: { type: 'string', enum: ['download'], description: 'Renew the included JSON link only after a user requests a download.' },
         video_id: { type: 'string', minLength: 1 },
       },
+      allOf: [
+        { if: { required: ['import_id'] }, then: { required: ['observe'] } },
+        { if: { required: ['observe'] }, then: { not: { anyOf: ['detail', 'video_id', 'intent', 'cursor', 'page_size'].map(key => ({ required: [key] })) } } },
+        { if: { anyOf: [{ required: ['after_version'] }, { required: ['wait_seconds'] }] }, then: { required: ['observe'] } },
+      ],
     },
   },
   {
     name: STUDIO_SCOPE_TOOL,
     title: 'Browse Studio search scope',
-    description: 'List processed media and the latest completed analysis for each video in this Studio container. Explicit analysis selections remain exact.',
+    description: 'List every media item and independently resolve the latest completed searchable analysis for each video in this Studio container. Explicit analysis selections remain exact.',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _meta: { ui: { visibility: ['app'] }, 'openai/visibility': 'private', 'openai/widgetAccessible': true },
     inputSchema: {

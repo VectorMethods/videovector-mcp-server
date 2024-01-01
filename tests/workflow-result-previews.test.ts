@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { VideoVectorClient } from '../src/client/index.js';
 import { executeTool } from '../src/tools/index.js';
+import { projectWorkflowPayload } from '../src/tools/workflow-result-projection.js';
 import { addWorkflowPreviewReferences } from '../src/tools/workflow-result-previews.js';
 
 const row = { result_id: 'segment:s1:r1', run_id: 'r1', video_id: 'v1', segment_id: 's1', metadata: { scene: 'A scene' }, thumbnail_gcs_uri: 'gs://private/poster.webp', gif_gcs_uri: 'gs://private/animation.webp', thumbnail_uri: 'https://storage.googleapis.com/private?signature=secret' };
@@ -8,6 +9,13 @@ const page = { data: [row], pagination: { limit: 10, has_more: false, next_curso
 const runPage = { run_id: 'r1', status: 'completed', result_level: 'segment', filtered: page, unfiltered: page };
 
 describe('private workflow preview references', () => {
+  it('preserves canonical image readiness in full result metadata', () => {
+    const projected = projectWorkflowPayload('analysis_results', {
+      run_id: 'r1', filtered: null, unfiltered: { data: [{ ...row, image_embedding_status: 'processing' }], pagination: {} },
+    }, 'full');
+    expect((projected.unfiltered as any).data[0]).toMatchObject({ image_embedding_status: 'processing', metadata: row.metadata });
+  });
+
   it('retains sibling segment previews on app-only run page hydration', async () => {
     const sibling = { ...row, result_id: 'segment:s2:r1', segment_id: 's2', thumbnail_gcs_uri: 'gs://private/sibling.jpg', gif_gcs_uri: 'gs://private/sibling.webp' };
     const client = { workflowRunResults: vi.fn().mockResolvedValue({ ...runPage, unfiltered: { ...page, data: [row, sibling] } }), getPreviewGrants: vi.fn() } as unknown as VideoVectorClient;

@@ -265,7 +265,8 @@ export const getSearchSegmentPreviewProjection = (result: SearchResult): Preview
     : result.segment_id;
   const thumbnailGcsUri = pickDurableMediaUri(result.thumbnail_gcs_uri);
   const gifGcsUri = pickDurableMediaUri(result.gif_gcs_uri);
-  if (!segmentId || (!thumbnailGcsUri && !gifGcsUri)) return null;
+  const assetsRevision = (result as SearchResult & { assets_revision?: string }).assets_revision;
+  if (!segmentId || (!thumbnailGcsUri && !gifGcsUri && !assetsRevision)) return null;
   return {
     identity: {
       kind: 'segment',
@@ -274,5 +275,6 @@ export const getSearchSegmentPreviewProjection = (result: SearchResult): Preview
     },
     thumbnailGcsUri,
     gifGcsUri,
+    ...(assetsRevision ? { assetsRevision } : {}),
   };
 };

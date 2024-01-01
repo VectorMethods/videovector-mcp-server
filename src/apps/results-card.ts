@@ -14,7 +14,7 @@ export const resultsCardResource = {
 
 export async function readResultsCard(uri = RESULTS_CARD_URI, uploadBaseUrl?: string) {
   const mediaOrigins = ['https://storage.googleapis.com'];
-  const connectDomains = uploadBaseUrl ? [new URL(uploadBaseUrl).origin] : [];
+  const connectDomains = [...(uploadBaseUrl ? [new URL(uploadBaseUrl).origin] : []), ...mediaOrigins];
   return { contents: [{
     ...resultsCardResource,
     uri,

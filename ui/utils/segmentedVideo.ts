@@ -16,6 +16,7 @@ export interface VideoSegment {
   previewGifUrl: string;    // page-granted animated WebP preview
   previewThumbnailGcsUri?: string; // durable poster identity for preview grants
   previewGifGcsUri?: string; // durable animation identity for preview grants
+  mediaStart?: number;     // physical source offset when using the original
   duration: number;         // duration in seconds
   start: number;            // global start time in seconds
   end: number;              // global end time in seconds (exclusive)
@@ -29,6 +30,7 @@ export function getVideoSegmentPlaybackKey(segment: VideoSegment): string {
     segment.mediaScope || 'segment',
     segment.id,
     segment.originalUri || segment.playbackUrl || '',
+    segment.mediaStart ?? null,
   ]);
 }
 
@@ -82,7 +84,7 @@ export function locateGlobalTime(
     ?? segments[0];
 
   // Calculate local time within the segment
-  const localTime = Math.max(0, Math.min(clamped - segment.start, segment.duration));
+  const localTime = (segment.mediaStart || 0) + Math.max(0, Math.min(clamped - segment.start, segment.duration));
 
   return { segment, localTime };
 }
@@ -94,7 +96,7 @@ export function locateGlobalTime(
  * @returns Global time in seconds
  */
 export function globalFromLocal(segment: VideoSegment, localTime: number): number {
-  return segment.start + Math.max(0, Math.min(localTime, segment.duration));
+  return segment.start + Math.max(0, Math.min(localTime - (segment.mediaStart || 0), segment.duration));
 }
 
 /**
@@ -145,6 +147,8 @@ export function prepareSegments(segments: any[], videoId?: string | null): Video
     const videoSegment: VideoSegment = {
       id: segment.segment_id,
       videoId: videoId || segment.video_id || undefined,
+      mediaStart: Number.isFinite(segment.playback_start_time)
+        ? segment.playback_start_time : undefined,
       // A bounded first-party URL may be used immediately, but it must never
       // become the authority for future refreshes. The durable source below is
       // retained so an expired/exhausted grant can be replaced.

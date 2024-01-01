@@ -12,7 +12,7 @@ export type ToolHandlerResult = McpToolResponse;
 export type ToolExecutionContext = WorkflowToolContext;
 export async function executeTool(name: string, args: Record<string, unknown>, client: VideoVectorClient, context: ToolExecutionContext = {}): Promise<ToolHandlerResult> {
   try {
-    if (RESULTS_APP_TOOLS.has(name)) return await executeResultsAppTool(name, args, client);
+    if (RESULTS_APP_TOOLS.has(name)) return await executeResultsAppTool(name, args, client, context);
     return await executeWorkflowTool(name, args, client, context);
   } catch (error) { return formatError(error, { authenticationKind: context.authenticationKind }); }
 }

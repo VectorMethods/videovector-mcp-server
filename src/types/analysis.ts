@@ -1,5 +1,15 @@
 import type { WorkflowUploadGrant } from './api.js';
 
+export interface AnalysisProgressSnapshot {
+  analysis_id: string;
+  import_id: string | null;
+  run_id: string | null;
+  version: string;
+  idle: boolean;
+  scope: { type: string; index_id?: string; video_ids: string[] };
+  records: Array<{ kind: 'video' | 'run' | 'import_job'; id: string; version: string; state: Record<string, unknown> }>;
+}
+
 export interface AnalysisReadOptions {
   wait_seconds?: number;
   detail?: 'summary' | 'full';
