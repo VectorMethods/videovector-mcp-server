@@ -1,0 +1,72 @@
+{
+  "name": "@vectormethods/videovector-mcp-server",
+  "version": "2.0.0",
+  "description": "Model Context Protocol server for the VectorMethods VideoVector media intelligence API",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "videovector-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate:contract": "npm run build && node scripts/generate-contract.mjs",
+    "check:contract": "npm run build && node scripts/generate-contract.mjs --check",
+    "check:examples": "node scripts/validate-examples.mjs",
+    "verify": "npm run typecheck && npm run lint && npm run build && npm test && npm run check:contract && npm run check:examples",
+    "prepack": "npm run verify"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "videovector",
+    "vectormethods",
+    "video",
+    "media-intelligence",
+    "video-understanding",
+    "ai"
+  ],
+  "author": "VectorMethods",
+  "license": "MIT",
+  "homepage": "https://github.com/VectorMethods/videovector-mcp-server#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VectorMethods/videovector-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/VectorMethods/videovector-mcp-server/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.40",
+    "@types/supertest": "^6.0.2",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.1",
+    "supertest": "^7.1.4",
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.9"
+  },
+  "files": [
+    "dist",
+    "artifacts",
+    "docs",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ]
+}

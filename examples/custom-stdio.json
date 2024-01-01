@@ -1,0 +1,11 @@
+{
+  "server": {
+    "name": "videovector",
+    "command": "npx",
+    "args": ["-y", "@vectormethods/videovector-mcp-server"],
+    "env": {
+      "VIDEOVECTOR_API_KEY": "<your-videovector-api-key>",
+      "VIDEOVECTOR_BASE_URL": "https://api.vectormethods.com/api/v2"
+    }
+  }
+}

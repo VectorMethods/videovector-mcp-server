@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0.0",
+  "package": {
+    "name": "@vectormethods/videovector-mcp-server",
+    "version": "2.0.0",
+    "bin": "videovector-mcp"
+  },
+  "source": {
+    "repository": "https://github.com/VectorMethods/videovector-mcp-server",
+    "contract_path": "artifacts/tool-contract.json"
+  },
+  "public_docs": {
+    "website_docs": "https://vectormethods.com/docs/mcp",
+    "repository_docs": "https://github.com/VectorMethods/videovector-mcp-server/tree/main/docs"
+  }
+}

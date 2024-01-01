@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "videovector": {
+      "command": "npx",
+      "args": ["-y", "@vectormethods/videovector-mcp-server"],
+      "env": {
+        "VIDEOVECTOR_API_KEY": "<your-videovector-api-key>"
+      }
+    }
+  }
+}
