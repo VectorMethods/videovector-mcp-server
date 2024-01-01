@@ -214,6 +214,79 @@ function fakeBundle(): string {
   return bundle;
 }
 
+function git(root: string, ...arguments_: string[]): string {
+  const result = spawnSync('git', arguments_, {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr);
+  }
+  return result.stdout.trim();
+}
+
+function releaseGuardFixture(): {
+  environment: NodeJS.ProcessEnv;
+  movingMainSha: string;
+  releaseSha: string;
+  root: string;
+} {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-release-guard.'));
+  temporaryDirectories.push(root);
+  git(root, 'init', '-b', 'main');
+  git(root, 'config', 'user.name', 'VectorMethods Engineering');
+  git(root, 'config', 'user.email', 'opensource@vectormethods.com');
+  fs.writeFileSync(path.join(root, 'release.txt'), 'release\n');
+  git(root, 'add', 'release.txt');
+  git(root, 'commit', '-m', 'release');
+  const releaseSha = git(root, 'rev-parse', 'HEAD');
+  const releaseTag = 'videovector-mcp-v2.3.4';
+  git(root, 'tag', '-a', releaseTag, '-m', 'release');
+  fs.writeFileSync(path.join(root, 'release.txt'), 'main advanced\n');
+  git(root, 'commit', '-am', 'advance main');
+  const movingMainSha = git(root, 'rev-parse', 'HEAD');
+  git(root, 'checkout', '--detach', releaseSha);
+
+  return {
+    environment: {
+      ...process.env,
+      EXPECTED_TARGET_SHA: releaseSha,
+      GITHUB_ACTOR: 'vectormethods-public-bot[bot]',
+      GITHUB_OUTPUT: path.join(root, 'github-output'),
+      GITHUB_REF: `refs/tags/${releaseTag}`,
+      GITHUB_SHA: releaseSha,
+      RELEASE_BODY_SHA256: 'b'.repeat(64),
+      RELEASE_TAG: releaseTag,
+      RELEASE_TAG_PREFIX: 'videovector-mcp-v',
+    },
+    movingMainSha,
+    releaseSha,
+    root,
+  };
+}
+
+function runReleaseGuard(
+  root: string,
+  environment: NodeJS.ProcessEnv
+): ReturnType<typeof spawnSync> {
+  return spawnSync(
+    'bash',
+    [
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '..',
+        'scripts',
+        'validate_release_request.sh'
+      ),
+    ],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      env: environment,
+    }
+  );
+}
+
 describe('release registry verification', () => {
   it('checks out the guarded source SHA in every privileged downstream job', () => {
     const workflow = fs.readFileSync(
@@ -227,11 +300,68 @@ describe('release registry verification', () => {
       'utf8'
     );
 
-    expect(workflow.match(/ref: \$\{\{ inputs\.release_tag \}\}/g)).toHaveLength(1);
+    expect(
+      workflow.match(
+        /ref: refs\/tags\/\$\{\{ inputs\.release_tag \}\}/g
+      )
+    ).toHaveLength(1);
     expect(
       workflow.match(/ref: \$\{\{ needs\.guard\.outputs\.source_sha \}\}/g)
     ).toHaveLength(4);
+    expect(workflow).toMatch(
+      /expected_target_sha:\s+description: "Exact commit SHA peeled from the immutable bot-created release tag"\s+required: true\s+type: string/
+    );
+    expect(workflow).toContain(
+      'EXPECTED_TARGET_SHA: ${{ inputs.expected_target_sha }}'
+    );
+    expect(
+      workflow.match(/bash scripts\/validate_release_request\.sh/g)
+    ).toHaveLength(1);
+    expect(workflow).not.toContain(
+      'git fetch --no-tags origin +refs/heads/main'
+    );
+    expect(workflow).not.toContain('refs/remotes/origin/main');
     expect(workflow).not.toContain('registry-url:');
+  });
+
+  it('peels the immutable tag without requiring moving main', () => {
+    const { environment, movingMainSha, releaseSha, root } =
+      releaseGuardFixture();
+
+    expect(movingMainSha).not.toBe(releaseSha);
+    const result = runReleaseGuard(root, environment);
+
+    expect(result.status).toBe(0);
+    const output = fs.readFileSync(environment.GITHUB_OUTPUT!, 'utf8');
+    expect(output).toContain(`source_sha=${releaseSha}\n`);
+    expect(output).toContain('version=2.3.4\n');
+  });
+
+  it.each([
+    'A'.repeat(40),
+    'a'.repeat(39),
+    'a'.repeat(41),
+    'not-a-commit',
+  ])('rejects malformed expected target SHA %s', (expectedTargetSha) => {
+    const { environment, root } = releaseGuardFixture();
+    environment.EXPECTED_TARGET_SHA = expectedTargetSha;
+
+    const result = runReleaseGuard(root, environment);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'expected_target_sha must be a full lowercase 40-character Git commit SHA'
+    );
+  });
+
+  it('rejects a valid but wrong expected target SHA', () => {
+    const { environment, movingMainSha, root } = releaseGuardFixture();
+    environment.EXPECTED_TARGET_SHA = movingMainSha;
+
+    const result = runReleaseGuard(root, environment);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('must match exactly');
   });
 
   it('accepts an npm version only when the published tarball bytes are identical', () => {

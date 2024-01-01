@@ -20,9 +20,10 @@ personal GitHub account, or a manual public workflow dispatch.
    repository. The tag must match `videovector-mcp-vX.Y.Z` and target public
    `main`.
 4. The bot verifies the public graph, creates or verifies the public tag,
-   dispatches this repository's `Release` workflow, waits for npm, GHCR, and MCP
-   Registry publish checks to pass, then creates the GitHub Release with scanned
-   release text and generated notes disabled.
+   dispatches this repository's `Release` workflow on that exact tag with its
+   peeled commit SHA, waits for npm, GHCR, and MCP Registry publish checks to
+   pass, then creates the GitHub Release with scanned release text and generated
+   notes disabled.
 
 ## Immutable Release Bundle
 
@@ -40,6 +41,12 @@ write permission. The bundle contains:
 manifest digest, canonical source repository, registry-metadata hash, and the exact tool versions. The
 npm tarball and OCI archive are each built once. Every publication job downloads
 that bundle; it never runs `npm pack` or `docker build`.
+
+The guard requires the bot-provided `expected_target_sha` to be a full
+lowercase commit SHA and requires the peeled tag, checked-out commit, and
+workflow event SHA to equal it. It intentionally does not compare the release
+tag to moving public `main`: an interrupted publication remains resumable from
+the immutable tag after newer changes reach `main`.
 
 Before a write, the workflow classifies the target version as either missing or
 an exact replay:
