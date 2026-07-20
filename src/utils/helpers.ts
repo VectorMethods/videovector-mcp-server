@@ -83,6 +83,25 @@ function getErrorSuggestion(error: VideoVectorApiError): string {
     return 'Check that VIDEOVECTOR_API_KEY is set correctly.';
   }
 
+  if (error.code === 'resource_quota_exceeded') {
+    return 'Delete unused resources or upgrade the account before retrying this operation.';
+  }
+
+  if (error.code === 'resource_rate_quota_exceeded') {
+    return 'Wait until the quota reset time in details before retrying this operation.';
+  }
+
+  if (
+    error.code === 'llm_daily_budget_exceeded' ||
+    error.code === 'llm_user_budget_exceeded'
+  ) {
+    return 'Wait until the LLM budget reset time in details before retrying.';
+  }
+
+  if (error.code === 'llm_budget_guard_open') {
+    return 'Public LLM generation is temporarily paused by the global budget guard; retry later.';
+  }
+
   if (error.isNotFound()) {
     if (error.code.includes('index')) {
       return 'Use list_indexes to discover available indexes.';

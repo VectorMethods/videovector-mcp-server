@@ -24,13 +24,13 @@
  *
  * Export Tools:
  * - export_index_metadata, export_prompt_run, get_export_status
+ * - get_export_download_url
  *
  * Webhook Tools:
  * - create_webhook, list_webhooks, get_webhook, update_webhook
  * - list_webhook_events, test_webhook, list_webhook_deliveries
  */
 
-import { createHash } from 'node:crypto';
 
 import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
 import type { VideoVectorClient } from '../client/index.js';
@@ -67,15 +67,6 @@ import type {
 } from '../types/index.js';
 import { TOOL_NAMES } from './definitions.js';
 import { formatError, validateRequired, validateOptional, formatDuration } from '../utils/helpers.js';
-
-const multipartWriteIdempotencyCache = new Map<
-  string,
-  {
-    requestHash: string;
-    resultPromise: Promise<unknown>;
-  }
->();
-const MULTIPART_IDEMPOTENCY_CACHE_MAX_ENTRIES = 100;
 
 // ============================================================================
 // Response Formatters
@@ -642,6 +633,9 @@ function formatSegmentRunResult(result: SegmentRunResult): Record<string, unknow
     start_time: result.start_time ?? null,
     end_time: result.end_time ?? null,
     segment_uri: result.segment_uri ?? null,
+    gcs_uri: result.gcs_uri ?? null,
+    thumbnail_gcs_uri: result.thumbnail_gcs_uri ?? null,
+    gif_gcs_uri: result.gif_gcs_uri ?? null,
     thumbnail_uri: result.thumbnail_uri ?? null,
     gif_uri: result.gif_uri ?? null,
     thumbnail_available: Boolean(result.thumbnail_available),
@@ -701,6 +695,9 @@ function formatPromptRunVideoResult(result: PromptRunVideoResult): Record<string
     started_at: result.started_at,
     completed_at: result.completed_at,
     segment_uri: result.segment_uri ?? result.preview_segment_uri ?? null,
+    gcs_uri: result.gcs_uri ?? null,
+    thumbnail_gcs_uri: result.thumbnail_gcs_uri ?? null,
+    gif_gcs_uri: result.gif_gcs_uri ?? null,
     thumbnail_uri: result.thumbnail_uri ?? result.preview_thumbnail_uri ?? null,
     gif_uri: result.gif_uri ?? result.preview_gif_uri ?? null,
     thumbnail_available: Boolean(result.thumbnail_available ?? result.preview_thumbnail_uri),
@@ -1003,80 +1000,12 @@ function validateOptionalIdempotencyKey(args: Record<string, unknown>): string |
   return candidate || undefined;
 }
 
-function isCanonicalEmptyValue(value: unknown): boolean {
-  if (value === undefined || value === null || value === '') {
-    return true;
-  }
-  if (Array.isArray(value)) {
-    return value.length === 0;
-  }
-  if (typeof value === 'object') {
-    return Object.keys(value as Record<string, unknown>).length === 0;
-  }
-  return false;
-}
-
-function canonicalizeIdempotentPayload(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => canonicalizeIdempotentPayload(item))
-      .filter((item) => !isCanonicalEmptyValue(item));
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([key, item]) => key !== 'idempotency_key' && item !== undefined && item !== null)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .flatMap(([key, item]) => {
-          const normalizedItem = canonicalizeIdempotentPayload(item);
-          if (isCanonicalEmptyValue(normalizedItem)) {
-            return [];
-          }
-          return [[key, normalizedItem]];
-        })
-    );
+function validateRequiredIdempotencyKey(args: Record<string, unknown>): string {
+  const value = validateOptionalIdempotencyKey(args);
+  if (!value) {
+    throw new Error('idempotency_key is required');
   }
   return value;
-}
-
-function hashIdempotentPayload(value: unknown): string {
-  return createHash('sha256')
-    .update(JSON.stringify(canonicalizeIdempotentPayload(value)))
-    .digest('hex');
-}
-
-async function executeMultipartWriteIdempotently<T>(
-  clientScope: string,
-  idempotencyKey: string | undefined,
-  requestPayload: unknown,
-  callback: () => Promise<T>
-): Promise<T> {
-  if (!idempotencyKey) {
-    return callback();
-  }
-
-  const cacheKey = `${clientScope}:${idempotencyKey}`;
-  const requestHash = hashIdempotentPayload(requestPayload);
-  const existing = multipartWriteIdempotencyCache.get(cacheKey);
-  if (existing) {
-    if (existing.requestHash !== requestHash) {
-      throw new Error('Idempotency key has already been used with a different request');
-    }
-    return existing.resultPromise as Promise<T>;
-  }
-
-  const resultPromise = callback().catch((error) => {
-    multipartWriteIdempotencyCache.delete(cacheKey);
-    throw error;
-  });
-  multipartWriteIdempotencyCache.set(cacheKey, { requestHash, resultPromise });
-  if (multipartWriteIdempotencyCache.size > MULTIPART_IDEMPOTENCY_CACHE_MAX_ENTRIES) {
-    const oldestKey = multipartWriteIdempotencyCache.keys().next().value;
-    if (oldestKey) {
-      multipartWriteIdempotencyCache.delete(oldestKey);
-    }
-  }
-  return resultPromise;
 }
 
 function parsePromptRunDuration(value: unknown, fieldName: string): number | undefined {
@@ -1726,7 +1655,7 @@ async function handleCreateGCSConnector(
   const scopes = validateConnectorScopes(args) ?? ['import'];
   const exportBasePath = args.export_base_path as string | undefined;
   const importMode = validateConnectorImportMode(args) ?? 'all';
-  const idempotencyKey = validateOptionalIdempotencyKey(args);
+  const idempotencyKey = validateRequiredIdempotencyKey(args);
 
   // Validate credentials structure - GCP service account keys require these fields
   const requiredCredentialFields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email', 'token_uri'];
@@ -1751,12 +1680,7 @@ async function handleCreateGCSConnector(
     import_mode: importMode,
   };
 
-  const connector = await executeMultipartWriteIdempotently(
-    client.getIdempotencyScope(),
-    idempotencyKey,
-    request,
-    () => client.createGCSConnector(request, idempotencyKey)
-  );
+  const connector = await client.createGCSConnector(request, idempotencyKey);
 
   return {
     content: [
@@ -1788,7 +1712,7 @@ async function handleCreateS3Connector(
   const scopes = validateConnectorScopes(args) ?? ['import'];
   const exportBasePath = args.export_base_path as string | undefined;
   const importMode = validateConnectorImportMode(args) ?? 'all';
-  const idempotencyKey = validateOptionalIdempotencyKey(args);
+  const idempotencyKey = validateRequiredIdempotencyKey(args);
 
   const connector = await client.createS3Connector(
     {
@@ -1835,7 +1759,7 @@ async function handleCreateAzureConnector(
   const scopes = validateConnectorScopes(args) ?? ['import'];
   const exportBasePath = args.export_base_path as string | undefined;
   const importMode = validateConnectorImportMode(args) ?? 'all';
-  const idempotencyKey = validateOptionalIdempotencyKey(args);
+  const idempotencyKey = validateRequiredIdempotencyKey(args);
 
   const connector = await client.createAzureConnector(
     {
@@ -1912,8 +1836,9 @@ async function handleTestConnector(
   client: VideoVectorClient
 ): Promise<ToolHandlerResult> {
   const connectorId = validateRequired<string>(args, 'connector_id', 'string');
+  const idempotencyKey = validateOptionalIdempotencyKey(args);
 
-  const result = await client.testConnector(connectorId);
+  const result = await client.testConnector(connectorId, idempotencyKey);
 
   return {
     content: [
@@ -2334,11 +2259,27 @@ function formatExportJob(job: ExportJob): Record<string, unknown> {
     export_type: job.export_type,
     target_id: job.target_id,
     status: job.status,
+    queue_status: job.queue_status,
+    attempts: job.attempts,
+    max_attempts: job.max_attempts,
     created_at: job.created_at,
+    available_at: job.available_at,
+    started_at: job.started_at,
+    completed_at: job.completed_at,
+    updated_at: job.updated_at,
     download_url: job.download_url,
     file_size_bytes: job.file_size_bytes,
-    file_size_human: job.file_size_bytes ? formatFileSize(job.file_size_bytes) : null,
+    file_size_human:
+      job.file_size_bytes !== null ? formatFileSize(job.file_size_bytes) : null,
     error_message: job.error_message,
+    last_error: job.last_error,
+    destination_type: job.destination_type,
+    destination_connector_id: job.destination_connector_id,
+    destination_base_path: job.destination_base_path,
+    destination_subpath: job.destination_subpath,
+    destination_uri: job.destination_uri,
+    gcs_uri: job.gcs_uri,
+    export_params: job.export_params,
   };
 }
 
@@ -2432,7 +2373,6 @@ async function handleGetExportStatus(
   const exportId = validateRequired<string>(args, 'export_id', 'string');
 
   const job = await client.getExportStatus(exportId);
-
   const result = formatExportJob(job);
 
   // Add contextual tip based on status
@@ -2441,8 +2381,22 @@ async function handleGetExportStatus(
     tip = 'Export job is queued and will start processing shortly. Check again in a few moments.';
   } else if (job.status === 'processing') {
     tip = 'Export is still processing. Check again in a few moments.';
-  } else if (job.status === 'completed' && job.download_url) {
-    tip = 'Export is ready. Use the download_url to retrieve the file. The URL expires after a period.';
+  } else if (
+    job.status === 'completed'
+    && job.destination_type === 'download'
+    && job.download_url
+  ) {
+    tip =
+      'Export is ready at the authenticated download endpoint. ' +
+      'Use the VideoVector SDK/API for bounded streaming. Call get_export_download_url ' +
+      'only when another header-free client explicitly needs a short-lived bearer URL.';
+  } else if (job.status === 'completed' && job.destination_type === 'connector') {
+    tip =
+      'Export completed to the configured connector destination. ' +
+      'No bearer download URL is created for connector-delivered exports.';
+  } else if (job.status === 'completed') {
+    tip =
+      'Export completed, but no authenticated direct-download endpoint is available.';
   } else if (job.status === 'failed') {
     tip = 'Export failed. Check error_message for details.';
   }
@@ -2465,6 +2419,33 @@ async function handleGetExportStatus(
       },
     ],
     isError,
+  };
+}
+
+async function handleGetExportDownloadUrl(
+  args: Record<string, unknown>,
+  client: VideoVectorClient
+): Promise<ToolHandlerResult> {
+  const exportId = validateRequired<string>(args, 'export_id', 'string');
+  const result = await client.mintExportDownloadUrl(exportId);
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(
+          {
+            export_id: result.export_id,
+            status: result.status,
+            destination_type: result.destination_type,
+            destination_connector_id: result.destination_connector_id,
+            download_url: result.download_url,
+          },
+          null,
+          2
+        ),
+      },
+    ],
   };
 }
 
@@ -2851,6 +2832,7 @@ export const RESOURCE_HANDLERS: Record<string, ToolHandler> = {
   [TOOL_NAMES.EXPORT_INDEX_METADATA]: handleExportIndexMetadata,
   [TOOL_NAMES.EXPORT_PROMPT_RUN]: handleExportPromptRun,
   [TOOL_NAMES.GET_EXPORT_STATUS]: handleGetExportStatus,
+  [TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL]: handleGetExportDownloadUrl,
   // Webhooks
   [TOOL_NAMES.CREATE_WEBHOOK]: handleCreateWebhook,
   [TOOL_NAMES.LIST_WEBHOOKS]: handleListWebhooks,

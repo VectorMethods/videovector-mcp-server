@@ -4,11 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Bot-created release tag, for example videovector-mcp-v2.0.0"
+        description: "Bot-created release tag, for example videovector-mcp-v2.0.2"
         required: true
         type: string
       release_body_sha256:
         description: "SHA-256 of the scanned release body held by vectormethods-public-bot"
+        required: true
+        type: string
+      expected_target_sha:
+        description: "Exact commit SHA peeled from the immutable bot-created release tag"
         required: true
         type: string
 
@@ -26,6 +30,7 @@ env:
   MCP_REGISTRY_NAME: io.github.VectorMethods/videovector-mcp-server
   NPM_PACKAGE: "@vectormethods/videovector-mcp-server"
   GHCR_IMAGE: ghcr.io/vectormethods/videovector-mcp-server
+  SKOPEO_IMAGE: quay.io/skopeo/stable@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4
 
 jobs:
   guard:
@@ -33,216 +38,143 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
+      source_sha: ${{ steps.validate.outputs.source_sha }}
       version: ${{ steps.validate.outputs.version }}
-      npm_package_exists: ${{ steps.registry.outputs.npm_package_exists }}
-      npm_version_exists: ${{ steps.registry.outputs.npm_version_exists }}
-      mcp_registry_exists: ${{ steps.registry.outputs.mcp_registry_exists }}
 
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: refs/tags/${{ inputs.release_tag }}
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
-          registry-url: "https://registry.npmjs.org"
+          node-version: "24.14.0"
           package-manager-cache: false
 
-      - name: Validate actor, tag, target, and metadata
+      - name: Validate actor and immutable release ref
         id: validate
         env:
+          EXPECTED_TARGET_SHA: ${{ inputs.expected_target_sha }}
           RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG_PREFIX: videovector-mcp-v
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_ACTOR" != "vectormethods-public-bot[bot]" && "$GITHUB_ACTOR" != "vectormethods-public-bot" ]]; then
-            echo "Release workflow may only be dispatched by vectormethods-public-bot." >&2
-            exit 1
-          fi
-          release_version_pattern='^videovector-mcp-v([0-9]+\.[0-9]+\.[0-9]+([a-z0-9.-]+)?)$'
-          if [[ "$RELEASE_TAG" =~ $release_version_pattern ]]; then
-            version="${BASH_REMATCH[1]}"
-          else
-            echo "Release tag must match videovector-mcp-vX.Y.Z." >&2
-            exit 1
-          fi
-          if [[ ! "$RELEASE_BODY_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "release_body_sha256 must be a lowercase SHA-256 digest." >&2
-            exit 1
-          fi
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          tag_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
-          main_sha="$(git rev-parse refs/remotes/origin/main)"
-          if [[ "$tag_sha" != "$main_sha" ]]; then
-            echo "Release tag must point at public main." >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          RELEASE_VERSION="$version" node <<'NODE'
-          const fs = require('node:fs');
-          const version = process.env.RELEASE_VERSION;
-          const mcpName = process.env.MCP_NAME;
-          const mcpRegistryName = process.env.MCP_REGISTRY_NAME;
-          const npmPackage = process.env.NPM_PACKAGE;
-          const ghcrImage = process.env.GHCR_IMAGE;
-          if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[a-z0-9.-]+)?$/.test(version)) {
-            throw new Error('Invalid release version');
-          }
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          if (pkg.name !== npmPackage) {
-            throw new Error(`package.json name ${pkg.name} does not match ${npmPackage}`);
-          }
-          if (pkg.version !== version) {
-            throw new Error(`package.json version ${pkg.version} does not match ${version}`);
-          }
-          if (pkg.mcpName !== mcpName) {
-            throw new Error(`package.json mcpName must be ${mcpName}`);
-          }
-          const server = JSON.parse(fs.readFileSync('server.json', 'utf8'));
-          if (server.name !== mcpRegistryName) {
-            throw new Error(`server.json name must be ${mcpRegistryName}`);
-          }
-          if (server.version !== version) {
-            throw new Error(`server.json version ${server.version} does not match ${version}`);
-          }
-          const packages = Array.isArray(server.packages) ? server.packages : [];
-          const npmEntry = packages.find((entry) => entry.registryType === 'npm');
-          if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version || npmEntry.transport?.type !== 'stdio') {
-            throw new Error('server.json npm package metadata is not release-consistent');
-          }
-          const ociEntry = packages.find((entry) => entry.registryType === 'oci');
-          if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}` || ociEntry.transport?.type !== 'stdio') {
-            throw new Error('server.json OCI package metadata is not release-consistent');
-          }
-          NODE
+          bash scripts/validate_release_request.sh
 
-      - name: Check registry version state
-        id: registry
+      - name: Validate release metadata
         env:
           RELEASE_VERSION: ${{ steps.validate.outputs.version }}
         run: |
           set -euo pipefail
-          if npm view "$NPM_PACKAGE" name >/dev/null 2>&1; then
-            echo "npm_package_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "npm_package_exists=false" >> "$GITHUB_OUTPUT"
-          fi
-          if npm view "${NPM_PACKAGE}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
-            echo "npm_version_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "npm_version_exists=false" >> "$GITHUB_OUTPUT"
-          fi
-          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.env.MCP_REGISTRY_NAME))')"
-          registry_url="https://registry.modelcontextprotocol.io/v0.1/servers/${encoded_name}/versions/${RELEASE_VERSION}"
-          status="$(curl -sS -o /tmp/mcp-registry-version.json -w "%{http_code}" "$registry_url")"
-          if [[ "$status" == "200" ]]; then
           node <<'NODE'
           const fs = require('node:fs');
           const version = process.env.RELEASE_VERSION;
-          const mcpRegistryName = process.env.MCP_REGISTRY_NAME;
-          const npmPackage = process.env.NPM_PACKAGE;
-          const ghcrImage = process.env.GHCR_IMAGE;
-          const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
-          if (payload.name !== mcpRegistryName || payload.version !== version) {
-            throw new Error('MCP Registry version metadata does not match this release');
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const server = JSON.parse(fs.readFileSync('server.json', 'utf8'));
+          if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[a-z0-9.-]+)?$/.test(version)) {
+            throw new Error('Invalid release version');
           }
-          const packages = Array.isArray(payload.packages) ? payload.packages : [];
+          if (
+            packageJson.name !== process.env.NPM_PACKAGE
+            || packageJson.version !== version
+            || packageJson.mcpName !== process.env.MCP_NAME
+          ) {
+            throw new Error('package.json is not release-consistent');
+          }
+          if (
+            server.name !== process.env.MCP_REGISTRY_NAME
+            || server.version !== version
+          ) {
+            throw new Error('server.json identity is not release-consistent');
+          }
+          const packages = Array.isArray(server.packages) ? server.packages : [];
           const npmEntry = packages.find((entry) => entry.registryType === 'npm');
           const ociEntry = packages.find((entry) => entry.registryType === 'oci');
-          if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version) {
-            throw new Error('MCP Registry npm package metadata does not match this release');
+          if (
+            !npmEntry
+            || npmEntry.identifier !== process.env.NPM_PACKAGE
+            || npmEntry.version !== version
+            || npmEntry.transport?.type !== 'stdio'
+          ) {
+            throw new Error('server.json npm metadata is not release-consistent');
           }
-          if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}`) {
-            throw new Error('MCP Registry OCI package metadata does not match this release');
+          if (
+            !ociEntry
+            || ociEntry.identifier !== `${process.env.GHCR_IMAGE}:${version}`
+            || ociEntry.transport?.type !== 'stdio'
+          ) {
+            throw new Error('server.json OCI metadata is not release-consistent');
           }
           NODE
-            echo "mcp_registry_exists=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$status" == "404" ]]; then
-            echo "mcp_registry_exists=false" >> "$GITHUB_OUTPUT"
-          else
-            cat /tmp/mcp-registry-version.json >&2
-            echo "Unexpected MCP Registry status: $status" >&2
-            exit 1
-          fi
 
   build:
-    name: Verify and pack MCP package
+    name: Build immutable release bundle
     needs: guard
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ needs.guard.outputs.source_sha }}
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
-          registry-url: "https://registry.npmjs.org"
+          node-version: "24.14.0"
           package-manager-cache: false
 
-      - name: Install npm 11 and dependencies
-        run: |
-          npm install -g npm@^11.15.0
-          npm ci
+      - name: Setup pinned Buildx and BuildKit
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: v0.28.0
+          driver-opts: image=moby/buildkit:v0.28.0@sha256:37539dd4d60fc70968d164d3850d903a2c56f6402214a1953fbf9fcb81ada731
 
-      - name: Verify package
+      - name: Install exact toolchain and dependencies
+        run: |
+          set -euo pipefail
+          npm install --global npm@11.15.0
+          npm ci --ignore-scripts
+
+      - name: Run release checks
         run: |
           set -euo pipefail
           npm run verify
-          npm audit --omit=dev --audit-level=high
-          npm pack --dry-run
+          npm audit --audit-level=high
 
-      - name: Create and scan npm tarball
+      - name: Build and attest each artifact once
+        env:
+          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
         run: |
           set -euo pipefail
-          npm pack --json > /tmp/npm-pack.raw
-          tarball="$(node <<'NODE'
-          const fs = require('node:fs');
-          const raw = fs.readFileSync('/tmp/npm-pack.raw', 'utf8');
-          for (let index = raw.length - 1; index >= 0; index -= 1) {
-            if (raw[index] !== '[') {
-              continue;
-            }
-            try {
-              const parsed = JSON.parse(raw.slice(index));
-              if (Array.isArray(parsed) && parsed[0]?.filename) {
-                fs.writeFileSync('/tmp/npm-pack.json', JSON.stringify(parsed));
-                process.stdout.write(parsed[0].filename);
-                process.exit(0);
-              }
-            } catch {
-              // Keep scanning; npm lifecycle scripts can write non-JSON lines before the payload.
-            }
-          }
-          throw new Error('Unable to find npm pack JSON payload');
-          NODE
-          )"
-          tar -tzf "$tarball" | tee /tmp/npm-tarball-contents.txt
-          if grep -E '(^|/)(\.env|\.npmrc|.*\.(pem|p12|pfx|key)|.*service[-_]?account.*\.json)$' /tmp/npm-tarball-contents.txt; then
-            echo "Unsafe file found in npm tarball." >&2
-            exit 1
-          fi
-          node <<'NODE'
-          const fs = require('node:fs');
-          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          if (packageJson.mcpName !== process.env.MCP_NAME) {
-            throw new Error('package.json mcpName changed before pack');
-          }
-          NODE
+          node scripts/release-artifacts.mjs build \
+            --output release-bundle \
+            --tag "$RELEASE_TAG" \
+            --tag-sha "$SOURCE_SHA" \
+            --source-sha "$SOURCE_SHA" \
+            --version "$RELEASE_VERSION" \
+            --release-body-sha256 "$RELEASE_BODY_SHA256"
+          node scripts/release-artifacts.mjs verify-bundle \
+            --bundle release-bundle \
+            --source-sha "$SOURCE_SHA" \
+            --tag-sha "$SOURCE_SHA" \
+            --release-body-sha256 "$RELEASE_BODY_SHA256"
 
-      - name: Local tarball install smoke
+      - name: Smoke the exact npm tarball
         run: |
           set -euo pipefail
-          tarball="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('/tmp/npm-pack.json','utf8')); process.stdout.write(p[0].filename)")"
+          tarball="$(find release-bundle/npm -maxdepth 1 -type f -name '*.tgz' -print)"
+          test -n "$tarball"
+          test "$(printf '%s\n' "$tarball" | wc -l | tr -d ' ')" = "1"
           mkdir -p /tmp/videovector-mcp-tarball-smoke
           cd /tmp/videovector-mcp-tarball-smoke
           npm init -y >/dev/null
@@ -250,8 +182,42 @@ jobs:
           test -x node_modules/.bin/videovector-mcp
           test -f node_modules/@vectormethods/videovector-mcp-server/dist/index.js
 
+      - name: Smoke the exact OCI image
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${GITHUB_WORKSPACE}/release-bundle:/bundle:ro" \
+            "$SKOPEO_IMAGE" \
+            copy --format v2s2 \
+            oci-archive:/bundle/image/videovector-mcp-server.oci.tar \
+            docker-daemon:videovector-mcp-release:local
+          container_id="$(docker run -d -p 8080:8080 -e MCP_TRANSPORT_MODE=http videovector-mcp-release:local)"
+          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          healthy=0
+          for _attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health >/tmp/videovector-mcp-health.json; then
+              grep -q '"status":"ok"' /tmp/videovector-mcp-health.json
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$healthy" != "1" ]]; then
+            docker logs "$container_id" >&2 || true
+            exit 1
+          fi
+
+      - name: Upload immutable release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mcp-release-bundle
+          path: release-bundle/
+          if-no-files-found: error
+          retention-days: 7
+
   publish-npm:
-    name: Publish to npm
+    name: Publish exact npm bytes
     needs:
       - guard
       - build
@@ -263,36 +229,58 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v6
+      - name: Checkout release verifier
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.release_tag }}
-          fetch-depth: 0
+          ref: ${{ needs.guard.outputs.source_sha }}
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
-          registry-url: "https://registry.npmjs.org"
+          node-version: "24.14.0"
           package-manager-cache: false
 
-      - name: Install npm 11 and dependencies
-        run: |
-          npm install -g npm@^11.15.0
-          npm ci
+      - name: Install exact npm publisher
+        run: npm install --global npm@11.15.0
 
-      - name: Publish or verify npm package
+      - name: Download immutable release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: mcp-release-bundle
+          path: release-bundle
+
+      - name: Classify existing npm version
+        id: registry
         env:
-          NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
-          NPM_PACKAGE_EXISTS: ${{ needs.guard.outputs.npm_package_exists }}
-          NPM_VERSION_EXISTS: ${{ needs.guard.outputs.npm_version_exists }}
-          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
+          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
         run: |
           set -euo pipefail
-          if [[ "$NPM_VERSION_EXISTS" == "true" ]]; then
-            npm view "${NPM_PACKAGE}@${RELEASE_VERSION}" version
-            exit 0
-          fi
+          node scripts/release-artifacts.mjs verify-bundle \
+            --bundle release-bundle \
+            --source-sha "$SOURCE_SHA" \
+            --tag-sha "$SOURCE_SHA" \
+            --release-body-sha256 "$RELEASE_BODY_SHA256"
+          set +e
+          node scripts/release-artifacts.mjs npm-status \
+            --bundle release-bundle \
+            --write-missing release-bundle/publish-npm
+          status="$?"
+          set -e
+          case "$status" in
+            0) echo "publish=false" >> "$GITHUB_OUTPUT" ;;
+            3) echo "publish=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Publish tested npm tarball
+        if: ${{ steps.registry.outputs.publish == 'true' }}
+        env:
+          NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          tarball="$(find release-bundle/publish-npm -maxdepth 1 -type f -name '*.tgz' -print)"
+          test -n "$tarball"
           if [[ -n "${NPM_BOOTSTRAP_TOKEN:-}" ]]; then
             bootstrap_userconfig="$(mktemp)"
             trap 'rm -f "$bootstrap_userconfig"' EXIT
@@ -304,41 +292,51 @@ jobs:
             } > "$bootstrap_userconfig"
             export NPM_CONFIG_USERCONFIG="$bootstrap_userconfig"
             unset NODE_AUTH_TOKEN
-            npm whoami >/dev/null
-            npm publish --access public --registry https://registry.npmjs.org/
-          elif [[ "$NPM_PACKAGE_EXISTS" == "true" ]]; then
-            npm publish --access public
-          else
-            echo "First npm publish requires NPM_BOOTSTRAP_TOKEN in the npm environment." >&2
-            exit 1
           fi
+          npm publish "$tarball" \
+            --access public \
+            --provenance \
+            --registry https://registry.npmjs.org/
 
-      - name: Install smoke from npm
+      - name: Confirm exact npm bytes and metadata
+        run: |
+          set -euo pipefail
+          for _attempt in $(seq 1 30); do
+            set +e
+            node scripts/release-artifacts.mjs npm-status --bundle release-bundle
+            status="$?"
+            set -e
+            if [[ "$status" == "0" ]]; then
+              exit 0
+            fi
+            if [[ "$status" != "3" ]]; then
+              exit "$status"
+            fi
+            sleep 10
+          done
+          exit 1
+
+      - name: Smoke the exact npm version
         env:
           RELEASE_VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 60); do
+          for _attempt in $(seq 1 18); do
             rm -rf /tmp/videovector-mcp-npm-smoke
             mkdir -p /tmp/videovector-mcp-npm-smoke
             cd /tmp/videovector-mcp-npm-smoke
             npm init -y >/dev/null
-            if npm install "${NPM_PACKAGE}@${RELEASE_VERSION}"; then
+            if npm install --ignore-scripts "${NPM_PACKAGE}@${RELEASE_VERSION}"; then
               test -x node_modules/.bin/videovector-mcp
               test -f node_modules/@vectormethods/videovector-mcp-server/dist/index.js
-              status=0
-              timeout 5s env VIDEOVECTOR_API_KEY=sk_test_release npx -y "${NPM_PACKAGE}@${RELEASE_VERSION}" >/tmp/videovector-mcp-npx.out 2>&1 || status="$?"
-              if [[ "$status" == "0" || "$status" == "124" ]]; then
-                exit 0
-              fi
-              cat /tmp/videovector-mcp-npx.out >&2
+              exit 0
             fi
             sleep 10
           done
           exit 1
 
   publish-ghcr:
-    name: Publish GHCR image
+    name: Publish exact GHCR image
     needs:
       - guard
       - build
@@ -349,152 +347,257 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v6
+      - name: Checkout release verifier
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.release_tag }}
-          fetch-depth: 0
+          ref: ${{ needs.guard.outputs.source_sha }}
 
-      - name: Login to GHCR
-        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.14.0"
+          package-manager-cache: false
+
+      - name: Download immutable release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: mcp-release-bundle
+          path: release-bundle
+
+      - name: Authenticate to GHCR
         env:
           GITHUB_TOKEN: ${{ github.token }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-      - name: Build, smoke, and push immutable version image
+      - name: Classify existing image
+        id: registry
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
+          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          node scripts/release-artifacts.mjs verify-bundle \
+            --bundle release-bundle \
+            --source-sha "$SOURCE_SHA" \
+            --tag-sha "$SOURCE_SHA" \
+            --release-body-sha256 "$RELEASE_BODY_SHA256"
+          skopeo() {
+            docker run --rm \
+              -e REGISTRY_AUTH_FILE=/auth/config.json \
+              -v "${HOME}/.docker/config.json:/auth/config.json:ro" \
+              "$SKOPEO_IMAGE" "$@"
+          }
+          set +e
+          skopeo inspect --retry-times 3 --raw \
+            "docker://${GHCR_IMAGE}:${RELEASE_VERSION}" >/tmp/ghcr-raw.json
+          inspect_status="$?"
+          set -e
+          if [[ "$inspect_status" == "0" ]]; then
+            skopeo inspect --retry-times 3 --config \
+              "docker://${GHCR_IMAGE}:${RELEASE_VERSION}" >/tmp/ghcr-config.json
+            node scripts/release-artifacts.mjs image-status \
+              --bundle release-bundle \
+              --raw-manifest /tmp/ghcr-raw.json \
+              --config /tmp/ghcr-config.json
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          package_name="${GHCR_IMAGE#ghcr.io/vectormethods/}"
+          repository_missing=false
+          versions_complete=false
+          for page in $(seq 1 100); do
+            status="$(curl --retry 3 --retry-all-errors -sS \
+              -o /tmp/ghcr-versions.json -w '%{http_code}' \
+              -H 'Accept: application/vnd.github+json' \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${package_name}/versions?per_page=100&page=${page}")"
+            if [[ "$page" == "1" && "$status" == "404" ]]; then
+              repository_missing=true
+              versions_complete=true
+              break
+            fi
+            if [[ "$status" != "200" ]]; then
+              cat /tmp/ghcr-versions.json >&2
+              exit 1
+            fi
+            page_result="$(RELEASE_VERSION="$RELEASE_VERSION" node <<'NODE'
+          const fs = require('node:fs');
+          const versions = JSON.parse(fs.readFileSync('/tmp/ghcr-versions.json', 'utf8'));
+          if (!Array.isArray(versions)) {
+            throw new Error('GitHub Packages returned malformed version metadata');
+          }
+          const exists = versions.some((entry) =>
+            (entry.metadata?.container?.tags ?? []).includes(process.env.RELEASE_VERSION)
+          );
+          process.stdout.write(exists ? 'exists' : String(versions.length));
+          NODE
+            )"
+            if [[ "$page_result" == "exists" ]]; then
+              echo "GHCR tag exists but its manifest could not be verified." >&2
+              exit 1
+            fi
+            if (( page_result < 100 )); then
+              versions_complete=true
+              break
+            fi
+          done
+          if [[ "$versions_complete" != "true" ]]; then
+            echo "GHCR version census exceeded its fail-closed pagination bound." >&2
+            exit 1
+          fi
+          if [[ "$repository_missing" != "true" ]]; then
+            echo "Confirmed the target tag is absent from the existing GHCR package."
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish tested OCI archive
+        if: ${{ steps.registry.outputs.publish == 'true' }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e REGISTRY_AUTH_FILE=/auth/config.json \
+            -v "${HOME}/.docker/config.json:/auth/config.json:ro" \
+            -v "${GITHUB_WORKSPACE}/release-bundle:/bundle:ro" \
+            "$SKOPEO_IMAGE" \
+            copy --all --preserve-digests --retry-times 3 \
+            oci-archive:/bundle/image/videovector-mcp-server.oci.tar \
+            "docker://${GHCR_IMAGE}:${{ needs.guard.outputs.version }}"
+
+      - name: Confirm exact GHCR digest and metadata
         env:
           RELEASE_VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail
-          image="${GHCR_IMAGE}:${RELEASE_VERSION}"
-          if docker manifest inspect "$image" >/tmp/ghcr-manifest.json 2>/dev/null; then
-            docker pull "$image"
-            label="$(docker inspect "$image" --format '{{ index .Config.Labels "io.modelcontextprotocol.server.name" }}')"
-            if [[ "$label" != "$MCP_NAME" ]]; then
-              echo "Existing GHCR image label does not match MCP server name." >&2
-              exit 1
+          skopeo() {
+            docker run --rm \
+              -e REGISTRY_AUTH_FILE=/auth/config.json \
+              -v "${HOME}/.docker/config.json:/auth/config.json:ro" \
+              "$SKOPEO_IMAGE" "$@"
+          }
+          for _attempt in $(seq 1 18); do
+            if skopeo inspect --retry-times 3 --raw \
+              "docker://${GHCR_IMAGE}:${RELEASE_VERSION}" >/tmp/ghcr-raw.json &&
+              skopeo inspect --retry-times 3 --config \
+              "docker://${GHCR_IMAGE}:${RELEASE_VERSION}" >/tmp/ghcr-config.json &&
+              node scripts/release-artifacts.mjs image-status \
+                --bundle release-bundle \
+                --raw-manifest /tmp/ghcr-raw.json \
+                --config /tmp/ghcr-config.json; then
+              exit 0
             fi
-            exit 0
-          fi
-          docker build \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --label "org.opencontainers.image.version=${RELEASE_VERSION}" \
-            --label "io.modelcontextprotocol.server.name=${MCP_NAME}" \
-            -t "$image" .
-          container_id="$(docker run -d -p 8080:8080 -e MCP_TRANSPORT_MODE=http "$image")"
-          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
-          healthy=0
-          for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/health >/tmp/videovector-mcp-health.json; then
-              grep -q '"status":"ok"' /tmp/videovector-mcp-health.json
-              healthy=1
-              break
-            fi
-            sleep 2
+            sleep 10
           done
-          if [[ "$healthy" != "1" ]]; then
-            docker logs "$container_id" >&2 || true
-            echo "Container health smoke failed." >&2
-            exit 1
-          fi
-          docker stop "$container_id"
-          trap - EXIT
-          docker push "$image"
+          exit 1
 
-      - name: Ensure GHCR package is public
+      - name: Confirm exact image is anonymously readable
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail
-          package_name="${GHCR_IMAGE#ghcr.io/vectormethods/}"
-          status="$(curl -sS -o /tmp/ghcr-visibility.json -w "%{http_code}" \
-            -X PATCH \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${package_name}/visibility" \
-            -d '{"visibility":"public"}')"
-          if [[ "$status" != "200" && "$status" != "204" ]]; then
-            cat /tmp/ghcr-visibility.json >&2
-            echo "Unable to make GHCR package public: HTTP ${status}" >&2
-            exit 1
-          fi
+          docker run --rm "$SKOPEO_IMAGE" inspect --retry-times 3 --raw \
+            "docker://${GHCR_IMAGE}:${RELEASE_VERSION}" >/tmp/ghcr-public-raw.json
+          docker run --rm "$SKOPEO_IMAGE" inspect --retry-times 3 --config \
+            "docker://${GHCR_IMAGE}:${RELEASE_VERSION}" >/tmp/ghcr-public-config.json
+          node scripts/release-artifacts.mjs image-status \
+            --bundle release-bundle \
+            --raw-manifest /tmp/ghcr-public-raw.json \
+            --config /tmp/ghcr-public-config.json
 
   publish-mcp-registry:
-    name: Publish to MCP Registry
+    name: Publish exact MCP Registry metadata
     needs:
       - guard
+      - build
       - publish-npm
       - publish-ghcr
-    if: ${{ needs.guard.outputs.mcp_registry_exists != 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
 
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v6
+      - name: Checkout release verifier
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.release_tag }}
-          fetch-depth: 0
+          ref: ${{ needs.guard.outputs.source_sha }}
 
-      - name: Install mcp-publisher
-        run: |
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.14.0"
+          package-manager-cache: false
 
-      - name: Publish server metadata
-        run: |
-          set -euo pipefail
-          ./mcp-publisher login github-oidc
-          ./mcp-publisher publish
+      - name: Download immutable release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: mcp-release-bundle
+          path: release-bundle
 
-  verify-mcp-registry:
-    name: Verify MCP Registry publish
-    needs:
-      - guard
-      - publish-npm
-      - publish-ghcr
-      - publish-mcp-registry
-    if: ${{ always() && needs.guard.result == 'success' && needs.publish-npm.result == 'success' && needs.publish-ghcr.result == 'success' && (needs.publish-mcp-registry.result == 'success' || needs.publish-mcp-registry.result == 'skipped') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Verify registry version metadata
+      - name: Classify existing MCP Registry version
+        id: registry
         env:
-          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+          RELEASE_BODY_SHA256: ${{ inputs.release_body_sha256 }}
+          SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
         run: |
           set -euo pipefail
-          encoded_name="$(node -e 'process.stdout.write(encodeURIComponent(process.env.MCP_REGISTRY_NAME))')"
-          registry_url="https://registry.modelcontextprotocol.io/v0.1/servers/${encoded_name}/versions/${RELEASE_VERSION}"
-          for attempt in $(seq 1 60); do
-            status="$(curl -sS -o /tmp/mcp-registry-version.json -w "%{http_code}" "$registry_url")"
-            if [[ "$status" == "200" ]]; then
-          node <<'NODE'
-          const fs = require('node:fs');
-          const version = process.env.RELEASE_VERSION;
-          const mcpRegistryName = process.env.MCP_REGISTRY_NAME;
-          const npmPackage = process.env.NPM_PACKAGE;
-          const ghcrImage = process.env.GHCR_IMAGE;
-          const payload = JSON.parse(fs.readFileSync('/tmp/mcp-registry-version.json', 'utf8'));
-          if (payload.name !== mcpRegistryName || payload.version !== version) {
-            throw new Error('MCP Registry version metadata does not match this release');
-          }
-          const packages = Array.isArray(payload.packages) ? payload.packages : [];
-          const npmEntry = packages.find((entry) => entry.registryType === 'npm');
-          const ociEntry = packages.find((entry) => entry.registryType === 'oci');
-          if (!npmEntry || npmEntry.identifier !== npmPackage || npmEntry.version !== version) {
-            throw new Error('MCP Registry npm package metadata does not match this release');
-          }
-          if (!ociEntry || ociEntry.identifier !== `${ghcrImage}:${version}`) {
-            throw new Error('MCP Registry OCI package metadata does not match this release');
-          }
-          NODE
+          node scripts/release-artifacts.mjs verify-bundle \
+            --bundle release-bundle \
+            --source-sha "$SOURCE_SHA" \
+            --tag-sha "$SOURCE_SHA" \
+            --release-body-sha256 "$RELEASE_BODY_SHA256"
+          set +e
+          node scripts/release-artifacts.mjs mcp-status \
+            --bundle release-bundle \
+            --write-missing release-bundle/publish-mcp
+          status="$?"
+          set -e
+          case "$status" in
+            0) echo "publish=false" >> "$GITHUB_OUTPUT" ;;
+            3) echo "publish=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Install checksum-pinned MCP publisher
+        if: ${{ steps.registry.outputs.publish == 'true' }}
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -fsSLo /tmp/mcp-publisher.tar.gz \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz
+          echo 'ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac  /tmp/mcp-publisher.tar.gz' | sha256sum --check -
+          mkdir -m 0700 /tmp/mcp-publisher-bin
+          tar --no-same-owner -xzf /tmp/mcp-publisher.tar.gz -C /tmp/mcp-publisher-bin mcp-publisher
+          test -f /tmp/mcp-publisher-bin/mcp-publisher
+          test ! -L /tmp/mcp-publisher-bin/mcp-publisher
+          chmod 0755 /tmp/mcp-publisher-bin/mcp-publisher
+          /tmp/mcp-publisher-bin/mcp-publisher --version
+
+      - name: Publish tested server metadata
+        if: ${{ steps.registry.outputs.publish == 'true' }}
+        run: |
+          set -euo pipefail
+          cd release-bundle/publish-mcp
+          /tmp/mcp-publisher-bin/mcp-publisher login github-oidc
+          /tmp/mcp-publisher-bin/mcp-publisher publish
+
+      - name: Confirm exact MCP Registry metadata
+        run: |
+          set -euo pipefail
+          for _attempt in $(seq 1 30); do
+            set +e
+            node scripts/release-artifacts.mjs mcp-status --bundle release-bundle
+            status="$?"
+            set -e
+            if [[ "$status" == "0" ]]; then
               exit 0
+            fi
+            if [[ "$status" != "3" ]]; then
+              exit "$status"
             fi
             sleep 10
           done
-          cat /tmp/mcp-registry-version.json >&2 || true
           exit 1

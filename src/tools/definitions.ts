@@ -71,6 +71,7 @@ export const TOOL_NAMES = {
   EXPORT_INDEX_METADATA: 'export_index_metadata',
   EXPORT_PROMPT_RUN: 'export_prompt_run',
   GET_EXPORT_STATUS: 'get_export_status',
+  GET_EXPORT_DOWNLOAD_URL: 'get_export_download_url',
 
   // Webhook Tools
   CREATE_WEBHOOK: 'create_webhook',
@@ -126,6 +127,7 @@ export const TOOL_CATEGORIES: Record<ToolName, string> = {
   [TOOL_NAMES.EXPORT_INDEX_METADATA]: 'Exports',
   [TOOL_NAMES.EXPORT_PROMPT_RUN]: 'Exports',
   [TOOL_NAMES.GET_EXPORT_STATUS]: 'Exports',
+  [TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL]: 'Exports',
   [TOOL_NAMES.CREATE_WEBHOOK]: 'Webhooks',
   [TOOL_NAMES.LIST_WEBHOOKS]: 'Webhooks',
   [TOOL_NAMES.GET_WEBHOOK]: 'Webhooks',
@@ -261,6 +263,19 @@ const READ_ONLY_TOOLS = new Set<ToolName>([
   TOOL_NAMES.LIST_WEBHOOK_DELIVERIES,
 ]);
 
+// These operations do not mutate tenant state, but the backend deliberately
+// gates them behind write scope. Keep the MCP read-only annotation independent
+// from the API authorization contract.
+const WRITE_SCOPE_READ_ONLY_TOOLS = new Set<ToolName>([
+  TOOL_NAMES.TEST_PROMPT_SCHEMA,
+]);
+
+// This explicit capability mint uses backend read scope even though it is not
+// operationally read-only and must not be advertised as idempotent.
+const READ_SCOPE_NON_READ_ONLY_TOOLS = new Set<ToolName>([
+  TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL,
+]);
+
 const DESTRUCTIVE_TOOLS = new Set<ToolName>([
   TOOL_NAMES.CANCEL_PROMPT_RUN,
   TOOL_NAMES.RETRY_PROMPT_RUN_SEGMENT,
@@ -274,11 +289,17 @@ export function getToolCategory(name: string): string {
 }
 
 export function getToolRequiredScope(name: string): ToolRequiredScope {
-  return READ_ONLY_TOOLS.has(name as ToolName) ? 'read' : 'write';
+  if (WRITE_SCOPE_READ_ONLY_TOOLS.has(name as ToolName)) {
+    return 'write';
+  }
+  return (
+    READ_ONLY_TOOLS.has(name as ToolName)
+    || READ_SCOPE_NON_READ_ONLY_TOOLS.has(name as ToolName)
+  ) ? 'read' : 'write';
 }
 
 export function getToolAnnotations(name: string): NonNullable<Tool['annotations']> {
-  const readOnly = getToolRequiredScope(name) === 'read';
+  const readOnly = READ_ONLY_TOOLS.has(name as ToolName);
 
   return {
     readOnlyHint: readOnly,
@@ -1276,10 +1297,11 @@ After creating a connector, use test_connector to verify the connection and brow
         },
         idempotency_key: {
           type: 'string',
-          description: 'Optional idempotency key for safe retry of connector creation.',
+          minLength: 1,
+          description: 'Required stable idempotency key for safe retry of connector creation.',
         },
       },
-      required: ['name', 'bucket', 'gcp_project_id', 'credentials_json'],
+      required: ['name', 'bucket', 'gcp_project_id', 'credentials_json', 'idempotency_key'],
     },
   },
   {
@@ -1332,10 +1354,18 @@ After creating a connector, use test_connector to verify the connection and brow
         },
         idempotency_key: {
           type: 'string',
-          description: 'Optional idempotency key for safe retry of connector creation.',
+          minLength: 1,
+          description: 'Required stable idempotency key for safe retry of connector creation.',
         },
       },
-      required: ['name', 'bucket', 'region', 'aws_access_key_id', 'aws_secret_access_key'],
+      required: [
+        'name',
+        'bucket',
+        'region',
+        'aws_access_key_id',
+        'aws_secret_access_key',
+        'idempotency_key',
+      ],
     },
   },
   {
@@ -1392,10 +1422,19 @@ After creating a connector, use test_connector to verify the connection and brow
         },
         idempotency_key: {
           type: 'string',
-          description: 'Optional idempotency key for safe retry of connector creation.',
+          minLength: 1,
+          description: 'Required stable idempotency key for safe retry of connector creation.',
         },
       },
-      required: ['name', 'storage_account', 'container', 'tenant_id', 'client_id', 'client_secret'],
+      required: [
+        'name',
+        'storage_account',
+        'container',
+        'tenant_id',
+        'client_id',
+        'client_secret',
+        'idempotency_key',
+      ],
     },
   },
   {
@@ -1421,6 +1460,10 @@ Returns success/failure with error details if the connection fails. Use this aft
         connector_id: {
           type: 'string',
           description: 'ID of the connector to test. Use list_connectors to find connector IDs.',
+        },
+        idempotency_key: {
+          type: 'string',
+          description: 'Optional idempotency key for replaying one exact connector probe.',
         },
       },
       required: ['connector_id'],
@@ -1716,21 +1759,53 @@ Creates an asynchronous export job for the results of a single prompt execution.
   },
   {
     name: TOOL_NAMES.GET_EXPORT_STATUS,
-    description: `Get the status and download URL of an export job.
+    description: `Get the status and delivery details of an export job.
 
 Returns:
 - status: processing, completed, or failed
-- download_url: URL to download the exported file (when completed)
+- destination_type: direct download or connector delivery
+- destination_connector_id and destination_uri: connector delivery details when applicable
+- download_url: authenticated API download endpoint for a completed direct export
 - file_size_bytes: size of the exported file
 - error_message: details if the export failed
 
-The download URL is temporary and expires after a period.`,
+This tool is side-effect free and never creates or returns a bearer capability.
+Use the authenticated VideoVector SDK/API streaming download for large files.
+Call get_export_download_url only when a separate header-free client explicitly
+needs a short-lived bounded bearer URL.`,
     inputSchema: {
       type: 'object',
       properties: {
         export_id: {
           type: 'string',
           description: 'ID of the export job to check',
+        },
+      },
+      required: ['export_id'],
+    },
+  },
+  {
+    name: TOOL_NAMES.GET_EXPORT_DOWNLOAD_URL,
+    description: `Explicitly mint a bounded bearer URL for one owned export.
+
+Returns exactly:
+- export_id
+- status
+- destination_type: download or connector
+- destination_connector_id
+- download_url: short-lived bearer URL, or null when not downloadable
+
+This operation creates a fresh bearer capability and is not idempotent. It
+returns download_url=null for processing, failed, connector-delivered, and
+otherwise unavailable exports. Treat any non-null URL as sensitive: do not log,
+persist, or share it beyond the intended client. Prefer authenticated SDK/API
+streaming for large files instead of loading export content into MCP context.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        export_id: {
+          type: 'string',
+          description: 'ID of the owned export for which to mint a bounded URL',
         },
       },
       required: ['export_id'],

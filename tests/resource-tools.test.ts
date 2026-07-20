@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { executeTool, getToolDefinition, getToolRequiredScope } from '../src/tools/index.js';
+import {
+  executeTool,
+  getToolDefinition,
+  getToolRequiredScope,
+  TOOL_DEFINITIONS,
+} from '../src/tools/index.js';
 import type { VideoVectorClient } from '../src/client/index.js';
+import { VideoVectorApiError } from '../src/types/index.js';
 
 function parseContent(result: Awaited<ReturnType<typeof executeTool>>): Record<string, unknown> {
   return JSON.parse(result.content[0].text);
@@ -59,6 +65,72 @@ describe('resource tool handlers', () => {
     expect(getToolRequiredScope('test_connector')).toBe('write');
     expect(definition?.annotations?.readOnlyHint).toBe(false);
     expect(definition?.annotations?.idempotentHint).toBe(false);
+    expect(definition?.inputSchema.properties?.idempotency_key).toMatchObject({
+      type: 'string',
+    });
+  });
+
+  it('forwards connector probe idempotency identity to the API client', async () => {
+    const client = {
+      testConnector: vi.fn().mockResolvedValue({
+        success: true,
+        error_message: null,
+      }),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'test_connector',
+      {
+        connector_id: 'connector_1',
+        idempotency_key: 'connector-probe-1',
+      },
+      client
+    );
+
+    expect((client as any).testConnector).toHaveBeenCalledWith(
+      'connector_1',
+      'connector-probe-1'
+    );
+    expect(parseContent(result)).toMatchObject({
+      connector_id: 'connector_1',
+      success: true,
+    });
+  });
+
+  it('advertises the backend write scope for read-only prompt schema tests', () => {
+    const definition = getToolDefinition('test_prompt_schema');
+
+    expect(getToolRequiredScope('test_prompt_schema')).toBe('write');
+    expect(definition?.annotations?.readOnlyHint).toBe(true);
+    expect(definition?.annotations?.idempotentHint).toBe(true);
+  });
+
+  it('separates side-effect-free export status from explicit capability minting', () => {
+    const statusDefinition = getToolDefinition('get_export_status');
+    const mintDefinition = getToolDefinition('get_export_download_url');
+
+    expect(getToolRequiredScope('get_export_status')).toBe('read');
+    expect(statusDefinition?.annotations).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    });
+    expect(getToolRequiredScope('get_export_download_url')).toBe('read');
+    expect(mintDefinition?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
+  });
+
+  it('keeps the public tool registry unique and aligned at 48 tools', () => {
+    const names = TOOL_DEFINITIONS.map((tool) => tool.name);
+
+    expect(names).toHaveLength(48);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain('get_export_status');
+    expect(names).toContain('get_export_download_url');
   });
 
   it('execute_prompt requires canonical target and forwards expanded options', async () => {
@@ -566,6 +638,9 @@ describe('resource tool handlers', () => {
         started_at: null,
         completed_at: null,
         segment_uri: 'gs://segments/seg_1.mp4',
+        gcs_uri: 'gs://segments/seg_1.mp4',
+        thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
+        gif_gcs_uri: 'gs://segments/seg_1.gif',
         thumbnail_uri: 'https://example.com/thumb.jpg',
         gif_uri: 'https://example.com/preview.gif',
         thumbnail_available: true,
@@ -644,6 +719,9 @@ describe('resource tool handlers', () => {
       preview_start_time: 54,
       preview_end_time: 73,
       segment_uri: 'gs://segments/seg_1.mp4',
+      gcs_uri: 'gs://segments/seg_1.mp4',
+      thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
+      gif_gcs_uri: 'gs://segments/seg_1.gif',
       thumbnail_uri: 'https://example.com/thumb.jpg',
       gif_uri: 'https://example.com/preview.gif',
     });
@@ -699,6 +777,9 @@ describe('resource tool handlers', () => {
             start_time: 54,
             end_time: 73,
             segment_uri: 'gs://segments/seg_1.mp4',
+            gcs_uri: 'gs://segments/seg_1.mp4',
+            thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
+            gif_gcs_uri: 'gs://segments/seg_1.gif',
             thumbnail_uri: 'https://example.com/thumb.jpg',
             gif_uri: 'https://example.com/preview.gif',
             thumbnail_available: true,
@@ -746,6 +827,9 @@ describe('resource tool handlers', () => {
       start_time: 54,
       end_time: 73,
       segment_uri: 'gs://segments/seg_1.mp4',
+      gcs_uri: 'gs://segments/seg_1.mp4',
+      thumbnail_gcs_uri: 'gs://segments/seg_1.jpg',
+      gif_gcs_uri: 'gs://segments/seg_1.gif',
       extracted_metadata: { summary: 'A futuristic vehicle scene.' },
       extracted_metadata_markers: {
         summary: { marker_id: 'marker-summary', color: 'green', note: null, updated_at: null },
@@ -905,7 +989,274 @@ describe('resource tool handlers', () => {
     );
   });
 
-  it('deduplicates GCS connector creation retries when idempotency_key is reused', async () => {
+  it('requires a caller-stable idempotency key for every connector provider', async () => {
+    const client = {
+      createGCSConnector: vi.fn(),
+      createS3Connector: vi.fn(),
+      createAzureConnector: vi.fn(),
+    } as unknown as VideoVectorClient;
+    const cases: Array<[string, Record<string, unknown>]> = [
+      [
+        'create_gcs_connector',
+        {
+          name: 'GCS',
+          bucket: 'bucket-a',
+          gcp_project_id: 'project-1',
+          credentials_json: {
+            type: 'service_account',
+            project_id: 'project-1',
+            private_key_id: 'key-1',
+            private_key: 'secret',
+            client_email: 'service@example.com',
+            token_uri: 'https://oauth2.googleapis.com/token',
+          },
+        },
+      ],
+      [
+        'create_s3_connector',
+        {
+          name: 'S3',
+          bucket: 'bucket-a',
+          region: 'us-east-1',
+          aws_access_key_id: 'A'.repeat(20),
+          aws_secret_access_key: 's'.repeat(40),
+        },
+      ],
+      [
+        'create_azure_connector',
+        {
+          name: 'Azure',
+          storage_account: 'accounta',
+          container: 'container-a',
+          tenant_id: '11111111-1111-4111-8111-111111111111',
+          client_id: '22222222-2222-4222-8222-222222222222',
+          client_secret: 'secret',
+        },
+      ],
+    ];
+
+    for (const [toolName, args] of cases) {
+      const result = await executeTool(toolName, args, client);
+      expect(result.isError).toBe(true);
+      expect(parseContent(result).message).toBe('idempotency_key is required');
+    }
+    expect((client as any).createGCSConnector).not.toHaveBeenCalled();
+    expect((client as any).createS3Connector).not.toHaveBeenCalled();
+    expect((client as any).createAzureConnector).not.toHaveBeenCalled();
+  });
+
+  it('returns durable export status without minting a bearer credential', async () => {
+    const client = {
+      getExportStatus: vi.fn().mockResolvedValue({
+        export_id: 'exp_1',
+        export_type: 'index',
+        target_id: 'idx_1',
+        created_at: '2026-07-17T00:00:00Z',
+        status: 'completed',
+        queue_status: 'succeeded',
+        attempts: 1,
+        max_attempts: 3,
+        available_at: '2026-07-17T00:00:00Z',
+        started_at: '2026-07-17T00:00:01Z',
+        completed_at: '2026-07-17T00:00:02Z',
+        updated_at: '2026-07-17T00:00:02Z',
+        download_url: '/api/v2/exports/exp_1/download',
+        file_size_bytes: 104857600,
+        error_message: null,
+        last_error: null,
+        destination_type: 'download',
+        destination_connector_id: null,
+        destination_base_path: null,
+        destination_subpath: null,
+        destination_uri: null,
+        gcs_uri: 'gs://private-exports/exports/user-1/export.json',
+        export_params: {},
+      }),
+      mintExportDownloadUrl: vi.fn(),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool('get_export_status', { export_id: 'exp_1' }, client);
+    const payload = parseContent(result);
+
+    expect((client as any).getExportStatus).toHaveBeenCalledWith('exp_1');
+    expect((client as any).mintExportDownloadUrl).not.toHaveBeenCalled();
+    expect(payload.file_size_bytes).toBe(104857600);
+    expect(payload.download_url).toBe('/api/v2/exports/exp_1/download');
+    expect(payload.destination_type).toBe('download');
+    expect(payload.destination_connector_id).toBeNull();
+    expect(payload.destination_uri).toBeNull();
+    expect(String(payload.download_url)).not.toContain('?token=');
+    expect(String(payload.tip)).toContain('authenticated download endpoint');
+    expect(String(payload.tip)).toContain('get_export_download_url');
+  });
+
+  it('preserves connector delivery fields in durable export status', async () => {
+    const client = {
+      getExportStatus: vi.fn().mockResolvedValue({
+        export_id: 'exp_connector',
+        export_type: 'prompt_run',
+        target_id: 'run_1',
+        created_at: '2026-07-17T00:00:00Z',
+        status: 'completed',
+        queue_status: 'succeeded',
+        attempts: 1,
+        max_attempts: 3,
+        available_at: '2026-07-17T00:00:00Z',
+        started_at: '2026-07-17T00:00:01Z',
+        completed_at: '2026-07-17T00:00:02Z',
+        updated_at: '2026-07-17T00:00:02Z',
+        download_url: null,
+        file_size_bytes: 2048,
+        error_message: null,
+        last_error: null,
+        destination_type: 'connector',
+        destination_connector_id: 'conn_1',
+        destination_base_path: 'exports/',
+        destination_subpath: 'daily/',
+        destination_uri: 's3://customer-bucket/exports/daily/export.json',
+        gcs_uri: 's3://customer-bucket/exports/daily/export.json',
+        export_params: {
+          destination_connector_id: 'conn_1',
+          destination_subpath: 'daily/',
+        },
+      }),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'get_export_status',
+      { export_id: 'exp_connector' },
+      client
+    );
+    const payload = parseContent(result);
+
+    expect(payload.download_url).toBeNull();
+    expect(payload.destination_type).toBe('connector');
+    expect(payload.destination_connector_id).toBe('conn_1');
+    expect(payload.destination_uri).toBe(
+      's3://customer-bucket/exports/daily/export.json'
+    );
+    expect(String(payload.tip)).toContain('configured connector destination');
+  });
+
+  it('keeps unavailable direct status downloads null', async () => {
+    const client = {
+      getExportStatus: vi.fn().mockResolvedValue({
+        export_id: 'exp_processing',
+        export_type: 'index',
+        target_id: 'idx_1',
+        created_at: '2026-07-17T00:00:00Z',
+        status: 'processing',
+        queue_status: 'running',
+        attempts: 1,
+        max_attempts: 3,
+        available_at: null,
+        started_at: '2026-07-17T00:00:01Z',
+        completed_at: null,
+        updated_at: '2026-07-17T00:00:02Z',
+        download_url: null,
+        file_size_bytes: null,
+        error_message: null,
+        last_error: null,
+        destination_type: 'download',
+        destination_connector_id: null,
+        destination_base_path: null,
+        destination_subpath: null,
+        destination_uri: null,
+        gcs_uri: null,
+        export_params: {},
+      }),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'get_export_status',
+      { export_id: 'exp_processing' },
+      client
+    );
+    const payload = parseContent(result);
+
+    expect(payload.download_url).toBeNull();
+    expect(payload.destination_type).toBe('download');
+    expect(String(payload.tip)).toContain('still processing');
+  });
+
+  it('explicitly mints and returns the exact five-field export capability', async () => {
+    const response = {
+      export_id: 'exp_1',
+      status: 'completed',
+      destination_type: 'download',
+      destination_connector_id: null,
+      download_url:
+        'https://api.vectormethods.com/api/v2/exports/exp_1/download?token=bounded-test-token',
+    };
+    const client = {
+      getExportStatus: vi.fn(),
+      mintExportDownloadUrl: vi.fn().mockResolvedValue(response),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'get_export_download_url',
+      { export_id: 'exp_1' },
+      client
+    );
+
+    expect((client as any).getExportStatus).not.toHaveBeenCalled();
+    expect((client as any).mintExportDownloadUrl).toHaveBeenCalledWith('exp_1');
+    expect(parseContent(result)).toEqual(response);
+  });
+
+  it('keeps explicit connector capability responses nullable', async () => {
+    const client = {
+      mintExportDownloadUrl: vi.fn().mockResolvedValue({
+        export_id: 'exp_connector',
+        status: 'completed',
+        destination_type: 'connector',
+        destination_connector_id: 'conn_1',
+        download_url: null,
+      }),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'get_export_download_url',
+      { export_id: 'exp_connector' },
+      client
+    );
+
+    expect(parseContent(result)).toEqual({
+      export_id: 'exp_connector',
+      status: 'completed',
+      destination_type: 'connector',
+      destination_connector_id: 'conn_1',
+      download_url: null,
+    });
+  });
+
+  it('propagates explicit export mint failures through the canonical MCP error', async () => {
+    const client = {
+      mintExportDownloadUrl: vi.fn().mockRejectedValue(
+        new VideoVectorApiError(
+          'Bearer minting is temporarily unavailable',
+          'metadata_export_token_configuration_invalid',
+          503,
+          { retryable: true },
+          'req_export_1'
+        )
+      ),
+    } as unknown as VideoVectorClient;
+
+    const result = await executeTool(
+      'get_export_download_url',
+      { export_id: 'exp_1' },
+      client
+    );
+    const payload = parseContent(result);
+
+    expect(result.isError).toBe(true);
+    expect(payload.code).toBe('metadata_export_token_configuration_invalid');
+    expect(payload.message).toBe('Bearer minting is temporarily unavailable');
+    expect(payload.request_id).toBe('req_export_1');
+  });
+
+  it('delegates GCS connector retry replay to the durable backend boundary', async () => {
     const client = {
       getIdempotencyScope: vi.fn().mockReturnValue('scope-1'),
       createGCSConnector: vi.fn().mockResolvedValue({
@@ -957,11 +1308,13 @@ describe('resource tool handlers', () => {
       client
     );
 
-    expect((client as any).createGCSConnector).toHaveBeenCalledTimes(1);
+    expect((client as any).createGCSConnector).toHaveBeenCalledTimes(2);
+    expect((client as any).createGCSConnector.mock.calls[0][1]).toBe('gcs-dedupe-1');
+    expect((client as any).createGCSConnector.mock.calls[1][1]).toBe('gcs-dedupe-1');
     expect(parseContent(first)).toEqual(parseContent(second));
   });
 
-  it('rejects reused GCS connector idempotency keys when the request body changes', async () => {
+  it('delegates GCS connector semantic mismatch enforcement to the backend', async () => {
     const client = {
       getIdempotencyScope: vi.fn().mockReturnValue('scope-1'),
       createGCSConnector: vi.fn().mockResolvedValue({
@@ -1023,9 +1376,10 @@ describe('resource tool handlers', () => {
       client
     );
 
-    expect(result.isError).toBe(true);
-    expect(parseContent(result).message).toBe('Idempotency key has already been used with a different request');
-    expect((client as any).createGCSConnector).toHaveBeenCalledTimes(1);
+    expect(result.isError).not.toBe(true);
+    expect((client as any).createGCSConnector).toHaveBeenCalledTimes(2);
+    expect((client as any).createGCSConnector.mock.calls[1][0].bucket).toBe('bucket-b');
+    expect((client as any).createGCSConnector.mock.calls[1][1]).toBe('gcs-dedupe-2');
   });
 
   it('scopes GCS retry dedupe by client identity', async () => {

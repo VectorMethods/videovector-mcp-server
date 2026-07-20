@@ -162,15 +162,22 @@ export interface SearchResult {
   preview_gif_uri?: string | null;
   text_content: string;
   content_preview: string;
-  similarity_score: number;
+  metadata_text?: string | null;
+  similarity_score: number | null;
+  reranked_score?: number | null;
   segment_uri: string | null;
+  gcs_uri: string | null;
+  thumbnail_gcs_uri: string | null;
+  gif_gcs_uri: string | null;
   thumbnail_uri: string | null;
   thumbnail_data: string | null;
   thumbnail_available: boolean;
   gif_uri: string | null;
   gif_data: string | null;
   gif_available: boolean;
-  extracted_metadata: Record<string, unknown>;
+  media_type?: MediaType | null;
+  metadata?: Record<string, unknown> | null;
+  extracted_metadata: Record<string, unknown> | null;
   field_scores: Record<string, number> | null;
   field_instance_scores?: Record<string, number> | null;
   matched_field_paths: string[] | null;
@@ -186,6 +193,7 @@ export interface SearchResult {
   run_id: string | null;
   source_run_id?: string | null;
   prompt_run_id?: string | null;
+  raw_llm_response?: string | null;
   source_index_id: string | null;
   marker: MarkerInfo;
   extracted_metadata_markers: Record<string, MarkerInfo>;
@@ -202,6 +210,7 @@ export interface ImageSearchRequest {
 
 export interface ImageSearchResult extends SearchResult {
   matched_image_uri: string | null;
+  matched_image_gcs_uri?: string | null;
   matched_image_timestamp: number | null;
   matched_image_score: number | null;
   shot_timestamp: number | null;
@@ -228,8 +237,10 @@ export interface MultimodalSearchResult extends SearchResult {
   image_rank: number | null;
   match_type: MatchType;
   matched_image_uri: string | null;
+  matched_image_gcs_uri?: string | null;
   matched_image_timestamp: number | null;
   matched_image_score?: number | null;
+  shot_timestamp?: number | null;
 }
 
 // ============================================================================
@@ -450,6 +461,9 @@ export interface SegmentRunResult {
   start_time?: number | null;
   end_time?: number | null;
   segment_uri?: string | null;
+  gcs_uri?: string | null;
+  thumbnail_gcs_uri?: string | null;
+  gif_gcs_uri?: string | null;
   thumbnail_uri?: string | null;
   gif_uri?: string | null;
   thumbnail_available?: boolean;
@@ -497,6 +511,9 @@ export interface PromptRunVideoResult {
   started_at: string | null;
   completed_at: string | null;
   segment_uri?: string | null;
+  gcs_uri?: string | null;
+  thumbnail_gcs_uri?: string | null;
+  gif_gcs_uri?: string | null;
   thumbnail_uri?: string | null;
   gif_uri?: string | null;
   thumbnail_available?: boolean;
@@ -779,6 +796,7 @@ export interface VideoStatus {
 
 export type ExportStatus = 'pending' | 'processing' | 'completed' | 'failed';
 export type ExportType = 'index' | 'prompt_run';
+export type ExportDestinationType = 'download' | 'connector';
 
 export interface ExportDestinationRequest {
   destination_connector_id?: string | null;
@@ -795,10 +813,37 @@ export interface ExportJob {
   target_id: string;
   created_at: string | null;
   status: ExportStatus;
+  queue_status: string | null;
+  attempts: number;
+  max_attempts: number;
+  available_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string | null;
+  /**
+   * Authenticated first-party download endpoint from the REST status response.
+   * This field is never a bearer credential.
+   */
   download_url: string | null;
   file_size_bytes: number | null;
   error_message: string | null;
-  export_params?: Record<string, unknown>;
+  last_error: string | null;
+  destination_type: ExportDestinationType;
+  destination_connector_id: string | null;
+  destination_base_path: string | null;
+  destination_subpath: string | null;
+  destination_uri: string | null;
+  gcs_uri: string | null;
+  export_params: Record<string, unknown> | null;
+}
+
+export interface ExportDownloadUrlResponse {
+  export_id: string;
+  status: ExportStatus;
+  destination_type: ExportDestinationType;
+  destination_connector_id: string | null;
+  /** Short-lived bounded bearer URL, or null when direct download is unavailable. */
+  download_url: string | null;
 }
 
 // ============================================================================

@@ -25,6 +25,7 @@ npm-debug.log*
 
 # Test coverage
 coverage/
+release-bundle/
 
 # Package manager locks (use npm)
 yarn.lock

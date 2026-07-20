@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "server": {
     "name": "videovector",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "protocol": "mcp",
     "primary_transport": "stdio",
     "supported_transports": [
@@ -12,7 +12,7 @@
   },
   "package": {
     "name": "@vectormethods/videovector-mcp-server",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "bin": "videovector-mcp",
     "npm_install_command": "npx -y @vectormethods/videovector-mcp-server"
   },
@@ -1862,7 +1862,7 @@
         "openWorldHint": true
       },
       "category": "Prompt management",
-      "required_scope": "read"
+      "required_scope": "write"
     },
     {
       "name": "get_prompt_usage",
@@ -1941,14 +1941,16 @@
           },
           "idempotency_key": {
             "type": "string",
-            "description": "Optional idempotency key for safe retry of connector creation."
+            "minLength": 1,
+            "description": "Required stable idempotency key for safe retry of connector creation."
           }
         },
         "required": [
           "name",
           "bucket",
           "gcp_project_id",
-          "credentials_json"
+          "credentials_json",
+          "idempotency_key"
         ]
       },
       "annotations": {
@@ -2017,7 +2019,8 @@
           },
           "idempotency_key": {
             "type": "string",
-            "description": "Optional idempotency key for safe retry of connector creation."
+            "minLength": 1,
+            "description": "Required stable idempotency key for safe retry of connector creation."
           }
         },
         "required": [
@@ -2025,7 +2028,8 @@
           "bucket",
           "region",
           "aws_access_key_id",
-          "aws_secret_access_key"
+          "aws_secret_access_key",
+          "idempotency_key"
         ]
       },
       "annotations": {
@@ -2098,7 +2102,8 @@
           },
           "idempotency_key": {
             "type": "string",
-            "description": "Optional idempotency key for safe retry of connector creation."
+            "minLength": 1,
+            "description": "Required stable idempotency key for safe retry of connector creation."
           }
         },
         "required": [
@@ -2107,7 +2112,8 @@
           "container",
           "tenant_id",
           "client_id",
-          "client_secret"
+          "client_secret",
+          "idempotency_key"
         ]
       },
       "annotations": {
@@ -2144,6 +2150,10 @@
           "connector_id": {
             "type": "string",
             "description": "ID of the connector to test. Use list_connectors to find connector IDs."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "Optional idempotency key for replaying one exact connector probe."
           }
         },
         "required": [
@@ -2502,7 +2512,7 @@
     },
     {
       "name": "get_export_status",
-      "description": "Get the status and download URL of an export job.\n\nReturns:\n- status: processing, completed, or failed\n- download_url: URL to download the exported file (when completed)\n- file_size_bytes: size of the exported file\n- error_message: details if the export failed\n\nThe download URL is temporary and expires after a period.",
+      "description": "Get the status and delivery details of an export job.\n\nReturns:\n- status: processing, completed, or failed\n- destination_type: direct download or connector delivery\n- destination_connector_id and destination_uri: connector delivery details when applicable\n- download_url: authenticated API download endpoint for a completed direct export\n- file_size_bytes: size of the exported file\n- error_message: details if the export failed\n\nThis tool is side-effect free and never creates or returns a bearer capability.\nUse the authenticated VideoVector SDK/API streaming download for large files.\nCall get_export_download_url only when a separate header-free client explicitly\nneeds a short-lived bounded bearer URL.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2519,6 +2529,30 @@
         "readOnlyHint": true,
         "destructiveHint": false,
         "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "category": "Exports",
+      "required_scope": "read"
+    },
+    {
+      "name": "get_export_download_url",
+      "description": "Explicitly mint a bounded bearer URL for one owned export.\n\nReturns exactly:\n- export_id\n- status\n- destination_type: download or connector\n- destination_connector_id\n- download_url: short-lived bearer URL, or null when not downloadable\n\nThis operation creates a fresh bearer capability and is not idempotent. It\nreturns download_url=null for processing, failed, connector-delivered, and\notherwise unavailable exports. Treat any non-null URL as sensitive: do not log,\npersist, or share it beyond the intended client. Prefer authenticated SDK/API\nstreaming for large files instead of loading export content into MCP context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "export_id": {
+            "type": "string",
+            "description": "ID of the owned export for which to mint a bounded URL"
+          }
+        },
+        "required": [
+          "export_id"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
         "openWorldHint": true
       },
       "category": "Exports",

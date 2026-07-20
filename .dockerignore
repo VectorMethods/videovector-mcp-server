@@ -4,5 +4,23 @@ npm-debug.log
 .gitignore
 dist
 coverage
+release-bundle
+.release-bundle.*
 *.log
 BASELINE_VALIDATION.md
+
+# Never send local, CI, registry, or cloud credentials to the builder. The
+# Dockerfile also uses an explicit source allowlist, but excluding these from
+# the context prevents accidental inclusion in cache/export metadata.
+**/gha-creds-*.json
+**/*credential*.json
+**/*credentials*.json
+**/*service-account*.json
+**/*service_account*.json
+**/.env
+**/.env.*
+**/.git-credentials
+**/.npmrc
+**/.pypirc
+**/*.key
+**/*.pem

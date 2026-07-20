@@ -68,8 +68,10 @@ Endpoints:
 
 - `GET /health`
 - `POST /mcp`
-- `GET /mcp`
-- `DELETE /mcp`
+
+The `/mcp` endpoint is stateless. Each POST is independent and may be routed
+to any healthy instance. `GET /mcp` and `DELETE /mcp` return `405`; clients
+must not send or persist `MCP-Session-Id`.
 
 HTTP requests must include either:
 
@@ -84,8 +86,19 @@ HTTP hardening variables:
 | `MCP_HTTP_HOST` | `0.0.0.0` | Bind host. |
 | `MCP_HTTP_ALLOWED_HOSTS` | empty | Optional comma-separated host allowlist. |
 | `MCP_HTTP_ALLOWED_ORIGINS` | empty | Optional comma-separated browser origin allowlist. |
-| `MCP_HTTP_MAX_SESSIONS` | `200` | In-memory session cap. |
 | `MCP_HTTP_ENABLE_JSON_RESPONSE` | `false` | SDK JSON response mode. |
+| `MCP_HTTP_SHUTDOWN_DRAIN_SECONDS` | `25` | Maximum graceful drain before active request contexts are closed. |
+
+Both stdio and HTTP modes accept canonical production keys only (`sk_live_` followed by
+exactly 48 lowercase hexadecimal characters). Invalid candidates are rejected
+before normal API use. In HTTP mode, validation uses the side-effect-free
+`GET /auth/validate` API operation. Successful keys are cached for 60 seconds,
+confirmed invalid keys for 10 minutes, and transient failures for five
+seconds. Same-key checks are singleflighted and backend validation is bounded
+to 16 concurrent calls plus a 64-request queue with a five-second timeout.
+Plaintext keys are never written to caches or logs. When both supported HTTP
+headers are present, `X-API-Key` takes precedence, matching the VideoVector
+API.
 
 Do not advertise a public hosted remote MCP endpoint until OAuth and MCP protected-resource metadata are enabled for that deployment.
 
@@ -100,6 +113,13 @@ The server exposes tools for:
 - cloud connectors, import jobs, exports, and webhooks
 
 The machine-readable tool contract is generated at [artifacts/tool-contract.json](artifacts/tool-contract.json). Private backend and website releases should vendor this artifact for MCP helper endpoints and documentation updates.
+
+`get_export_status` is side-effect free: its `download_url` is only the
+authenticated API endpoint and it never mints a bearer credential. Use the
+separate `get_export_download_url` tool only when a header-free client
+explicitly needs a short-lived bounded URL. Connector-delivered, processing,
+failed, and otherwise unavailable exports return `download_url: null`. Treat
+any non-null minted URL as a credential and do not log or persist it.
 
 ## Development
 
