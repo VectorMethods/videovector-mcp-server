@@ -8,12 +8,22 @@ credentials.
 
 In stdio mode, the MCP host starts the server process locally and passes `VIDEOVECTOR_API_KEY` through the process environment. The server forwards that key to the VideoVector API.
 
+The `upload_media` tool exists only in stdio mode. It canonicalizes the source
+and allowed roots with `realpath`, rejects files outside
+`VIDEOVECTOR_UPLOAD_ROOTS` (the current working directory by default), requires
+a supported regular media file, and rechecks its device, inode, and size after
+opening without following a final symlink. Multipart bodies are streamed; a
+retry reopens the file and reuses one backend idempotency key.
+
 ## Streamable HTTP
 
 In HTTP mode, every MCP POST authenticates with a VideoVector API key. The
 transport is stateless: no session identifier, API key, or server object is
 retained after the response closes. This allows requests to move safely across
 instances and restarts.
+
+HTTP tool listings omit `upload_media`; a remote MCP caller cannot cause the
+server to read a local filesystem path.
 
 Before an MCP request context is allocated, the server validates the key with
 the API's side-effect-free authentication endpoint. Validation caches and

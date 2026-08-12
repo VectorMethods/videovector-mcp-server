@@ -39,6 +39,7 @@ const {
   FILTER_CONDITION_VALIDATION,
   TOOL_DEFINITIONS,
   getToolCategory,
+  getToolAvailability,
   getToolRequiredScope,
 } = await import(definitionsUrl.href);
 
@@ -60,13 +61,21 @@ const contract = {
   api: {
     default_base_url: 'https://api.vectormethods.com/api/v2',
     env: {
-      canonical: ['VIDEOVECTOR_API_KEY', 'VIDEOVECTOR_BASE_URL', 'VIDEOVECTOR_TIMEOUT', 'VIDEOVECTOR_MAX_RETRIES'],
+      canonical: [
+        'VIDEOVECTOR_API_KEY',
+        'VIDEOVECTOR_BASE_URL',
+        'VIDEOVECTOR_TIMEOUT',
+        'VIDEOVECTOR_MAX_RETRIES',
+        'VIDEOVECTOR_TOOL_PROFILE',
+        'VIDEOVECTOR_UPLOAD_ROOTS',
+      ],
     },
   },
   tools: TOOL_DEFINITIONS.map((tool) => {
     const contractTool = {
       ...tool,
       category: getToolCategory(tool.name),
+      availability: getToolAvailability(tool.name),
       required_scope: getToolRequiredScope(tool.name),
     };
 

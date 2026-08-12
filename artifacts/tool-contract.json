@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "server": {
     "name": "videovector",
-    "version": "2.0.2",
+    "version": "2.1.0",
     "protocol": "mcp",
     "primary_transport": "stdio",
     "supported_transports": [
@@ -12,7 +12,7 @@
   },
   "package": {
     "name": "@vectormethods/videovector-mcp-server",
-    "version": "2.0.2",
+    "version": "2.1.0",
     "bin": "videovector-mcp",
     "npm_install_command": "npx -y @vectormethods/videovector-mcp-server"
   },
@@ -23,11 +23,513 @@
         "VIDEOVECTOR_API_KEY",
         "VIDEOVECTOR_BASE_URL",
         "VIDEOVECTOR_TIMEOUT",
-        "VIDEOVECTOR_MAX_RETRIES"
+        "VIDEOVECTOR_MAX_RETRIES",
+        "VIDEOVECTOR_TOOL_PROFILE",
+        "VIDEOVECTOR_UPLOAD_ROOTS"
       ]
     }
   },
   "tools": [
+    {
+      "name": "upload_media",
+      "description": "Upload one local media file through the simplified workflow.\n\nThe destination defaults to your Playground. Provide index_id for an existing index, or index_name to reuse/create a private index. This tool is intentionally available only over local stdio and can read only configured upload roots.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path to a local video, audio, or image file inside an allowed upload root."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional media title. Defaults to the filename stem."
+          },
+          "index_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing destination index ID. Omit to use Playground."
+          },
+          "index_name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact private index name to reuse or create when absent."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional stable retry identity. One is generated automatically when omitted."
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "additionalProperties": false,
+        "not": {
+          "required": [
+            "index_id",
+            "index_name"
+          ]
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "category": "Workflow",
+      "availability": {
+        "profiles": [
+          "simple",
+          "full"
+        ],
+        "transports": [
+          "stdio"
+        ]
+      },
+      "required_scope": "write"
+    },
+    {
+      "name": "define_prompt",
+      "description": "Turn a natural-language instruction into a VideoVector prompt using Prompt Lab.\n\nThe generated prompt is saved by default and the returned prompt_id can be passed directly to process_media. Set save=false only when the user explicitly wants a draft.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "instruction": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What information the prompt should extract from the media."
+          },
+          "save": {
+            "type": "boolean",
+            "default": true,
+            "description": "Persist the generated prompt and return a prompt_id."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional stable retry identity. One is generated automatically when omitted."
+          }
+        },
+        "required": [
+          "instruction"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "category": "Workflow",
+      "availability": {
+        "profiles": [
+          "simple",
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
+      "required_scope": "write"
+    },
+    {
+      "name": "process_media",
+      "description": "Process media with one prompt using a minimal target contract.\n\nProvide prompt_id or an inline prompt_instruction. With no target, the entire Playground is processed. Provide index_id/index_name for an index, or video_ids for selected media. Segmentation defaults to smart; advanced transcription and image embeddings default to false.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "prompt_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing prompt ID to run."
+          },
+          "prompt_instruction": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Inline instruction to generate, save, and run as a prompt."
+          },
+          "video_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "One or more media IDs. Omit to process the selected whole container."
+          },
+          "index_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing index target or container for video_ids."
+          },
+          "index_name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact existing private index name. Processing never creates indexes."
+          },
+          "segmentation_mode": {
+            "type": "string",
+            "enum": [
+              "smart",
+              "content_aware",
+              "fixed"
+            ],
+            "default": "smart",
+            "description": "Unified segmentation mode. smart maps audio to content-aware segmentation."
+          },
+          "fixed_segment_duration_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300,
+            "description": "Duration for fixed segmentation; defaults to 10 seconds in fixed mode."
+          },
+          "advanced_transcription": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable advanced transcription during processing."
+          },
+          "create_image_embeddings": {
+            "type": "boolean",
+            "default": false,
+            "description": "Create image embeddings during processing."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional stable retry identity. One is generated automatically when omitted."
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "required": [
+                  "prompt_id"
+                ],
+                "not": {
+                  "required": [
+                    "prompt_instruction"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "prompt_instruction"
+                ],
+                "not": {
+                  "required": [
+                    "prompt_id"
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "not": {
+              "required": [
+                "index_id",
+                "index_name"
+              ]
+            }
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "category": "Workflow",
+      "availability": {
+        "profiles": [
+          "simple",
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
+      "required_scope": "write"
+    },
+    {
+      "name": "search_media",
+      "description": "Search processed media without first navigating VideoVector's internal abstractions.\n\nUse query for semantic vector search or filters for conditional search. With no scope, search the Playground. Scope by index, media IDs, or prompt-run IDs. Pass only cursor to retrieve the next frozen page without rerunning or rebilling the search.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Natural-language vector search query."
+          },
+          "filters": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "description": "Conditional metadata filters combined with AND logic.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "operator": {
+                  "type": "string",
+                  "enum": [
+                    "equals",
+                    "greater_than",
+                    "greater_equal",
+                    "less_than",
+                    "less_equal",
+                    "contains",
+                    "starts_with",
+                    "ends_with",
+                    "is_empty",
+                    "is_not_empty",
+                    "item_equals",
+                    "item_contains",
+                    "length_equals",
+                    "length_greater",
+                    "length_less"
+                  ],
+                  "default": "equals"
+                },
+                "value": {}
+              },
+              "required": [
+                "field"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "result_level": {
+            "type": "string",
+            "enum": [
+              "segment",
+              "video"
+            ],
+            "default": "segment",
+            "description": "Search segment extraction results or video-level synthesis results."
+          },
+          "video_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Search every searchable prompt run containing these media IDs."
+          },
+          "prompt_run_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Search exactly these prompt runs."
+          },
+          "index_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing index to search. Omit all scope fields for Playground."
+          },
+          "index_name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact existing private index name to search."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 10,
+            "description": "Results to return on this page."
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque next_cursor. When set, omit every other argument."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional stable identity for starting a search. Not used with cursor."
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "index_id",
+                    "index_name"
+                  ]
+                },
+                {
+                  "required": [
+                    "video_ids",
+                    "prompt_run_ids"
+                  ]
+                },
+                {
+                  "required": [
+                    "video_ids",
+                    "index_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "video_ids",
+                    "index_name"
+                  ]
+                },
+                {
+                  "required": [
+                    "prompt_run_ids",
+                    "index_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "prompt_run_ids",
+                    "index_name"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "oneOf": [
+              {
+                "required": [
+                  "query"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "filters"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "cursor"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "filters"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "query"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "cursor"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "cursor"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "query"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "filters"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "result_level"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "video_ids"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "prompt_run_ids"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "index_id"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "index_name"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "limit"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "idempotency_key"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "category": "Workflow",
+      "availability": {
+        "profiles": [
+          "simple",
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
+      "required_scope": "search"
+    },
     {
       "name": "search_videos",
       "description": "Search for video segments using natural language. Returns relevant clips with timestamps, thumbnails, and extracted metadata.\n\nUse this tool when the user wants to:\n- Find specific content, moments, or topics in their video library\n- Search for scenes matching a description\n- Locate videos containing certain objects, actions, or concepts\n\nThe search uses semantic similarity, so natural language queries work best.",
@@ -83,6 +585,15 @@
         "openWorldHint": true
       },
       "category": "Search",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -133,6 +644,15 @@
         "openWorldHint": true
       },
       "category": "Search",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -207,6 +727,15 @@
         "openWorldHint": true
       },
       "category": "Search",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -887,6 +1416,15 @@
         "openWorldHint": true
       },
       "category": "Search",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read",
       "validation": {
         "filter_conditions": {
@@ -1052,6 +1590,15 @@
         "openWorldHint": true
       },
       "category": "Discovery",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1076,6 +1623,15 @@
         "openWorldHint": true
       },
       "category": "Discovery",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1103,6 +1659,15 @@
         "openWorldHint": true
       },
       "category": "Discovery",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1127,6 +1692,15 @@
         "openWorldHint": true
       },
       "category": "Video",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1167,6 +1741,15 @@
         "openWorldHint": true
       },
       "category": "Video",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1202,6 +1785,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1301,6 +1893,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1404,6 +2005,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -1428,6 +2038,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1456,6 +2075,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -1492,6 +2120,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1521,6 +2158,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1545,6 +2191,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1583,6 +2238,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -1622,6 +2286,15 @@
         "openWorldHint": true
       },
       "category": "Prompt runs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1712,6 +2385,15 @@
         "openWorldHint": true
       },
       "category": "Prompt management",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -1736,6 +2418,15 @@
         "openWorldHint": true
       },
       "category": "Prompt management",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1833,6 +2524,15 @@
         "openWorldHint": true
       },
       "category": "Prompt management",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -1862,6 +2562,15 @@
         "openWorldHint": true
       },
       "category": "Prompt management",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -1886,6 +2595,15 @@
         "openWorldHint": true
       },
       "category": "Prompt management",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -1960,6 +2678,15 @@
         "openWorldHint": true
       },
       "category": "Cloud connectors",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2039,6 +2766,15 @@
         "openWorldHint": true
       },
       "category": "Cloud connectors",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2123,6 +2859,15 @@
         "openWorldHint": true
       },
       "category": "Cloud connectors",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2139,6 +2884,15 @@
         "openWorldHint": true
       },
       "category": "Cloud connectors",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2167,6 +2921,15 @@
         "openWorldHint": true
       },
       "category": "Cloud connectors",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2206,6 +2969,15 @@
         "openWorldHint": true
       },
       "category": "Cloud connectors",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2254,6 +3026,15 @@
         "openWorldHint": true
       },
       "category": "Import jobs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2283,6 +3064,15 @@
         "openWorldHint": true
       },
       "category": "Import jobs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2307,6 +3097,15 @@
         "openWorldHint": true
       },
       "category": "Import jobs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2335,6 +3134,15 @@
         "openWorldHint": true
       },
       "category": "Import jobs",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2365,6 +3173,15 @@
         "openWorldHint": true
       },
       "category": "Indexes",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2400,6 +3217,15 @@
         "openWorldHint": true
       },
       "category": "Videos",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2429,6 +3255,15 @@
         "openWorldHint": true
       },
       "category": "Videos",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2472,6 +3307,15 @@
         "openWorldHint": true
       },
       "category": "Exports",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2508,6 +3352,15 @@
         "openWorldHint": true
       },
       "category": "Exports",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2532,6 +3385,15 @@
         "openWorldHint": true
       },
       "category": "Exports",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2556,6 +3418,15 @@
         "openWorldHint": true
       },
       "category": "Exports",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2611,6 +3482,15 @@
         "openWorldHint": true
       },
       "category": "Webhooks",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2627,6 +3507,15 @@
         "openWorldHint": true
       },
       "category": "Webhooks",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2651,6 +3540,15 @@
         "openWorldHint": true
       },
       "category": "Webhooks",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2716,6 +3614,15 @@
         "openWorldHint": true
       },
       "category": "Webhooks",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2732,6 +3639,15 @@
         "openWorldHint": true
       },
       "category": "Webhooks",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     },
     {
@@ -2760,6 +3676,15 @@
         "openWorldHint": true
       },
       "category": "Webhooks",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "write"
     },
     {
@@ -2802,6 +3727,15 @@
         "openWorldHint": true
       },
       "category": "Webhooks",
+      "availability": {
+        "profiles": [
+          "full"
+        ],
+        "transports": [
+          "stdio",
+          "streamable-http"
+        ]
+      },
       "required_scope": "read"
     }
   ]

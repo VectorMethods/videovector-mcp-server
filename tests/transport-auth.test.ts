@@ -8,6 +8,7 @@ import {
   loadBaseConfig,
   loadHttpConfig,
   loadStdioConfig,
+  readToolProfile,
   type BaseConfig,
   type HttpConfig,
 } from '../src/index.js';
@@ -79,6 +80,63 @@ afterEach(() => {
 });
 
 describe('stateless HTTP transport authentication', () => {
+  it('omits local upload from the hosted tool list', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successfulValidation()));
+    const { app } = createHttpApp(httpConfig);
+    const response = await request(app as any)
+      .post('/mcp')
+      .set('X-API-Key', publicApiKey(99))
+      .set('Accept', 'application/json, text/event-stream')
+      .send(listToolsRequest('hosted-tools'));
+
+    expect(response.status).toBe(200);
+    const names = response.body.result.tools.map((tool: { name: string }) => tool.name);
+    expect(names).toContain('define_prompt');
+    expect(names).toContain('process_media');
+    expect(names).toContain('search_media');
+    expect(names).not.toContain('upload_media');
+  });
+
+  it('rejects direct invocation of a transport-hidden local upload tool', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(successfulValidation());
+    vi.stubGlobal('fetch', fetchSpy);
+    const { app } = createHttpApp(httpConfig);
+    const response = await request(app as any)
+      .post('/mcp')
+      .set('X-API-Key', publicApiKey(98))
+      .set('Accept', 'application/json, text/event-stream')
+      .send(callToolRequest('hidden-upload', 'upload_media'));
+
+    expect(response.status).toBe(200);
+    expect(response.body.result.isError).toBe(true);
+    expect(response.body.result.content[0].text).toContain('not available');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('enforces the simple profile for listings and direct tool calls', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(successfulValidation());
+    vi.stubGlobal('fetch', fetchSpy);
+    const { app } = createHttpApp({ ...httpConfig, toolProfile: 'simple' });
+    const apiKey = publicApiKey(97);
+
+    const listed = await request(app as any)
+      .post('/mcp')
+      .set('X-API-Key', apiKey)
+      .set('Accept', 'application/json, text/event-stream')
+      .send(listToolsRequest('simple-tools'));
+    const names = listed.body.result.tools.map((tool: { name: string }) => tool.name);
+    expect(names).toEqual(['define_prompt', 'process_media', 'search_media']);
+
+    const hidden = await request(app as any)
+      .post('/mcp')
+      .set('X-API-Key', apiKey)
+      .set('Accept', 'application/json, text/event-stream')
+      .send(callToolRequest('hidden-advanced', 'list_indexes'));
+    expect(hidden.body.result.isError).toBe(true);
+    expect(hidden.body.result.content[0].text).toContain('not available');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('returns readiness without exposing process-local session state', async () => {
     const { app } = createHttpApp(httpConfig);
     const response = await request(app as any).get('/health');
@@ -819,6 +877,16 @@ describe('HTTP CORS policy', () => {
 });
 
 describe('stdio transport configuration', () => {
+  it('defaults to the full profile and accepts the simple profile', () => {
+    const original = process.env.VIDEOVECTOR_TOOL_PROFILE;
+    delete process.env.VIDEOVECTOR_TOOL_PROFILE;
+    expect(readToolProfile()).toBe('full');
+    process.env.VIDEOVECTOR_TOOL_PROFILE = 'simple';
+    expect(readToolProfile()).toBe('simple');
+    if (original === undefined) delete process.env.VIDEOVECTOR_TOOL_PROFILE;
+    else process.env.VIDEOVECTOR_TOOL_PROFILE = original;
+  });
+
   it('requires VIDEOVECTOR_API_KEY in stdio mode', () => {
     const original = process.env.VIDEOVECTOR_API_KEY;
     delete process.env.VIDEOVECTOR_API_KEY;
@@ -837,12 +905,19 @@ describe('stdio transport configuration', () => {
 
   it('accepts valid API key format for stdio mode', () => {
     const original = process.env.VIDEOVECTOR_API_KEY;
+    const originalRoots = process.env.VIDEOVECTOR_UPLOAD_ROOTS;
     const apiKey = publicApiKey(300);
     process.env.VIDEOVECTOR_API_KEY = apiKey;
+    process.env.VIDEOVECTOR_UPLOAD_ROOTS = '/tmp/videos,/var/media';
 
-    expect(loadStdioConfig(baseConfig).apiKey).toBe(apiKey);
+    expect(loadStdioConfig(baseConfig)).toMatchObject({
+      apiKey,
+      uploadRoots: ['/tmp/videos', '/var/media'],
+    });
     if (original === undefined) delete process.env.VIDEOVECTOR_API_KEY;
     else process.env.VIDEOVECTOR_API_KEY = original;
+    if (originalRoots === undefined) delete process.env.VIDEOVECTOR_UPLOAD_ROOTS;
+    else process.env.VIDEOVECTOR_UPLOAD_ROOTS = originalRoots;
   });
 
   it('ignores obsolete base URL aliases', () => {

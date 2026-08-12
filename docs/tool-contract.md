@@ -7,7 +7,13 @@ It includes:
 - package name, version, and binary command
 - server name and supported transports
 - canonical environment variable names
-- tool names, descriptions, input schemas, annotations, and categories
+- tool names, descriptions, input schemas, annotations, categories, required API scopes, and availability
+
+Each tool's `availability.profiles` identifies whether it belongs to the
+`simple` and/or `full` profile. `availability.transports` is authoritative for
+hosting: `upload_media` lists only `stdio`, while remote-safe tools also list
+`streamable-http`. Consumers that build hosted tool lists must filter on this
+metadata rather than copying the entire artifact tool array.
 
 Regenerate it after tool changes:
 

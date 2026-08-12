@@ -37,7 +37,11 @@ import {
 
 import { VideoVectorClient } from './client/index.js';
 import { ApiKeyVerifier } from './http/api-key-verifier.js';
-import { TOOL_DEFINITIONS, executeTool } from './tools/index.js';
+import {
+  executeTool,
+  getToolDefinitions,
+  type ToolProfile,
+} from './tools/index.js';
 import { PACKAGE_VERSION } from './version.js';
 
 type TransportMode = 'stdio' | 'http';
@@ -46,11 +50,13 @@ export interface BaseConfig {
   baseUrl: string;
   timeout: number;
   maxRetries: number;
+  toolProfile?: ToolProfile;
 }
 
 export interface StdioConfig extends BaseConfig {
   mode: 'stdio';
   apiKey: string;
+  uploadRoots: string[];
 }
 
 export interface HttpConfig extends BaseConfig {
@@ -148,11 +154,23 @@ export function readCsv(name: string): string[] {
     .filter((value) => value.length > 0);
 }
 
+export function readToolProfile(): ToolProfile {
+  const profile = (process.env.VIDEOVECTOR_TOOL_PROFILE ?? 'full').trim().toLowerCase();
+  if (profile === 'simple' || profile === 'full') {
+    return profile;
+  }
+  console.error(
+    `Error: VIDEOVECTOR_TOOL_PROFILE must be "simple" or "full", got "${profile}"`
+  );
+  process.exit(1);
+}
+
 export function loadBaseConfig(): BaseConfig {
   return {
     baseUrl: process.env.VIDEOVECTOR_BASE_URL ?? DEFAULT_BASE_URL,
     timeout: readPositiveInteger('VIDEOVECTOR_TIMEOUT', 90_000),
     maxRetries: readNonNegativeInteger('VIDEOVECTOR_MAX_RETRIES', 3),
+    toolProfile: readToolProfile(),
   };
 }
 
@@ -182,6 +200,7 @@ export function loadStdioConfig(baseConfig: BaseConfig): StdioConfig {
   return {
     mode: 'stdio',
     apiKey,
+    uploadRoots: readCsv('VIDEOVECTOR_UPLOAD_ROOTS'),
     ...baseConfig,
   };
 }
@@ -272,7 +291,19 @@ function writeProtocolError(
   });
 }
 
-function createMcpServer(client: VideoVectorClient): Server {
+function createMcpServer(
+  client: VideoVectorClient,
+  runtime: {
+    mode: TransportMode;
+    toolProfile?: ToolProfile;
+    uploadRoots?: string[];
+  }
+): Server {
+  const toolDefinitions = getToolDefinitions(
+    runtime.toolProfile ?? 'full',
+    runtime.mode === 'stdio'
+  );
+  const availableToolNames = new Set(toolDefinitions.map((tool) => tool.name));
   const server = new Server(
     {
       name: 'videovector',
@@ -286,7 +317,7 @@ function createMcpServer(client: VideoVectorClient): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async (_request: ListToolsRequest) => ({
-    tools: TOOL_DEFINITIONS,
+    tools: toolDefinitions,
   }));
 
   server.setRequestHandler(
@@ -294,10 +325,28 @@ function createMcpServer(client: VideoVectorClient): Server {
     async (request: CallToolRequest): Promise<CallToolResult> => {
       const { name, arguments: args } = request.params;
       console.error(`[videovector-mcp] Tool called: ${name}`);
+      if (!availableToolNames.has(name)) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: true,
+                message: `Tool is not available in this transport/profile: ${name}`,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
       const result = await executeTool(
         name,
         (args ?? {}) as Record<string, unknown>,
-        client
+        client,
+        {
+          transportMode: runtime.mode,
+          uploadRoots: runtime.uploadRoots,
+        }
       );
       return {
         content: result.content,
@@ -315,7 +364,12 @@ function createMcpServer(client: VideoVectorClient): Server {
 
 async function runStdioServer(config: StdioConfig): Promise<void> {
   const client = createClient(config.apiKey, config);
-  const server = createMcpServer(client);
+  const toolDefinitions = getToolDefinitions(config.toolProfile ?? 'full', true);
+  const server = createMcpServer(client, {
+    mode: 'stdio',
+    toolProfile: config.toolProfile,
+    uploadRoots: config.uploadRoots,
+  });
   let isShuttingDown = false;
 
   async function shutdown(signal: string): Promise<void> {
@@ -346,7 +400,8 @@ async function runStdioServer(config: StdioConfig): Promise<void> {
   console.error('[videovector-mcp] Server started successfully');
   console.error('[videovector-mcp] Transport: stdio');
   console.error(`[videovector-mcp] API: ${config.baseUrl}`);
-  console.error(`[videovector-mcp] Tools available: ${TOOL_DEFINITIONS.length}`);
+  console.error(`[videovector-mcp] Tool profile: ${config.toolProfile ?? 'full'}`);
+  console.error(`[videovector-mcp] Tools available: ${toolDefinitions.length}`);
 }
 
 export function authenticateRequestHeaders(
@@ -502,7 +557,10 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
 
     const requestId = randomUUID();
     const client = createClient(auth.apiKey, config);
-    const server = createMcpServer(client);
+    const server = createMcpServer(client, {
+      mode: 'http',
+      toolProfile: config.toolProfile,
+    });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: config.enableJsonResponse,
@@ -584,6 +642,7 @@ export function createHttpApp(config: HttpConfig): HttpAppContext {
 
 export async function runHttpServer(config: HttpConfig): Promise<void> {
   const context = createHttpApp(config);
+  const toolDefinitions = getToolDefinitions(config.toolProfile ?? 'full', false);
   let listener: HttpServer | null = null;
   let isShuttingDown = false;
 
@@ -613,7 +672,8 @@ export async function runHttpServer(config: HttpConfig): Promise<void> {
       console.error(
         `[videovector-mcp] HTTP endpoint: http://${config.host}:${config.port}/mcp`
       );
-      console.error(`[videovector-mcp] Tools available: ${TOOL_DEFINITIONS.length}`);
+      console.error(`[videovector-mcp] Tool profile: ${config.toolProfile ?? 'full'}`);
+      console.error(`[videovector-mcp] Tools available: ${toolDefinitions.length}`);
       resolve();
     });
     listener = startedListener;
