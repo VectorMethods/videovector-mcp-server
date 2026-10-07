@@ -337,21 +337,23 @@ async function handleDefinePrompt(
   return result(response);
 }
 
-function readSegmentationMode(args: Record<string, unknown>): WorkflowSegmentationMode {
-  const mode = optionalString(args, 'segmentation_mode') ?? 'smart';
-  if (mode !== 'smart' && mode !== 'content_aware' && mode !== 'fixed') {
-    throw new Error('segmentation_mode must be one of: smart, content_aware, fixed');
+function readSegmentationMode(
+  args: Record<string, unknown>
+): WorkflowSegmentationMode | undefined {
+  const mode = optionalString(args, 'segmentation_mode');
+  if (mode !== undefined && mode !== 'content_aware' && mode !== 'fixed') {
+    throw new Error('segmentation_mode must be one of: content_aware, fixed');
   }
   return mode;
 }
 
 function readFixedDuration(
   args: Record<string, unknown>,
-  mode: WorkflowSegmentationMode
+  mode: WorkflowSegmentationMode | undefined
 ): number | undefined {
   const value = args.fixed_segment_duration_seconds;
   if (value === undefined || value === null) {
-    return mode === 'fixed' ? 10 : undefined;
+    return undefined;
   }
   if (mode !== 'fixed') {
     throw new Error('fixed_segment_duration_seconds is only valid when segmentation_mode is fixed');
@@ -386,12 +388,16 @@ async function handleProcessMedia(
     ...(videoIds === undefined ? {} : { video_ids: videoIds }),
     ...(indexId === undefined ? {} : { index_id: indexId }),
     ...(indexName === undefined ? {} : { index_name: indexName }),
-    segmentation_mode: segmentationMode,
+    ...(segmentationMode === undefined ? {} : { segmentation_mode: segmentationMode }),
     ...(fixedDuration === undefined
       ? {}
       : { fixed_segment_duration_seconds: fixedDuration }),
-    advanced_transcription: optionalBoolean(args, 'advanced_transcription', false),
-    create_image_embeddings: optionalBoolean(args, 'create_image_embeddings', false),
+    ...(args.advanced_transcription === undefined || args.advanced_transcription === null
+      ? {}
+      : { advanced_transcription: optionalBoolean(args, 'advanced_transcription', false) }),
+    ...(args.create_image_embeddings === undefined || args.create_image_embeddings === null
+      ? {}
+      : { create_image_embeddings: optionalBoolean(args, 'create_image_embeddings', false) }),
   };
 
   const response = await client.workflowProcessMedia(

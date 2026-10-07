@@ -405,7 +405,7 @@ The generated prompt is saved by default and the returned prompt_id can be passe
     name: TOOL_NAMES.PROCESS_MEDIA,
     description: `Process media with one prompt using a minimal target contract.
 
-Provide prompt_id or an inline prompt_instruction. With no target, the entire Playground is processed. Provide index_id/index_name for an index, or video_ids for selected media. Segmentation defaults to smart; advanced transcription and image embeddings default to false.`,
+Provide prompt_id or an inline prompt_instruction. With no target, the entire Playground is processed. Provide index_id/index_name for an index, or video_ids for selected media. Omit execution settings to retain saved prompt and backend defaults. Explicit shortcut settings use content_aware or fixed segmentation, with transcription and image embeddings disabled unless enabled.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -438,9 +438,8 @@ Provide prompt_id or an inline prompt_instruction. With no target, the entire Pl
         },
         segmentation_mode: {
           type: 'string',
-          enum: ['smart', 'content_aware', 'fixed'],
-          default: 'smart',
-          description: 'Unified segmentation mode. smart maps audio to content-aware segmentation.',
+          enum: ['content_aware', 'fixed'],
+          description: 'Optional unified segmentation override. Omit execution settings to retain saved prompt and backend defaults.',
         },
         fixed_segment_duration_seconds: {
           type: 'integer',
@@ -450,13 +449,11 @@ Provide prompt_id or an inline prompt_instruction. With no target, the entire Pl
         },
         advanced_transcription: {
           type: 'boolean',
-          default: false,
-          description: 'Enable advanced transcription during processing.',
+          description: 'Enable advanced transcription during processing. Omit all execution settings to retain saved prompt and backend defaults.',
         },
         create_image_embeddings: {
           type: 'boolean',
-          default: false,
-          description: 'Create image embeddings during processing.',
+          description: 'Create image embeddings during processing. Omit all execution settings to retain saved prompt and backend defaults.',
         },
         idempotency_key: {
           type: 'string',
@@ -1051,9 +1048,8 @@ This does not start processing. Video/audio targets must already have server-mea
         },
         video_segmentation_type: {
           type: 'string',
-          enum: ['smart', 'fixed', 'content_aware'],
-          default: 'smart',
-          description: 'How to segment videos before extraction.',
+          enum: ['fixed', 'content_aware'],
+          description: 'Optional video segmentation override; omitted settings retain saved prompt and backend defaults.',
         },
         video_segment_duration: {
           type: 'number',
@@ -1064,8 +1060,7 @@ This does not start processing. Video/audio targets must already have server-mea
         audio_segmentation_type: {
           type: 'string',
           enum: ['fixed', 'content_aware'],
-          default: 'content_aware',
-          description: 'How to segment audio files.',
+          description: 'Optional audio segmentation override; omitted settings retain saved prompt and backend defaults.',
         },
         audio_segment_duration: {
           type: 'number',
@@ -1079,13 +1074,11 @@ This does not start processing. Video/audio targets must already have server-mea
         },
         enable_transcription: {
           type: 'boolean',
-          default: true,
-          description: 'Enable transcription for videos and audio.',
+          description: 'Enable transcription for videos and audio. Omit to retain saved prompt and backend defaults.',
         },
         enable_image_embedding: {
           type: 'boolean',
-          default: true,
-          description: 'Enable image embeddings for image-search workflows.',
+          description: 'Enable image embeddings for image-search workflows. Omit to retain saved prompt and backend defaults.',
         },
       },
       required: ['prompt_id', 'target'],
@@ -1130,10 +1123,9 @@ Note: For large indexes, processing may take several minutes. Consider using web
         },
         video_segmentation_type: {
           type: 'string',
-          enum: ['smart', 'fixed', 'content_aware'],
-          default: 'smart',
+          enum: ['fixed', 'content_aware'],
           description:
-            'How to segment videos: smart (scene detection), fixed (fixed duration), content_aware (pre-computed)',
+            'Optional video segmentation override: fixed (fixed duration) or content_aware. Omit to retain saved prompt and backend defaults.',
         },
         video_segment_duration: {
           type: 'number',
@@ -1144,8 +1136,7 @@ Note: For large indexes, processing may take several minutes. Consider using web
         audio_segmentation_type: {
           type: 'string',
           enum: ['fixed', 'content_aware'],
-          default: 'content_aware',
-          description: 'How to segment audio files.',
+          description: 'Optional audio segmentation override; omitted settings retain saved prompt and backend defaults.',
         },
         audio_segment_duration: {
           type: 'number',
@@ -1160,13 +1151,11 @@ Note: For large indexes, processing may take several minutes. Consider using web
         },
         enable_transcription: {
           type: 'boolean',
-          default: true,
-          description: 'Enable audio transcription for videos',
+          description: 'Enable audio transcription for videos. Omit to retain saved prompt and backend defaults.',
         },
         enable_image_embedding: {
           type: 'boolean',
-          default: true,
-          description: 'Enable image embeddings for visual search workflows.',
+          description: 'Enable image embeddings for visual search workflows. Omit to retain saved prompt and backend defaults.',
         },
         idempotency_key: {
           type: 'string',

@@ -6,8 +6,9 @@ This package lets MCP clients such as Claude Desktop, Cursor, Claude Code, and c
 
 ## Status
 
-- Primary transport: `stdio`
-- Self-hostable transport: Streamable HTTP at `/mcp`
+- Hosted service: Streamable HTTP with OAuth at `https://api.vectormethods.com/mcp`
+- Local package transport: `stdio` with a VideoVector API key
+- Self-hostable package transport: Streamable HTTP with an API key at `/mcp`
 - Runtime: Node.js 18+
 - Package: `@vectormethods/videovector-mcp-server`
 - Command: `videovector-mcp`
@@ -16,7 +17,41 @@ This package lets MCP clients such as Claude Desktop, Cursor, Claude Code, and c
 
 This repository is the public source of truth for VideoVector MCP server code, tool contracts, examples, and release metadata. Private VectorMethods backend deployment wiring, service accounts, project IDs, billing internals, and website source are intentionally not part of this repository.
 
-## Install
+## Connect to hosted VideoVector
+
+Add `https://api.vectormethods.com/mcp` to your client's remote MCP configuration
+and choose OAuth. Complete the browser sign-in with your VideoVector account,
+verify your email if requested, and return to the client. No API key or local
+package installation is needed for this connection. Clients discover the
+authorization server and manage access-token refresh automatically.
+
+For Cursor, use this entry in `~/.cursor/mcp.json` or your project's
+`.cursor/mcp.json`, then complete the client's OAuth connection prompt:
+
+```json
+{
+  "mcpServers": {
+    "videovector": {
+      "url": "https://api.vectormethods.com/mcp"
+    }
+  }
+}
+```
+
+For Claude and Claude Desktop, add the URL as a custom remote connector in
+**Customize → Connectors**. Choose **Register automatically** when asked how
+the OAuth client identifies itself. Remote connectors use this UI; the local
+JSON examples below configure stdio servers. See the current
+[Claude connector instructions](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
+and [Cursor MCP configuration](https://cursor.com/docs/mcp).
+
+OAuth connects the signed-in VideoVector account, including permitted create,
+update, and delete operations. Product ownership, credits, and entitlements
+still apply. For a deliberately limited integration, use a scoped API key.
+See [hosted OAuth setup and troubleshooting](docs/hosted-oauth.md) for discovery,
+custom clients, token refresh, and the available tool surface.
+
+## Install for local stdio
 
 Use `npx` from your MCP client:
 
@@ -59,12 +94,16 @@ Environment variables:
 ## Self-Hosted HTTP
 
 HTTP mode is intended for self-hosted or private network deployments.
+The runtime in this repository (`package.json` version `2.1.0`) authenticates
+HTTP requests with API keys; it does not implement the hosted service's
+OAuth verifier or discovery. To
+connect using browser OAuth, use the hosted URL above. Setting OAuth
+environment variables on this package does not enable that hosted behavior.
 
 ```bash
-npm run build
 MCP_TRANSPORT_MODE=http \
 VIDEOVECTOR_BASE_URL=https://api.vectormethods.com/api/v2 \
-node dist/index.js
+npx -y @vectormethods/videovector-mcp-server
 ```
 
 Endpoints:
@@ -103,16 +142,26 @@ Plaintext keys are never written to caches or logs. When both supported HTTP
 headers are present, `X-API-Key` takes precedence, matching the VideoVector
 API.
 
-Do not advertise a public hosted remote MCP endpoint until OAuth and MCP protected-resource metadata are enabled for that deployment.
+The hosted VideoVector service has OAuth and protected-resource discovery
+enabled. This package's API-key HTTP mode is a separate deployment choice;
+see [self-hosted HTTP](docs/self-hosting-http.md). Do not advertise a
+self-hosted deployment as OAuth-capable without implementing its verification
+and protected-resource metadata.
 
-## Tools
+## Repository tools
+
+This section describes the local and self-hosted runtime in this repository
+(`package.json` version `2.1.0`).
+The hosted service has its own current tool surface, including remote media
+upload; see [hosted OAuth tools](docs/hosted-oauth.md#available-tools-and-existing-api-key-clients)
+and discover the available tools through your connected client.
 
 For the lowest-friction agent workflow, set `VIDEOVECTOR_TOOL_PROFILE=simple`.
 It exposes:
 
 - `upload_media`: stream a local media file to Playground or a named/index-ID destination
 - `define_prompt`: generate and, by default, save a Prompt Lab prompt
-- `process_media`: process Playground, an index, or selected media with `smart`, `content_aware`, or `fixed` segmentation
+- `process_media`: process Playground, an index, or selected media with optional `content_aware` or `fixed` segmentation; omitted execution settings retain saved prompt and backend defaults
 - `search_media`: vector or conditional search over Playground, an index, selected media, or prompt runs with stable cursor pagination
 
 The default `full` profile preserves those tools plus the complete advanced

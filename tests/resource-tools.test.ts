@@ -258,12 +258,45 @@ describe('resource tool handlers', () => {
       video_segment_duration: 20,
       audio_segment_duration: undefined,
       processing_model: undefined,
-      enable_transcription: true,
-      enable_image_embedding: true,
+      enable_transcription: undefined,
+      enable_image_embedding: undefined,
     });
 
     const payload = parseContent(result);
     expect(payload.estimated_mt).toBe(12.5);
+  });
+
+  it.each(['execute_prompt', 'estimate_prompt_run'])('%s preserves omitted settings and explicit disabled features', async (name) => {
+    const executePrompt = vi.fn().mockResolvedValue({ run_id: 'run_1', status: 'pending' });
+    const estimatePromptRun = vi.fn().mockResolvedValue({ estimated_mt: 1, breakdown: {} });
+    const client = { executePrompt, estimatePromptRun } as unknown as VideoVectorClient;
+    const target = { type: 'videos', index_id: 'idx_1', video_ids: ['vid_1'] };
+
+    await executeTool(name, { prompt_id: 'prompt_1', target }, client);
+    await executeTool(name, {
+      prompt_id: 'prompt_1', target, video_segmentation_type: 'content_aware',
+      enable_transcription: false, enable_image_embedding: false,
+    }, client);
+
+    const calls = name === 'execute_prompt' ? executePrompt.mock.calls : estimatePromptRun.mock.calls;
+    expect(JSON.parse(JSON.stringify(calls[0]?.[0]))).toEqual({ prompt_id: 'prompt_1', target });
+    expect(JSON.parse(JSON.stringify(calls[1]?.[0]))).toEqual({
+      prompt_id: 'prompt_1', target, video_segmentation_type: 'content_aware',
+      enable_transcription: false, enable_image_embedding: false,
+    });
+  });
+
+  it.each(['execute_prompt', 'estimate_prompt_run'])('%s rejects retired smart segmentation without API submission', async (name) => {
+    const client = { executePrompt: vi.fn(), estimatePromptRun: vi.fn() } as unknown as VideoVectorClient;
+    const result = await executeTool(name, {
+      prompt_id: 'prompt_1', target: { type: 'videos', video_ids: ['vid_1'] },
+      video_segmentation_type: 'smart',
+    }, client);
+
+    expect(result.isError).toBe(true);
+    expect(String(parseContent(result).message)).toContain('fixed, content_aware');
+    expect((client as any).executePrompt).not.toHaveBeenCalled();
+    expect((client as any).estimatePromptRun).not.toHaveBeenCalled();
   });
 
   it('get_video surfaces backend marker and processing snapshot fields', async () => {

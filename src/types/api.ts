@@ -23,7 +23,7 @@ export interface PaginatedResponse<T> {
 // Simplified Workflow Types
 // ============================================================================
 
-export type WorkflowSegmentationMode = 'smart' | 'content_aware' | 'fixed';
+export type WorkflowSegmentationMode = 'content_aware' | 'fixed';
 export type WorkflowResultLevel = 'segment' | 'video';
 
 export interface WorkflowUploadRequest {
@@ -454,7 +454,7 @@ export type PromptRunStatus =
   | 'completed_with_failures'
   | 'failed'
   | 'cancelled';
-export type VideoSegmentationType = 'smart' | 'fixed' | 'content_aware';
+export type VideoSegmentationType = 'fixed' | 'content_aware';
 export type AudioSegmentationType = 'fixed' | 'content_aware';
 
 export interface ExecutePromptTarget {

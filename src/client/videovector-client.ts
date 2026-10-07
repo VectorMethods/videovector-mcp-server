@@ -121,6 +121,7 @@ const EXPORT_QUEUE_STATUS_VALUES = new Set([
 ]);
 const PUBLIC_EXPORT_PARAM_FIELDS = new Set([
   'prompt_run_ids',
+  'result_scope',
   'destination_connector_id',
   'destination_base_path',
   'destination_subpath',
@@ -241,7 +242,10 @@ function isPublicExportParams(value: unknown): value is Record<string, unknown> 
   }
 
   return (
-    (value.destination_connector_id === undefined
+    (value.result_scope === undefined
+      || value.result_scope === 'all'
+      || value.result_scope === 'matches')
+    && (value.destination_connector_id === undefined
       || isNullableNonEmptyString(value.destination_connector_id))
     && (value.destination_base_path === undefined
       || isNullableString(value.destination_base_path))

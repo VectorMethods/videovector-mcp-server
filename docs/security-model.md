@@ -15,11 +15,13 @@ a supported regular media file, and rechecks its device, inode, and size after
 opening without following a final symlink. Multipart bodies are streamed; a
 retry reopens the file and reuses one backend idempotency key.
 
-## Streamable HTTP
+## Self-hosted Streamable HTTP
 
-In HTTP mode, every MCP POST authenticates with a VideoVector API key. The
-transport is stateless: no session identifier, API key, or server object is
-retained after the response closes. This allows requests to move safely across
+In this repository runtime (`package.json` version `2.1.0`), every HTTP MCP
+POST authenticates with a VideoVector API key, including initialization and
+tool discovery. OAuth authentication is not implemented by this package.
+The transport is stateless: no session identifier, API key, or server object
+is retained after the response closes. This allows requests to move safely across
 instances and restarts.
 
 HTTP tool listings omit `upload_media`; a remote MCP caller cannot cause the
@@ -40,3 +42,27 @@ HTTP mode has optional host and origin allowlists:
 ## Credential-Sensitive Tools
 
 Cloud connector creation tools accept user-provided cloud credentials and forward them to the VideoVector API. The MCP server does not persist them. Users should provide least-privilege credentials and rotate them according to their own cloud policy.
+
+## Hosted OAuth service
+
+The service at `https://api.vectormethods.com/mcp` supports browser OAuth
+account linking independently of this package's API-key HTTP mode. See
+[hosted OAuth](hosted-oauth.md) for client setup, discovery, and token refresh.
+Initialization and tool discovery may run before sign-in; protected tool calls
+require exactly one valid API-key or OAuth credential. Mixed credentials are
+rejected by the hosted service.
+
+OAuth authorizes the linked account's tenant operations, including permitted
+tenant administration and deletion. Ownership, billing, quota, and
+entitlements remain authoritative. The grant does not permit API-key
+management, platform administration, or Firebase-session-only and
+internal-service routes. OAuth identity scopes do not map to the
+`read`, `write`, `search`, or `admin` permissions of API keys.
+
+Cloud connector creation tools, `create_webhook`, and
+`get_export_download_url` are excluded from the hosted OAuth tool surface.
+They remain available to existing API-key clients. Configure connectors and
+webhooks in VideoVector and use authenticated app links for OAuth exports.
+
+Keep OAuth access and refresh tokens in the MCP client's credential store.
+Do not include them in prompts, URLs, repository configuration, or tool inputs.

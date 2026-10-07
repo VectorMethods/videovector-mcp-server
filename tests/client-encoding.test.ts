@@ -248,6 +248,25 @@ describe('VideoVectorClient request encoding', () => {
     });
   });
 
+  it.each(['all', 'matches'])('preserves the deployed %s export result scope in status and lists', async (resultScope) => {
+    const payload = exportStatusPayload({ export_params: { result_scope: resultScope } });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([payload]), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new VideoVectorClient({
+      apiKey: 'sk_test_abc', baseUrl: 'https://example.com/api/v2', maxRetries: 0,
+    });
+
+    await expect(client.getExportStatus('exp_1')).resolves.toMatchObject({
+      export_params: { result_scope: resultScope },
+      download_url: '/api/v2/exports/exp_1/download',
+    });
+    await expect(client.listExports()).resolves.toEqual([payload]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes('download-url'))).toBe(true);
+  });
+
   it.each([
     [
       'processing direct export',
@@ -333,6 +352,7 @@ describe('VideoVectorClient request encoding', () => {
     ['an unknown export type', { export_type: 'response-derived-secret-type' }],
     ['an empty target id', { target_id: '' }],
     ['a nonobject export_params', { export_params: ['response-derived-secret-param'] }],
+    ['an invalid export result scope', { export_params: { result_scope: 'response-derived-secret-scope' } }],
     [
       'an internal export_params field',
       { export_params: { billing_account_id: 'response-derived-secret-account' } },
