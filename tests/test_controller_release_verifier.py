@@ -26,12 +26,7 @@ def _module() -> ModuleType:
 verifier = _module()
 
 
-def _server(version: str, digest: str | None) -> dict[str, object]:
-    oci_identifier = (
-        f"{verifier.MCP_IMAGE}:{version}"
-        if digest is None
-        else f"{verifier.MCP_IMAGE}@{digest}"
-    )
+def _server(version: str) -> dict[str, object]:
     return {
         "$schema": verifier.MCP_SCHEMA,
         "description": "VideoVector MCP server.",
@@ -44,12 +39,6 @@ def _server(version: str, digest: str | None) -> dict[str, object]:
                 "transport": {"type": "stdio"},
                 "version": version,
             },
-            {
-                "environmentVariables": verifier.EXPECTED_SERVER_ENV,
-                "identifier": oci_identifier,
-                "registryType": "oci",
-                "transport": {"type": "stdio"},
-            },
         ],
         "title": "VideoVector",
         "version": version,
@@ -60,7 +49,6 @@ def _npm_artifact(
     path: Path,
     *,
     version: str,
-    image_digest: str,
     install_hook: bool = False,
 ) -> dict[str, object]:
     package = {
@@ -72,7 +60,7 @@ def _npm_artifact(
         "packageManager": "npm@11.15.0",
         "scripts": {"install": "node attacker.js"} if install_hook else {},
     }
-    embedded = _server(version, None)
+    embedded = _server(version)
     with tarfile.open(path, "w:gz") as archive:
         for name, payload, mode in (
             (
@@ -108,131 +96,6 @@ def _npm_artifact(
     }
 
 
-def _blob(payload: bytes) -> tuple[str, dict[str, object]]:
-    digest = hashlib.sha256(payload).hexdigest()
-    return digest, {
-        "digest": f"sha256:{digest}",
-        "size": len(payload),
-    }
-
-
-def _oci_artifact(
-    path: Path,
-    *,
-    source_sha: str,
-    version: str,
-    extra_blob: bool = False,
-) -> tuple[str, dict[str, object]]:
-    labels = {
-        "io.modelcontextprotocol.server.name": verifier.MCP_NAME,
-        "org.opencontainers.image.revision": source_sha,
-        "org.opencontainers.image.source": (
-            f"https://github.com/{verifier.MCP_REPOSITORY}"
-        ),
-        "org.opencontainers.image.version": version,
-    }
-    blobs: dict[str, bytes] = {}
-    layer_bytes = b"canonical-layer"
-    layer_digest, layer_descriptor = _blob(layer_bytes)
-    layer_descriptor["mediaType"] = "application/vnd.oci.image.layer.v1.tar"
-    blobs[layer_digest] = layer_bytes
-    platform_descriptors = []
-    platform_projection = []
-    for architecture in ("amd64", "arm64"):
-        config = {
-            "architecture": architecture,
-            "os": "linux",
-            "config": {
-                "Cmd": ["node", "dist/index.js"],
-                "Entrypoint": None,
-                "Env": [
-                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".join(
-                        ("PATH=", "")
-                    ),
-                    "NODE_VERSION=24.14.0",
-                    "YARN_VERSION=1.22.22",
-                    "NODE_ENV=production",
-                    "PORT=8080",
-                    "MCP_TRANSPORT_MODE=stdio",
-                ],
-                "Labels": labels,
-                "User": "node",
-                "WorkingDir": "/app",
-            },
-        }
-        config_bytes = json.dumps(
-            config, sort_keys=True, separators=(",", ":")
-        ).encode()
-        config_digest, config_descriptor = _blob(config_bytes)
-        config_descriptor["mediaType"] = verifier.OCI_CONFIG
-        blobs[config_digest] = config_bytes
-        manifest = {
-            "schemaVersion": 2,
-            "mediaType": verifier.OCI_MANIFEST,
-            "config": config_descriptor,
-            "layers": [layer_descriptor],
-        }
-        manifest_bytes = json.dumps(
-            manifest, sort_keys=True, separators=(",", ":")
-        ).encode()
-        manifest_digest, manifest_descriptor = _blob(manifest_bytes)
-        manifest_descriptor.update(
-            {
-                "mediaType": verifier.OCI_MANIFEST,
-                "platform": {"architecture": architecture, "os": "linux"},
-            }
-        )
-        blobs[manifest_digest] = manifest_bytes
-        platform_descriptors.append(manifest_descriptor)
-        platform_projection.append(
-            {
-                "architecture": architecture,
-                "config_digest": config_descriptor["digest"],
-                "manifest_digest": manifest_descriptor["digest"],
-                "os": "linux",
-            }
-        )
-    root = {
-        "schemaVersion": 2,
-        "mediaType": verifier.OCI_INDEX,
-        "manifests": platform_descriptors,
-    }
-    root_bytes = json.dumps(root, sort_keys=True, separators=(",", ":")).encode()
-    root_digest, root_descriptor = _blob(root_bytes)
-    root_descriptor["mediaType"] = verifier.OCI_INDEX
-    blobs[root_digest] = root_bytes
-    outer = {
-        "schemaVersion": 2,
-        "manifests": [root_descriptor],
-    }
-    files = {
-        "index.json": json.dumps(outer, separators=(",", ":")).encode(),
-        "oci-layout": b'{"imageLayoutVersion":"1.0.0"}',
-        **{f"blobs/sha256/{digest}": payload for digest, payload in blobs.items()},
-    }
-    if extra_blob:
-        files[f"blobs/sha256/{'f' * 64}"] = b"unreferenced"
-    with tarfile.open(path, "w:") as archive:
-        for directory in ("blobs", "blobs/sha256"):
-            info = tarfile.TarInfo(directory)
-            info.type = tarfile.DIRTYPE
-            archive.addfile(info)
-        for name, payload in sorted(files.items()):
-            info = tarfile.TarInfo(name)
-            info.size = len(payload)
-            info.mode = 0o644
-            archive.addfile(info, io.BytesIO(payload))
-    platform_projection.sort(key=lambda item: str(item["architecture"]))
-    return f"sha256:{root_digest}", {
-        "image": verifier.MCP_IMAGE,
-        "tag": version,
-        "digest": f"sha256:{root_digest}",
-        "media_type": verifier.OCI_INDEX,
-        "platforms": platform_projection,
-        "labels": labels,
-    }
-
-
 def _full_bundle(root: Path) -> tuple[Path, dict[str, str]]:
     version = "2.0.2"
     source_sha = "a" * 40
@@ -240,24 +103,15 @@ def _full_bundle(root: Path) -> tuple[Path, dict[str, str]]:
     body_sha = "b" * 64
     bundle = root / "bundle"
     npm_directory = bundle / "npm"
-    image_directory = bundle / "image"
     mcp_directory = bundle / "mcp"
     npm_directory.mkdir(parents=True)
-    image_directory.mkdir()
     mcp_directory.mkdir()
-    image_path = image_directory / "videovector-mcp-server.oci.tar"
-    image_digest, ghcr_metadata = _oci_artifact(
-        image_path,
-        source_sha=source_sha,
-        version=version,
-    )
     npm_path = npm_directory / f"vectormethods-videovector-mcp-server-{version}.tgz"
     npm_metadata = _npm_artifact(
         npm_path,
         version=version,
-        image_digest=image_digest,
     )
-    server = _server(version, image_digest)
+    server = _server(version)
     server_path = mcp_directory / "server.json"
     server_path.write_text(
         json.dumps(server, sort_keys=True, separators=(",", ":")),
@@ -266,7 +120,6 @@ def _full_bundle(root: Path) -> tuple[Path, dict[str, str]]:
     registry_metadata = {
         "schema_version": "2.0.0",
         "npm": npm_metadata,
-        "ghcr": ghcr_metadata,
         "mcp_registry": {
             "server": server,
             "server_json_sha256": hashlib.sha256(server_path.read_bytes()).hexdigest(),
@@ -294,17 +147,12 @@ def _full_bundle(root: Path) -> tuple[Path, dict[str, str]]:
                 "npm-tarball",
             ),
             descriptor(
-                image_path,
-                "image/videovector-mcp-server.oci.tar",
-                "oci-image",
-            ),
-            descriptor(
                 server_path,
                 "mcp/server.json",
                 "mcp-registry-metadata",
             ),
         ],
-        "image_digest": image_digest,
+        "image_digest": None,
         "package": {"name": verifier.MCP_PACKAGE, "version": version},
         "registry_metadata_path": "registry-metadata.json",
         "registry_metadata_sha256": hashlib.sha256(
@@ -319,8 +167,6 @@ def _full_bundle(root: Path) -> tuple[Path, dict[str, str]]:
         "tag_commit_sha": source_sha,
         "tag_object_sha": tag_object_sha,
         "tool_versions": {
-            "docker": "29.1.3",
-            "docker_buildx": "0.28.0",
             "node": "24.14.0",
             "npm": "11.15.0",
         },
@@ -348,7 +194,7 @@ class ControllerReleaseVerifierTests(unittest.TestCase):
             bundle, identity = _full_bundle(Path(raw_temp))
             manifest_path = bundle / "release-manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["tool_versions"]["docker"] = "latest"
+            manifest["tool_versions"]["npm"] = "latest"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(
                 verifier.ControllerVerificationError, "provenance identity"
@@ -371,11 +217,9 @@ class ControllerReleaseVerifierTests(unittest.TestCase):
     def test_npm_verifier_rejects_install_time_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as raw_temp:
             path = Path(raw_temp) / "artifact.tgz"
-            digest = f"sha256:{'a' * 64}"
             metadata = _npm_artifact(
                 path,
                 version="2.0.2",
-                image_digest=digest,
                 install_hook=True,
             )
             with self.assertRaisesRegex(
@@ -384,45 +228,59 @@ class ControllerReleaseVerifierTests(unittest.TestCase):
                 verifier._verify_npm(
                     path,
                     version="2.0.2",
-                    image_digest=digest,
                     metadata=metadata,
-                    expected_server=_server("2.0.2", digest),
+                    expected_server=_server("2.0.2"),
                 )
 
-    def test_oci_verifier_streams_a_closed_exact_layout(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_temp:
-            path = Path(raw_temp) / "image.oci.tar"
-            source_sha = "a" * 40
-            digest, metadata = _oci_artifact(
-                path, source_sha=source_sha, version="2.0.2"
-            )
-            verifier._verify_oci(
-                path,
-                expected_digest=digest,
-                source_sha=source_sha,
-                version="2.0.2",
-                metadata=metadata,
-            )
+    def test_rejects_retired_container_fields_and_artifacts(self) -> None:
+        for field in ("image_digest", "ghcr", "oci-artifact"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as raw_temp:
+                bundle, identity = _full_bundle(Path(raw_temp))
+                manifest_path = bundle / "release-manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                if field == "image_digest":
+                    manifest["image_digest"] = "sha256:" + "a" * 64
+                elif field == "oci-artifact":
+                    manifest["artifacts"].append(
+                        {
+                            "kind": "oci-image",
+                            "path": "image/container.tar",
+                            "sha256": "a" * 64,
+                            "size": 1,
+                        }
+                    )
+                else:
+                    metadata_path = bundle / "registry-metadata.json"
+                    metadata = json.loads(metadata_path.read_text())
+                    metadata["ghcr"] = {"image": "retired"}
+                    metadata_path.write_text(json.dumps(metadata))
+                    manifest["registry_metadata_sha256"] = hashlib.sha256(
+                        metadata_path.read_bytes()
+                    ).hexdigest()
+                manifest_path.write_text(json.dumps(manifest))
+                with self.assertRaises(verifier.ControllerVerificationError):
+                    verifier.verify_bundle(bundle, **identity)
 
-    def test_oci_verifier_rejects_unreferenced_blob(self) -> None:
+    def test_rejects_container_package_metadata(self) -> None:
+        server = _server("2.0.2")
+        server["packages"].append({"registryType": "oci", "identifier": "retired"})
+        with self.assertRaisesRegex(verifier.ControllerVerificationError, "one npm"):
+            verifier._verify_server(server, "2.0.2")
+
+    def test_rejects_different_embedded_npm_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as raw_temp:
-            path = Path(raw_temp) / "image.oci.tar"
-            source_sha = "a" * 40
-            digest, metadata = _oci_artifact(
-                path,
-                source_sha=source_sha,
-                version="2.0.2",
-                extra_blob=True,
-            )
+            path = Path(raw_temp) / "artifact.tgz"
+            metadata = _npm_artifact(path, version="2.0.2")
+            expected = _server("2.0.2")
+            expected["description"] = "Changed only in registry metadata"
             with self.assertRaisesRegex(
-                verifier.ControllerVerificationError, "closed blob inventory"
+                verifier.ControllerVerificationError, "embedded"
             ):
-                verifier._verify_oci(
+                verifier._verify_npm(
                     path,
-                    expected_digest=digest,
-                    source_sha=source_sha,
                     version="2.0.2",
                     metadata=metadata,
+                    expected_server=expected,
                 )
 
 

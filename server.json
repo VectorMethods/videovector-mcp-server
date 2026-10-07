@@ -45,46 +45,6 @@
           "default": "3"
         }
       ]
-    },
-    {
-      "registryType": "oci",
-      "identifier": "ghcr.io/vectormethods/videovector-mcp-server:2.1.0",
-      "transport": {
-        "type": "stdio"
-      },
-      "environmentVariables": [
-        {
-          "name": "VIDEOVECTOR_API_KEY",
-          "description": "VideoVector production API key.",
-          "format": "string",
-          "isRequired": true,
-          "isSecret": true
-        },
-        {
-          "name": "VIDEOVECTOR_BASE_URL",
-          "description": "VideoVector API base URL.",
-          "format": "string",
-          "isRequired": false,
-          "isSecret": false,
-          "default": "https://api.vectormethods.com/api/v2"
-        },
-        {
-          "name": "VIDEOVECTOR_TIMEOUT",
-          "description": "Per-request timeout in milliseconds.",
-          "format": "number",
-          "isRequired": false,
-          "isSecret": false,
-          "default": "90000"
-        },
-        {
-          "name": "VIDEOVECTOR_MAX_RETRIES",
-          "description": "Maximum retry count for retryable API failures.",
-          "format": "number",
-          "isRequired": false,
-          "isSecret": false,
-          "default": "3"
-        }
-      ]
     }
   ]
 }

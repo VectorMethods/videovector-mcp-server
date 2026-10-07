@@ -3,7 +3,7 @@
 
 This verifier intentionally shares no implementation with the JavaScript
 builder or publisher. It uses only the Python standard library, never extracts
-or executes artifact code, and streams all package and OCI payloads.
+or executes artifact code, and streams package payloads.
 """
 
 from __future__ import annotations
@@ -21,45 +21,19 @@ from typing import IO, Any, NoReturn, cast
 MCP_REPOSITORY = "VectorMethods/videovector-mcp-server"
 MCP_PACKAGE = "@vectormethods/videovector-mcp-server"
 MCP_NAME = "io.github.VectorMethods/videovector-mcp-server"
-MCP_IMAGE = "ghcr.io/vectormethods/videovector-mcp-server"
 MCP_SCHEMA = (
     "https://static.modelcontextprotocol.io/schemas/" "2025-12-11/server.schema.json"
 )
 SHA256 = re.compile(r"[0-9a-f]{64}")
 GIT_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
-IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 SEMVER = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
 )
-OCI_INDEX = "application/vnd.oci.image.index.v1+json"
-OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
-OCI_CONFIG = "application/vnd.oci.image.config.v1+json"
-OCI_LAYERS = frozenset(
-    {
-        "application/vnd.oci.image.layer.v1.tar",
-        "application/vnd.oci.image.layer.v1.tar+gzip",
-        "application/vnd.oci.image.layer.v1.tar+zstd",
-    }
-)
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_NPM_BYTES = 256 * 1024 * 1024
-MAX_OCI_BYTES = 4 * 1024 * 1024 * 1024
 MAX_ENTRIES = 40_000
 MAX_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
-REQUIRED_PLATFORMS = (("linux", "amd64"), ("linux", "arm64"))
-EXPECTED_IMAGE_ENV = frozenset(
-    {
-        "NODE_ENV=production",
-        "PORT=8080",
-        "MCP_TRANSPORT_MODE=stdio",
-        "NODE_VERSION=24.14.0",
-        "YARN_VERSION=1.22.22",
-    }
-)
-EXPECTED_IMAGE_PATH = (
-    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-)
 EXPECTED_SERVER_ENV = [
     {
         "name": "VIDEOVECTOR_API_KEY",
@@ -208,9 +182,7 @@ def _canonical_semver(version: str) -> bool:
     )
 
 
-def _verify_server(
-    server: Any, version: str, image_digest: str | None
-) -> Mapping[str, Any]:
+def _verify_server(server: Any, version: str) -> Mapping[str, Any]:
     value = _mapping(server, "server.json")
     _exact_keys(
         value,
@@ -228,41 +200,22 @@ def _verify_server(
     ):
         _fail("server.json identity differs")
     packages = _sequence(value.get("packages"), "server.json packages")
-    if len(packages) != 2:
-        _fail("server.json must contain exactly two packages")
-    by_type: dict[str, Mapping[str, Any]] = {}
-    for raw in packages:
-        package = _mapping(raw, "server.json package")
-        kind = package.get("registryType")
-        if kind not in {"npm", "oci"} or kind in by_type:
-            _fail("server.json package registry identity is invalid")
-        expected_keys = {
-            "environmentVariables",
-            "identifier",
-            "registryType",
-            "transport",
-        }
-        if kind == "npm":
-            expected_keys.add("version")
-        _exact_keys(package, expected_keys, f"server.json {kind} package")
-        if package.get("transport") != {"type": "stdio"}:
-            _fail(f"server.json {kind} transport differs")
-        if package.get("environmentVariables") != EXPECTED_SERVER_ENV:
-            _fail(f"server.json {kind} environment contract differs")
-        by_type[str(kind)] = package
-    expected_oci = (
-        f"{MCP_IMAGE}:{version}"
-        if image_digest is None
-        else f"{MCP_IMAGE}@{image_digest}"
+    if len(packages) != 1:
+        _fail("server.json must contain exactly one npm package")
+    package = _mapping(packages[0], "server.json npm package")
+    _exact_keys(
+        package,
+        {"environmentVariables", "identifier", "registryType", "transport", "version"},
+        "server.json npm package",
     )
     if (
-        by_type["npm"].get("identifier") != MCP_PACKAGE
-        or by_type["npm"].get("version") != version
-        or by_type["oci"].get("identifier") != expected_oci
-        or by_type["npm"].get("environmentVariables")
-        != by_type["oci"].get("environmentVariables")
+        package.get("registryType") != "npm"
+        or package.get("identifier") != MCP_PACKAGE
+        or package.get("version") != version
+        or package.get("transport") != {"type": "stdio"}
+        or package.get("environmentVariables") != EXPECTED_SERVER_ENV
     ):
-        _fail("server.json package identity or environment differs")
+        _fail("server.json npm package identity or environment differs")
     return value
 
 
@@ -270,7 +223,6 @@ def _verify_npm(
     path: Path,
     *,
     version: str,
-    image_digest: str,
     metadata: Mapping[str, Any],
     expected_server: Mapping[str, Any],
 ) -> None:
@@ -352,210 +304,11 @@ def _verify_npm(
         _fail("npm artifact contains an install-time lifecycle hook")
     embedded = json.loads(
         json.dumps(
-            _verify_server(
-                _strict_json(server_bytes, "embedded server.json"), version, None
-            )
+            _verify_server(_strict_json(server_bytes, "embedded server.json"), version)
         )
     )
-    for package_entry in embedded["packages"]:
-        if package_entry["registryType"] == "oci":
-            package_entry["identifier"] = f"{MCP_IMAGE}@{image_digest}"
     if embedded != expected_server:
         _fail("npm embedded server metadata differs")
-
-
-def _verify_oci(
-    path: Path,
-    *,
-    expected_digest: str,
-    source_sha: str,
-    version: str,
-    metadata: Mapping[str, Any],
-) -> None:
-    size = path.stat().st_size if path.is_file() and not path.is_symlink() else 0
-    if size <= 0 or size > MAX_OCI_BYTES:
-        _fail("OCI artifact is outside the controller byte bound")
-    expected_labels = {
-        "io.modelcontextprotocol.server.name": MCP_NAME,
-        "org.opencontainers.image.revision": source_sha,
-        "org.opencontainers.image.source": f"https://github.com/{MCP_REPOSITORY}",
-        "org.opencontainers.image.version": version,
-    }
-    try:
-        with tarfile.open(path, "r:") as archive:
-            members: dict[str, tarfile.TarInfo] = {}
-            blobs: dict[str, tarfile.TarInfo] = {}
-            expanded = 0
-            for index, member in enumerate(archive, 1):
-                if index > MAX_ENTRIES:
-                    _fail("OCI entry count exceeds the controller bound")
-                name = _safe_name(member.name, "OCI archive")
-                if name in members:
-                    _fail(f"OCI archive contains duplicate path {name!r}")
-                members[name] = member
-                if member.isdir():
-                    if name not in {"blobs", "blobs/sha256"}:
-                        _fail(f"OCI archive contains unexpected directory {name!r}")
-                    continue
-                if not member.isfile():
-                    _fail(f"OCI archive entry {name!r} is not regular")
-                expanded += member.size
-                if expanded > MAX_EXPANDED_BYTES:
-                    _fail("OCI expanded bytes exceed the controller bound")
-                match = re.fullmatch(r"blobs/sha256/([0-9a-f]{64})", name)
-                if name not in {"index.json", "oci-layout"} and match is None:
-                    _fail(f"OCI archive contains unexpected path {name!r}")
-                if match is not None:
-                    blobs[match.group(1)] = member
-            if not {"index.json", "oci-layout"} <= set(members):
-                _fail("OCI archive is missing layout controls")
-
-            def read_member(member: tarfile.TarInfo, label: str) -> bytes:
-                if member.size <= 0 or member.size > MAX_JSON_BYTES:
-                    _fail(f"{label} is outside its JSON byte bound")
-                source = archive.extractfile(member)
-                if source is None:
-                    _fail(f"{label} cannot be read")
-                with source:
-                    payload = source.read(MAX_JSON_BYTES + 1)
-                if len(payload) != member.size:
-                    _fail(f"{label} size differs")
-                return payload
-
-            def blob(descriptor_raw: Any, label: str, capture: bool) -> bytes | None:
-                descriptor = _mapping(descriptor_raw, f"{label} descriptor")
-                digest = descriptor.get("digest")
-                descriptor_size = descriptor.get("size")
-                if (
-                    not isinstance(digest, str)
-                    or IMAGE_DIGEST.fullmatch(digest) is None
-                    or isinstance(descriptor_size, bool)
-                    or not isinstance(descriptor_size, int)
-                    or descriptor_size <= 0
-                ):
-                    _fail(f"{label} descriptor is invalid")
-                member = blobs.get(digest.removeprefix("sha256:"))
-                if member is None or member.size != descriptor_size:
-                    _fail(f"{label} blob is missing or has a different size")
-                source = archive.extractfile(member)
-                if source is None:
-                    _fail(f"{label} blob cannot be read")
-                with source:
-                    if capture:
-                        if descriptor_size > MAX_JSON_BYTES:
-                            _fail(f"{label} JSON exceeds its bound")
-                        payload = source.read(MAX_JSON_BYTES + 1)
-                        observed = hashlib.sha256(payload).hexdigest()
-                    else:
-                        _, observed, _ = _stream_hashes(source, descriptor_size, label)
-                        payload = None
-                if observed != digest.removeprefix("sha256:"):
-                    _fail(f"{label} blob digest differs")
-                referenced.add(digest.removeprefix("sha256:"))
-                return payload
-
-            layout = _strict_json(
-                read_member(members["oci-layout"], "oci-layout"), "oci-layout"
-            )
-            if layout != {"imageLayoutVersion": "1.0.0"}:
-                _fail("OCI layout version differs")
-            outer = _mapping(
-                _strict_json(
-                    read_member(members["index.json"], "outer OCI index"),
-                    "outer OCI index",
-                ),
-                "outer OCI index",
-            )
-            roots = _sequence(outer.get("manifests"), "outer OCI manifests")
-            if len(roots) != 1:
-                _fail("OCI archive must have exactly one root descriptor")
-            root_descriptor = _mapping(roots[0], "OCI root descriptor")
-            if root_descriptor.get("mediaType") != OCI_INDEX:
-                _fail("OCI root media type differs")
-            referenced: set[str] = set()
-            root = _mapping(
-                _strict_json(
-                    blob(root_descriptor, "OCI root", True) or b"", "OCI root"
-                ),
-                "OCI root",
-            )
-            platforms: list[dict[str, str]] = []
-            observed_platforms: set[tuple[str, str]] = set()
-            for raw_descriptor in _sequence(root.get("manifests"), "OCI platforms"):
-                descriptor = _mapping(raw_descriptor, "OCI platform descriptor")
-                platform = _mapping(descriptor.get("platform"), "OCI platform")
-                identity = (str(platform.get("os")), str(platform.get("architecture")))
-                if identity not in REQUIRED_PLATFORMS or identity in observed_platforms:
-                    _fail("OCI platform is unsupported or duplicated")
-                observed_platforms.add(identity)
-                if descriptor.get("mediaType") != OCI_MANIFEST:
-                    _fail("OCI platform manifest media type differs")
-                manifest = _mapping(
-                    _strict_json(
-                        blob(descriptor, "OCI manifest", True) or b"", "OCI manifest"
-                    ),
-                    "OCI manifest",
-                )
-                config_descriptor = _mapping(
-                    manifest.get("config"), "OCI config descriptor"
-                )
-                if config_descriptor.get("mediaType") != OCI_CONFIG:
-                    _fail("OCI config media type differs")
-                for layer in _sequence(manifest.get("layers"), "OCI layers"):
-                    layer_descriptor = _mapping(layer, "OCI layer descriptor")
-                    if layer_descriptor.get("mediaType") not in OCI_LAYERS:
-                        _fail("OCI layer media type differs")
-                    blob(layer_descriptor, "OCI layer", False)
-                config = _mapping(
-                    _strict_json(
-                        blob(config_descriptor, "OCI config", True) or b"", "OCI config"
-                    ),
-                    "OCI config",
-                )
-                runtime = _mapping(config.get("config"), "OCI runtime config")
-                env = _sequence(runtime.get("Env"), "OCI Env")
-                env_values = {str(value) for value in env}
-                required_path = [
-                    value for value in env_values if value.startswith("PATH=")
-                ]
-                if (
-                    len(env_values) != len(env)
-                    or len(required_path) != 1
-                    or required_path[0] != EXPECTED_IMAGE_PATH
-                    or env_values - set(required_path) != EXPECTED_IMAGE_ENV
-                    or config.get("os") != identity[0]
-                    or config.get("architecture") != identity[1]
-                    or runtime.get("Labels") != expected_labels
-                    or runtime.get("Cmd") != ["node", "dist/index.js"]
-                    or runtime.get("WorkingDir") != "/app"
-                    or runtime.get("User") != "node"
-                    or runtime.get("Entrypoint") not in {None}
-                ):
-                    _fail("OCI runtime environment, platform, or labels differ")
-                platforms.append(
-                    {
-                        "architecture": identity[1],
-                        "config_digest": str(config_descriptor["digest"]),
-                        "manifest_digest": str(descriptor["digest"]),
-                        "os": identity[0],
-                    }
-                )
-            if observed_platforms != set(REQUIRED_PLATFORMS) or referenced != set(
-                blobs
-            ):
-                _fail("OCI platform set or closed blob inventory differs")
-    except (tarfile.TarError, EOFError, OSError) as error:
-        raise ControllerVerificationError(f"OCI archive is invalid: {error}") from error
-    platforms.sort(key=lambda item: (item["os"], item["architecture"]))
-    if root_descriptor.get("digest") != expected_digest or metadata != {
-        "image": MCP_IMAGE,
-        "tag": version,
-        "digest": expected_digest,
-        "media_type": OCI_INDEX,
-        "platforms": platforms,
-        "labels": expected_labels,
-    }:
-        _fail("OCI registry metadata differs from the exact image")
 
 
 def verify_bundle(
@@ -623,34 +376,25 @@ def verify_bundle(
         or isinstance(manifest.get("source_date_epoch"), bool)
         or not isinstance(manifest.get("source_date_epoch"), int)
         or manifest["source_date_epoch"] <= 0
-        or not isinstance(image_digest, str)
-        or IMAGE_DIGEST.fullmatch(image_digest) is None
+        or image_digest is not None
         or manifest.get("tool_versions")
         != {
-            "docker": "29.1.3",
-            "docker_buildx": "0.28.0",
             "node": "24.14.0",
             "npm": "11.15.0",
         }
     ):
         _fail("release provenance identity differs")
     _exact_keys(
-        metadata, {"schema_version", "npm", "ghcr", "mcp_registry"}, "registry metadata"
+        metadata, {"schema_version", "npm", "mcp_registry"}, "registry metadata"
     )
     if metadata.get("schema_version") != "2.0.0":
         _fail("registry metadata schema differs")
     npm_metadata = _mapping(metadata.get("npm"), "npm metadata")
-    ghcr_metadata = _mapping(metadata.get("ghcr"), "GHCR metadata")
     mcp_metadata = _mapping(metadata.get("mcp_registry"), "MCP Registry metadata")
     _exact_keys(
         npm_metadata,
         {"name", "version", "mcpName", "bin", "engines", "tarball"},
         "npm metadata",
-    )
-    _exact_keys(
-        ghcr_metadata,
-        {"image", "tag", "digest", "media_type", "platforms", "labels"},
-        "GHCR metadata",
     )
     _exact_keys(
         mcp_metadata,
@@ -675,7 +419,7 @@ def verify_bundle(
         kind = descriptor.get("kind")
         relative = descriptor.get("path")
         if (
-            kind not in {"npm-tarball", "oci-image", "mcp-registry-metadata"}
+            kind not in {"npm-tarball", "mcp-registry-metadata"}
             or kind in by_kind
             or not isinstance(relative, str)
             or _safe_name(relative, "artifact path") != relative
@@ -683,7 +427,6 @@ def verify_bundle(
             _fail("artifact identity is invalid or duplicated")
         expected_path = {
             "npm-tarball": f"npm/vectormethods-videovector-mcp-server-{version}.tgz",
-            "oci-image": "image/videovector-mcp-server.oci.tar",
             "mcp-registry-metadata": "mcp/server.json",
         }[str(kind)]
         if relative != expected_path:
@@ -693,7 +436,6 @@ def verify_bundle(
             _fail("artifact path escapes the bundle")
         limit = {
             "npm-tarball": MAX_NPM_BYTES,
-            "oci-image": MAX_OCI_BYTES,
             "mcp-registry-metadata": MAX_JSON_BYTES,
         }[str(kind)]
         size, _, digest, _ = _file_hashes(target, limit, f"{kind} artifact")
@@ -707,14 +449,12 @@ def verify_bundle(
         if candidate.is_file() and not candidate.is_symlink()
     }
     if (
-        set(by_kind) != {"npm-tarball", "oci-image", "mcp-registry-metadata"}
+        set(by_kind) != {"npm-tarball", "mcp-registry-metadata"}
         or actual_files != expected_files
     ):
         _fail("release artifact or filesystem inventory is not closed")
     server_path = by_kind["mcp-registry-metadata"][1]
-    server = _verify_server(
-        _read_json(server_path, "immutable server.json"), version, image_digest
-    )
+    server = _verify_server(_read_json(server_path, "immutable server.json"), version)
     if mcp_metadata.get("server") != server or mcp_metadata.get(
         "server_json_sha256"
     ) != by_kind["mcp-registry-metadata"][0].get("sha256"):
@@ -722,16 +462,8 @@ def verify_bundle(
     _verify_npm(
         by_kind["npm-tarball"][1],
         version=version,
-        image_digest=image_digest,
         metadata=npm_metadata,
         expected_server=server,
-    )
-    _verify_oci(
-        by_kind["oci-image"][1],
-        expected_digest=image_digest,
-        source_sha=source_sha,
-        version=version,
-        metadata=ghcr_metadata,
     )
 
 

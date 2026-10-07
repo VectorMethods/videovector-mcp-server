@@ -113,11 +113,6 @@ const provenance = {
     name: packageJson.name,
     tarball_command: 'npm pack --dry-run',
   },
-  container: {
-    registry: 'ghcr.io',
-    image: 'ghcr.io/vectormethods/videovector-mcp-server',
-    dockerfile: 'Dockerfile',
-  },
   release_inputs: [
     'src/**',
     'package.json',

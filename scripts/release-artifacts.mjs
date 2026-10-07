@@ -3,9 +3,8 @@
 /**
  * Build and verify the immutable MCP release bundle.
  *
- * npm, GHCR, and MCP Registry publication are deliberately separate from this
- * builder. Every publisher consumes the same npm tarball, OCI archive, and
- * server.json recorded here.
+ * npm and MCP Registry publication are separate from this builder. Both
+ * publishers consume the same npm tarball and npm-only server.json recorded here.
  */
 
 import {
@@ -27,19 +26,9 @@ import addFormats from 'ajv-formats';
 const SCHEMA_VERSION = '2.0.0';
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const GIT_OBJECT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_NPM_TARBALL_BYTES = 256 * 1024 * 1024;
-const MAX_OCI_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024;
-const MAX_OCI_ARCHIVE_ENTRIES = 40_000;
-const MAX_OCI_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
-const OCI_IMAGE_INDEX_MEDIA_TYPE = 'application/vnd.oci.image.index.v1+json';
-const OCI_IMAGE_MANIFEST_MEDIA_TYPE = 'application/vnd.oci.image.manifest.v1+json';
-const REQUIRED_IMAGE_PLATFORMS = [
-  'linux/amd64',
-  'linux/arm64',
-];
 const DEFAULT_REPOSITORY = 'VectorMethods/videovector-mcp-server';
 const EXPECTED_MCP_SCHEMA =
   'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json';
@@ -47,16 +36,6 @@ const EXPECTED_MCP_NAME = 'io.github.VectorMethods/videovector-mcp-server';
 const EXPECTED_PACKAGE_NAME = '@vectormethods/videovector-mcp-server';
 const EXPECTED_NODE_ENGINE = '>=18.0.0';
 const EXPECTED_PACKAGE_MANAGER = 'npm@11.15.0';
-const EXPECTED_IMAGE_ENVIRONMENT = new Set([
-  'NODE_ENV=production',
-  'PORT=8080',
-  'MCP_TRANSPORT_MODE=stdio',
-  'NODE_VERSION=24.14.0',
-  'YARN_VERSION=1.22.22',
-]);
-const EXPECTED_IMAGE_PATH =
-  'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-const EXPECTED_OCI_IMAGE = 'ghcr.io/vectormethods/videovector-mcp-server';
 const PINNED_MCP_SCHEMA_SHA256 =
   '3fba09590c99f61735d234822279f4223fab9e300c0a81e81c91ab62a4114de0';
 const PINNED_MCP_SCHEMA_PATH = path.resolve(
@@ -112,12 +91,6 @@ const NPM_PACKAGE_KEYS = [
   'registryType',
   'transport',
   'version',
-];
-const OCI_PACKAGE_KEYS = [
-  'environmentVariables',
-  'identifier',
-  'registryType',
-  'transport',
 ];
 const RELEASE_MANIFEST_KEYS = [
   'artifacts',
@@ -312,207 +285,6 @@ function tarEntry(archive, entry) {
   });
 }
 
-function requireSafeOciArchive(archive) {
-  const archiveSize = fs.statSync(archive).size;
-  if (archiveSize <= 0 || archiveSize > MAX_OCI_ARCHIVE_BYTES) {
-    throw new ReleaseArtifactError('OCI archive is outside its byte bound');
-  }
-  const entries = String(run('tar', ['-tf', archive]))
-    .split(/\r?\n/)
-    .filter(Boolean);
-  const verboseEntries = String(run('tar', ['-tvf', archive]))
-    .split(/\r?\n/)
-    .filter(Boolean);
-  const seen = new Set();
-  if (entries.length === 0 || entries.length > MAX_OCI_ARCHIVE_ENTRIES) {
-    throw new ReleaseArtifactError('OCI archive entry count is outside its bound');
-  }
-  for (const entry of entries) {
-    const normalized = entry.endsWith('/') ? entry.slice(0, -1) : entry;
-    if (
-      entry.startsWith('/')
-      || entry.includes('\\')
-      || path.posix.normalize(entry) !== entry
-      || entry.split('/').includes('..')
-      || seen.has(entry)
-      || (
-        normalized !== 'index.json'
-        && normalized !== 'oci-layout'
-        && normalized !== 'blobs'
-        && normalized !== 'blobs/sha256'
-        && !/^blobs\/sha256\/[0-9a-f]{64}$/.test(normalized)
-      )
-    ) {
-      throw new ReleaseArtifactError(
-        `OCI archive contains unsafe or duplicate entry ${entry}`
-      );
-    }
-    seen.add(entry);
-  }
-  if (
-    entries.filter((entry) => entry === 'index.json').length !== 1
-    || entries.filter((entry) => entry === 'oci-layout').length !== 1
-    || verboseEntries.some((entry) => !['-', 'd'].includes(entry[0]))
-  ) {
-    throw new ReleaseArtifactError(
-      'OCI archive layout files are missing, duplicated, or use special entries'
-    );
-  }
-  const layout = JSON.parse(
-    Buffer.from(tarEntry(archive, 'oci-layout')).toString('utf8')
-  );
-  if (stableJson(layout) !== stableJson({ imageLayoutVersion: '1.0.0' })) {
-    throw new ReleaseArtifactError('OCI archive layout version is invalid');
-  }
-}
-
-function ociBlob(archive, descriptor, label, { capture = true } = {}) {
-  if (
-    !descriptor
-    || !IMAGE_DIGEST_PATTERN.test(String(descriptor.digest ?? ''))
-    || !Number.isSafeInteger(descriptor.size)
-    || descriptor.size <= 0
-    || descriptor.size > MAX_OCI_EXPANDED_BYTES
-  ) {
-    throw new ReleaseArtifactError(`${label} descriptor is invalid`);
-  }
-  const [algorithm, digest] = descriptor.digest.split(':', 2);
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-oci-blob.'));
-  const extracted = path.join(temporary, 'blob');
-  let descriptorFd;
-  try {
-    descriptorFd = fs.openSync(extracted, 'wx', 0o600);
-    const result = spawnSync(
-      'tar',
-      ['-xOf', archive, `blobs/${algorithm}/${digest}`],
-      {
-        encoding: 'utf8',
-        maxBuffer: MAX_JSON_BYTES,
-        stdio: ['ignore', descriptorFd, 'pipe'],
-        timeout: DEFAULT_COMMAND_TIMEOUT_MS,
-      }
-    );
-    fs.closeSync(descriptorFd);
-    descriptorFd = undefined;
-    if (result.error || result.status !== 0) {
-      throw new ReleaseArtifactError(
-        `${label} blob extraction failed: ${
-          result.error?.message ?? String(result.stderr ?? '').trim()
-        }`
-      );
-    }
-    const extractedSize = fs.statSync(extracted).size;
-    if (
-      extractedSize !== descriptor.size
-      || `sha256:${sha256File(extracted)}` !== descriptor.digest
-    ) {
-      throw new ReleaseArtifactError(`${label} blob does not match its descriptor`);
-    }
-    if (!capture) {
-      return undefined;
-    }
-    if (extractedSize > MAX_JSON_BYTES) {
-      throw new ReleaseArtifactError(`${label} JSON blob exceeds its byte bound`);
-    }
-    return fs.readFileSync(extracted);
-  } finally {
-    if (descriptorFd !== undefined) {
-      fs.closeSync(descriptorFd);
-    }
-    fs.rmSync(temporary, { force: true, recursive: true });
-  }
-}
-
-function ociDescriptor(archive) {
-  requireSafeOciArchive(archive);
-  const index = JSON.parse(Buffer.from(tarEntry(archive, 'index.json')).toString('utf8'));
-  if (!Array.isArray(index.manifests) || index.manifests.length !== 1) {
-    throw new ReleaseArtifactError('OCI archive must contain one root index');
-  }
-  const rootDescriptor = index.manifests[0];
-  if (rootDescriptor.mediaType !== OCI_IMAGE_INDEX_MEDIA_TYPE) {
-    throw new ReleaseArtifactError('OCI archive root must be an OCI image index');
-  }
-  const rootBytes = ociBlob(archive, rootDescriptor, 'OCI root index');
-  const root = JSON.parse(rootBytes.toString('utf8'));
-  if (
-    root.mediaType !== OCI_IMAGE_INDEX_MEDIA_TYPE
-    || !Array.isArray(root.manifests)
-  ) {
-    throw new ReleaseArtifactError('OCI root index payload is invalid');
-  }
-  const platforms = root.manifests.map((manifestDescriptor) => {
-    if (manifestDescriptor.mediaType !== OCI_IMAGE_MANIFEST_MEDIA_TYPE) {
-      throw new ReleaseArtifactError('OCI platform entry is not an image manifest');
-    }
-    const osName = String(manifestDescriptor.platform?.os ?? '');
-    const architecture = String(manifestDescriptor.platform?.architecture ?? '');
-    const platform = `${osName}/${architecture}`;
-    if (!REQUIRED_IMAGE_PLATFORMS.includes(platform)) {
-      throw new ReleaseArtifactError(`OCI image contains unsupported platform ${platform}`);
-    }
-    const manifestBytes = ociBlob(
-      archive,
-      manifestDescriptor,
-      `OCI ${platform} manifest`
-    );
-    const manifest = JSON.parse(manifestBytes.toString('utf8'));
-    if (
-      manifest.mediaType !== OCI_IMAGE_MANIFEST_MEDIA_TYPE
-      || manifest.config?.mediaType !== 'application/vnd.oci.image.config.v1+json'
-      || !Array.isArray(manifest.layers)
-    ) {
-      throw new ReleaseArtifactError(`OCI ${platform} manifest payload is invalid`);
-    }
-    for (const [layerIndex, layer] of manifest.layers.entries()) {
-      ociBlob(
-        archive,
-        layer,
-        `OCI ${platform} layer ${layerIndex}`,
-        { capture: false }
-      );
-    }
-    const configBytes = ociBlob(
-      archive,
-      manifest.config,
-      `OCI ${platform} config`
-    );
-    const config = JSON.parse(configBytes.toString('utf8'));
-    if (
-      config.os !== osName
-      || config.architecture !== architecture
-    ) {
-      throw new ReleaseArtifactError(
-        `OCI ${platform} config platform differs from its index descriptor`
-      );
-    }
-    return {
-      os: osName,
-      architecture,
-      manifest_digest: manifestDescriptor.digest,
-      config_digest: manifest.config.digest,
-      config,
-    };
-  }).sort((left, right) => (
-    `${left.os}/${left.architecture}`.localeCompare(
-      `${right.os}/${right.architecture}`
-    )
-  ));
-  const actualPlatforms = platforms.map(
-    (platform) => `${platform.os}/${platform.architecture}`
-  );
-  if (stableJson(actualPlatforms) !== stableJson(REQUIRED_IMAGE_PLATFORMS)) {
-    throw new ReleaseArtifactError(
-      'OCI image must contain exactly linux/amd64 and linux/arm64'
-    );
-  }
-  return {
-    digest: rootDescriptor.digest,
-    media_type: rootDescriptor.mediaType,
-    platforms,
-  };
-}
-
 function artifactDescriptor(target, relativePath, kind) {
   const stat = fs.statSync(target);
   return {
@@ -520,15 +292,6 @@ function artifactDescriptor(target, relativePath, kind) {
     path: relativePath,
     sha256: sha256File(target),
     size: stat.size,
-  };
-}
-
-function expectedLabels({ repository, sourceSha, version, mcpName }) {
-  return {
-    'io.modelcontextprotocol.server.name': mcpName,
-    'org.opencontainers.image.revision': sourceSha,
-    'org.opencontainers.image.source': `https://github.com/${repository}`,
-    'org.opencontainers.image.version': version,
   };
 }
 
@@ -576,37 +339,9 @@ function requireCanonicalPackageEnvironment(packageMetadata, registryType) {
   }
 }
 
-function requireStdioImageConfig(config) {
-  const environment = Array.isArray(config?.config?.Env)
-    ? config.config.Env
-    : [];
-  const values = new Set(environment.map(String));
-  const pathValues = [...values].filter((entry) => entry.startsWith('PATH='));
-  if (
-    values.size !== environment.length
-    || pathValues.length !== 1
-    || pathValues[0] !== EXPECTED_IMAGE_PATH
-    || stableJson([...values].filter((entry) => !entry.startsWith('PATH=')).sort())
-      !== stableJson([...EXPECTED_IMAGE_ENVIRONMENT].sort())
-    || stableJson(config?.config?.Cmd) !== stableJson(['node', 'dist/index.js'])
-    || config?.config?.WorkingDir !== '/app'
-    || config?.config?.User !== 'node'
-    || !(
-      config?.config?.Entrypoint === undefined
-      || config.config.Entrypoint === null
-      || stableJson(config.config.Entrypoint) === stableJson([])
-    )
-  ) {
-    throw new ReleaseArtifactError(
-      'OCI image runtime config differs from the canonical stdio contract'
-    );
-  }
-}
-
 export function validateProjectMetadata(
   packageJson,
-  serverJson,
-  { expectedOciDigest } = {}
+  serverJson
 ) {
   validateOfficialServerSchema(serverJson);
   if (serverJson.remotes !== undefined) {
@@ -643,13 +378,12 @@ export function validateProjectMetadata(
     throw new ReleaseArtifactError('package.json mcpName and server.json name differ');
   }
   const packages = Array.isArray(serverJson.packages) ? serverJson.packages : [];
-  if (packages.length !== 2) {
+  if (packages.length !== 1) {
     throw new ReleaseArtifactError(
-      'server.json must contain only the npm and OCI packages'
+      'server.json must contain exactly one npm package'
     );
   }
   const npmPackage = packages.find((entry) => entry.registryType === 'npm');
-  const ociPackage = packages.find((entry) => entry.registryType === 'oci');
   if (
     !npmPackage
     || npmPackage.identifier !== packageJson.name
@@ -658,28 +392,13 @@ export function validateProjectMetadata(
   ) {
     throw new ReleaseArtifactError('server.json npm metadata is inconsistent');
   }
-  const expectedOciIdentifier = expectedOciDigest === undefined
-    ? `${EXPECTED_OCI_IMAGE}:${packageJson.version}`
-    : `${EXPECTED_OCI_IMAGE}@${expectedOciDigest}`;
-  if (
-    !ociPackage
-    || ociPackage.identifier !== expectedOciIdentifier
-    || ociPackage.version !== undefined
-    || ociPackage.transport?.type !== 'stdio'
-  ) {
-    throw new ReleaseArtifactError('server.json OCI metadata is inconsistent');
-  }
   assertExactKeys(npmPackage, NPM_PACKAGE_KEYS, 'server.json npm package');
-  assertExactKeys(ociPackage, OCI_PACKAGE_KEYS, 'server.json OCI package');
   assertExactKeys(npmPackage.transport, ['type'], 'server.json npm transport');
-  assertExactKeys(ociPackage.transport, ['type'], 'server.json OCI transport');
   requireCanonicalPackageEnvironment(npmPackage, 'npm');
-  requireCanonicalPackageEnvironment(ociPackage, 'OCI');
   return {
     packageJson,
     serverJson,
     npmPackage,
-    ociPackage,
   };
 }
 
@@ -729,7 +448,7 @@ export function verifyBundle(bundle, expectations = {}) {
   assertExactKeys(manifest.package, ['name', 'version'], 'release package');
   assertExactKeys(
     manifest.tool_versions,
-    ['docker', 'docker_buildx', 'node', 'npm'],
+    ['node', 'npm'],
     'release tool versions'
   );
   if (manifest.schema_version !== SCHEMA_VERSION) {
@@ -745,27 +464,13 @@ export function verifyBundle(bundle, expectations = {}) {
     || !Number.isSafeInteger(manifest.source_date_epoch)
     || manifest.source_date_epoch <= 0
     || !SHA256_PATTERN.test(String(manifest.release_body_sha256 ?? ''))
-    || !IMAGE_DIGEST_PATTERN.test(String(manifest.image_digest ?? ''))
+    || manifest.image_digest !== null
   ) {
     throw new ReleaseArtifactError('Release provenance fields are invalid');
-  }
-  const requiredTools = ['node', 'npm', 'docker', 'docker_buildx'];
-  if (
-    !manifest.tool_versions
-    || typeof manifest.tool_versions !== 'object'
-    || requiredTools.some((name) => (
-      typeof manifest.tool_versions[name] !== 'string'
-      || manifest.tool_versions[name].length === 0
-      || manifest.tool_versions[name] === 'unavailable'
-    ))
-  ) {
-    throw new ReleaseArtifactError('Release tool versions are incomplete');
   }
   if (stableJson(manifest.tool_versions) !== stableJson({
     node: '24.14.0',
     npm: '11.15.0',
-    docker: '29.1.3',
-    docker_buildx: '0.28.0',
   })) {
     throw new ReleaseArtifactError(
       'Release tool versions differ from the immutable toolchain policy'
@@ -834,7 +539,6 @@ export function verifyBundle(bundle, expectations = {}) {
     const artifactLimit = {
       'mcp-registry-metadata': MAX_JSON_BYTES,
       'npm-tarball': MAX_NPM_TARBALL_BYTES,
-      'oci-image': MAX_OCI_ARCHIVE_BYTES,
     }[artifact.kind];
     if (
       artifactLimit === undefined
@@ -848,27 +552,24 @@ export function verifyBundle(bundle, expectations = {}) {
   const expectedKinds = new Set([
     'mcp-registry-metadata',
     'npm-tarball',
-    'oci-image',
   ]);
   if (
     seen.size !== expectedKinds.size
     || [...kinds].some((kind) => !expectedKinds.has(kind))
   ) {
-    throw new ReleaseArtifactError('Bundle must contain npm, OCI, and MCP artifacts');
+    throw new ReleaseArtifactError('Bundle must contain exactly npm and MCP metadata artifacts');
   }
   const tarballArtifact = manifest.artifacts.find(
     (entry) => entry.kind === 'npm-tarball'
   );
-  const imageArtifact = manifest.artifacts.find((entry) => entry.kind === 'oci-image');
   const serverArtifact = manifest.artifacts.find(
     (entry) => entry.kind === 'mcp-registry-metadata'
   );
-  if (!tarballArtifact || !imageArtifact || !serverArtifact) {
+  if (!tarballArtifact || !serverArtifact) {
     throw new ReleaseArtifactError('Bundle is missing a required release artifact');
   }
   if (
-    imageArtifact.path !== 'image/videovector-mcp-server.oci.tar'
-    || serverArtifact.path !== 'mcp/server.json'
+    serverArtifact.path !== 'mcp/server.json'
     || !/^npm\/[A-Za-z0-9_.-]+\.tgz$/.test(tarballArtifact.path)
   ) {
     throw new ReleaseArtifactError('Release artifact path is not canonical');
@@ -894,9 +595,13 @@ export function verifyBundle(bundle, expectations = {}) {
       'Release tag and package identity are not bound canonically'
     );
   }
-  const { ociPackage } = validateProjectMetadata(packageJson, serverJson, {
-    expectedOciDigest: manifest.image_digest,
-  });
+  validateProjectMetadata(packageJson, serverJson);
+  const packagedServer = JSON.parse(
+    Buffer.from(tarEntry(tarballPath, 'package/server.json')).toString('utf8')
+  );
+  if (stableJson(packagedServer) !== stableJson(serverJson)) {
+    throw new ReleaseArtifactError('Packaged server.json differs from registry metadata');
+  }
   const expectedTarballName = `${packageJson.name
     .replace(/^@/, '')
     .replaceAll('/', '-')}-${packageJson.version}.tgz`;
@@ -904,45 +609,10 @@ export function verifyBundle(bundle, expectations = {}) {
     throw new ReleaseArtifactError('npm tarball path differs from package identity');
   }
 
-  const image = ociDescriptor(path.join(bundleRoot, imageArtifact.path));
-  if (image.digest !== manifest.image_digest) {
-    throw new ReleaseArtifactError('OCI image digest differs from release manifest');
-  }
-  const imageName = String(ociPackage.identifier).split('@', 1)[0];
-  const labels = expectedLabels({
-    repository: manifest.repository,
-    sourceSha: manifest.source_sha,
-    version: packageJson.version,
-    mcpName: packageJson.mcpName,
-  });
-  for (const platform of image.platforms) {
-    requireStdioImageConfig(platform.config);
-    const actualLabels = platform.config?.config?.Labels ?? {};
-    for (const [name, value] of Object.entries(labels)) {
-      if (actualLabels[name] !== value) {
-        throw new ReleaseArtifactError(
-          `OCI ${platform.os}/${platform.architecture} label ${name} differs`
-        );
-      }
-    }
-  }
   const tarballBytes = fs.readFileSync(tarballPath);
   const expectedMetadata = {
     schema_version: SCHEMA_VERSION,
     npm: npmExpected({ packageJson, tarball: tarballPath, tarballBytes }),
-    ghcr: {
-      image: imageName,
-      tag: packageJson.version,
-      digest: image.digest,
-      media_type: image.media_type,
-      platforms: image.platforms.map((platform) => ({
-        architecture: platform.architecture,
-        config_digest: platform.config_digest,
-        manifest_digest: platform.manifest_digest,
-        os: platform.os,
-      })),
-      labels,
-    },
     mcp_registry: {
       server: mcpProjection(serverJson),
       server_json_sha256: sha256File(serverPath),
@@ -960,17 +630,9 @@ export function verifyBundle(bundle, expectations = {}) {
 
 function toolVersions(root) {
   const npmVersion = String(run('npm', ['--version'], { cwd: root })).trim();
-  const dockerVersion = String(
-    run('docker', ['--version'], { cwd: root })
-  ).trim();
-  const buildxVersion = String(
-    run('docker', ['buildx', 'version'], { cwd: root })
-  ).trim();
   if (
     process.version !== 'v24.14.0'
     || npmVersion !== '11.15.0'
-    || !/^Docker version 29\.1\.3,/.test(dockerVersion)
-    || !/\bv0\.28\.0\b/.test(buildxVersion)
   ) {
     throw new ReleaseArtifactError(
       'Release runtime differs from the immutable toolchain policy'
@@ -979,8 +641,6 @@ function toolVersions(root) {
   return {
     node: '24.14.0',
     npm: '11.15.0',
-    docker: '29.1.3',
-    docker_buildx: '0.28.0',
   };
 }
 
@@ -1008,6 +668,15 @@ function unsafeTarEntries(tarball) {
     unsafe.push('npm tarball contains links or special files');
   }
   return [...new Set(unsafe)];
+}
+
+export function prepareNpmExecutable(root) {
+  const executable = path.join(root, 'dist', 'index.js');
+  if (!fs.lstatSync(executable).isFile()) {
+    throw new ReleaseArtifactError('Generated npm executable must be a regular file');
+  }
+  // TypeScript emits 0644; the immutable npm artifact must retain its CLI mode.
+  fs.chmodSync(executable, 0o755);
 }
 
 function buildBundle(options) {
@@ -1059,7 +728,7 @@ function buildBundle(options) {
     return;
   }
 
-  const { packageJson, serverJson, ociPackage } = projectMetadata(root);
+  const { packageJson, serverJson } = projectMetadata(root);
   if (options.version && options.version !== packageJson.version) {
     throw new ReleaseArtifactError(
       `Package version ${packageJson.version} does not match ${options.version}`
@@ -1068,25 +737,15 @@ function buildBundle(options) {
   if (tag !== `videovector-mcp-v${packageJson.version}`) {
     throw new ReleaseArtifactError('Release tag does not match the package version');
   }
-  const image = String(ociPackage.identifier).replace(/:[^/:]+$/, '');
   const repository = options.repository ?? DEFAULT_REPOSITORY;
   const sourceDateEpoch = Number(git(root, 'show', '-s', '--format=%ct', sourceSha));
-  const labels = expectedLabels({
-    repository,
-    sourceSha,
-    version: packageJson.version,
-    mcpName: packageJson.mcpName,
-  });
-
   fs.mkdirSync(path.dirname(output), { recursive: true });
   const staging = fs.mkdtempSync(path.join(path.dirname(output), `.${path.basename(output)}.`));
   const npmCache = fs.mkdtempSync(path.join(os.tmpdir(), 'videovector-mcp-npm-cache.'));
   try {
     const npmDirectory = path.join(staging, 'npm');
-    const imageDirectory = path.join(staging, 'image');
     const mcpDirectory = path.join(staging, 'mcp');
     fs.mkdirSync(npmDirectory);
-    fs.mkdirSync(imageDirectory);
     fs.mkdirSync(mcpDirectory);
     const environment = {
       ...process.env,
@@ -1095,6 +754,7 @@ function buildBundle(options) {
       SOURCE_DATE_EPOCH: String(sourceDateEpoch),
       TZ: 'UTC',
     };
+    prepareNpmExecutable(root);
     const packRaw = String(
       run(
         'npm',
@@ -1124,78 +784,14 @@ function buildBundle(options) {
       );
     }
 
-    const imageArchive = path.join(imageDirectory, 'videovector-mcp-server.oci.tar');
-    const labelArguments = Object.entries(labels).flatMap(([name, value]) => [
-      '--label',
-      `${name}=${value}`,
-    ]);
-    run(
-      'docker',
-      [
-        'buildx',
-        'build',
-        '--platform',
-        REQUIRED_IMAGE_PLATFORMS.join(','),
-        '--provenance=false',
-        '--sbom=false',
-        '--build-arg',
-        `SOURCE_DATE_EPOCH=${sourceDateEpoch}`,
-        ...labelArguments,
-        '--tag',
-        `${image}:${packageJson.version}`,
-        '--output',
-        `type=oci,dest=${imageArchive},rewrite-timestamp=true`,
-        '.',
-      ],
-      {
-        cwd: root,
-        env: environment,
-        capture: false,
-        timeout: 25 * 60 * 1000,
-      }
-    );
-    const oci = ociDescriptor(imageArchive);
-    for (const platform of oci.platforms) {
-      requireStdioImageConfig(platform.config);
-      const actualLabels = platform.config?.config?.Labels ?? {};
-      for (const [name, value] of Object.entries(labels)) {
-        if (actualLabels[name] !== value) {
-          throw new ReleaseArtifactError(
-            `OCI ${platform.os}/${platform.architecture} label ${name} differs`
-          );
-        }
-      }
-    }
-
     const serverTarget = path.join(mcpDirectory, 'server.json');
-    const immutableServerJson = structuredClone(serverJson);
-    const immutableOciPackage = immutableServerJson.packages.find(
-      (entry) => entry.registryType === 'oci'
-    );
-    immutableOciPackage.identifier = `${image}@${oci.digest}`;
-    validateProjectMetadata(packageJson, immutableServerJson, {
-      expectedOciDigest: oci.digest,
-    });
-    writeJson(serverTarget, immutableServerJson);
+    writeJson(serverTarget, serverJson);
     const tarballBytes = fs.readFileSync(tarball);
     const registryMetadata = {
       schema_version: SCHEMA_VERSION,
       npm: npmExpected({ packageJson, tarball, tarballBytes }),
-      ghcr: {
-        image,
-        tag: packageJson.version,
-        digest: oci.digest,
-        media_type: oci.media_type,
-        platforms: oci.platforms.map((platform) => ({
-          architecture: platform.architecture,
-          config_digest: platform.config_digest,
-          manifest_digest: platform.manifest_digest,
-          os: platform.os,
-        })),
-        labels,
-      },
       mcp_registry: {
-        server: mcpProjection(immutableServerJson),
+        server: mcpProjection(serverJson),
         server_json_sha256: sha256File(serverTarget),
       },
     };
@@ -1207,22 +803,9 @@ function buildBundle(options) {
         `npm/${path.basename(tarball)}`,
         'npm-tarball'
       ),
-      artifactDescriptor(
-        imageArchive,
-        'image/videovector-mcp-server.oci.tar',
-        'oci-image'
-      ),
       artifactDescriptor(serverTarget, 'mcp/server.json', 'mcp-registry-metadata'),
     ];
     const versions = toolVersions(root);
-    const unavailableTools = Object.entries(versions)
-      .filter(([, value]) => value === 'unavailable')
-      .map(([name]) => name);
-    if (unavailableTools.length > 0) {
-      throw new ReleaseArtifactError(
-        `Release tool versions are unavailable: ${unavailableTools.join(', ')}`
-      );
-    }
     const manifest = {
       schema_version: SCHEMA_VERSION,
       package: { name: packageJson.name, version: packageJson.version },
@@ -1234,7 +817,7 @@ function buildBundle(options) {
       source_date_epoch: sourceDateEpoch,
       release_body_sha256: releaseBodySha256,
       artifacts,
-      image_digest: oci.digest,
+      image_digest: null,
       registry_metadata_path: 'registry-metadata.json',
       registry_metadata_sha256: sha256File(registryMetadataPath),
       tool_versions: versions,
@@ -1306,34 +889,6 @@ export function verifyMcpVersion(expected, metadata) {
   if (official?.status !== 'active') {
     throw new ReleaseArtifactError('MCP Registry version is not active');
   }
-}
-
-export function verifyImageArchive(expected, archive) {
-  const image = ociDescriptor(archive);
-  if (
-    image.digest !== expected.digest
-    || image.media_type !== expected.media_type
-    || stableJson(image.platforms.map((platform) => ({
-      architecture: platform.architecture,
-      config_digest: platform.config_digest,
-      manifest_digest: platform.manifest_digest,
-      os: platform.os,
-    }))) !== stableJson(expected.platforms)
-  ) {
-    throw new ReleaseArtifactError('GHCR image descriptors differ');
-  }
-  for (const platform of image.platforms) {
-    requireStdioImageConfig(platform.config);
-    const labels = platform.config?.config?.Labels ?? {};
-    for (const [name, value] of Object.entries(expected.labels)) {
-      if (labels[name] !== value) {
-        throw new ReleaseArtifactError(
-          `GHCR ${platform.os}/${platform.architecture} label ${name} differs`
-        );
-      }
-    }
-  }
-  return image;
 }
 
 function bundleInventory(bundle) {

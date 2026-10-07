@@ -47,11 +47,6 @@ if [[ ! "$DRAFT_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
   echo "draft_release_id must be a positive base-10 integer." >&2
   exit 1
 fi
-if [[ "${BOOTSTRAP_GHCR_PUBLIC:-false}" != "true" &&
-  "${BOOTSTRAP_GHCR_PUBLIC:-false}" != "false" ]]; then
-  echo "bootstrap_ghcr_public must be an exact boolean." >&2
-  exit 1
-fi
 bundle_source_count=0
 for value in \
   "${BUNDLE_SOURCE_RELEASE_ID:-}" \
