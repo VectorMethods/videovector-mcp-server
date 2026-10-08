@@ -1,6 +1,6 @@
 {
   "name": "@vectormethods/videovector-mcp-server",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "packageManager": "npm@11.15.0",
   "mcpName": "io.github.VectorMethods/videovector-mcp-server",
   "description": "Model Context Protocol server for the VectorMethods VideoVector media intelligence API",
@@ -20,7 +20,7 @@
     "generate:contract": "npm run build && node scripts/generate-contract.mjs",
     "check:contract": "npm run build && node scripts/generate-contract.mjs --check",
     "check:examples": "node scripts/validate-examples.mjs",
-    "check:release": "node --check scripts/release-artifacts.mjs && node --check scripts/release-publication.mjs && python3 -m py_compile scripts/controller_release_verifier.py scripts/release_draft_staging.py && python3 tests/test_controller_release_verifier.py && python3 tests/test_release_draft_staging.py && node scripts/release-artifacts.mjs validate-project && node scripts/release-artifacts.mjs help && node scripts/release-publication.mjs help",
+    "check:release": "node --check scripts/release-artifacts.mjs && node --check scripts/release-publication.mjs && node --check scripts/validate-npm-provenance.mjs && python3 -m py_compile scripts/controller_release_verifier.py scripts/release_draft_staging.py && python3 tests/test_controller_release_verifier.py && python3 tests/test_release_draft_staging.py && node scripts/release-artifacts.mjs validate-project && node scripts/release-artifacts.mjs help && node scripts/release-publication.mjs help",
     "verify": "npm run typecheck && npm run lint && npm run build && npm test && npm run check:contract && npm run check:examples && npm run check:release",
     "prepack": "npm run generate:contract && npm run verify"
   },

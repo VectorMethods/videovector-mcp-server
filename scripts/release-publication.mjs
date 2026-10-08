@@ -47,6 +47,8 @@ const OIDC_SUBPROCESS_ENVIRONMENT = [
   'GITHUB_EVENT_NAME',
   'GITHUB_REF',
   'GITHUB_REPOSITORY',
+  'GITHUB_REPOSITORY_ID',
+  'GITHUB_REPOSITORY_OWNER_ID',
   'GITHUB_RUN_ATTEMPT',
   'GITHUB_RUN_ID',
   'GITHUB_SERVER_URL',
@@ -54,6 +56,7 @@ const OIDC_SUBPROCESS_ENVIRONMENT = [
   'GITHUB_WORKFLOW',
   'GITHUB_WORKFLOW_REF',
   'GITHUB_WORKFLOW_SHA',
+  'RUNNER_ENVIRONMENT',
 ];
 
 export class PublicationError extends Error {
@@ -63,6 +66,65 @@ export class PublicationError extends Error {
   }
 }
 
+const NPM_PROVENANCE_ENVIRONMENT = [
+  'GITHUB_WORKFLOW_REF',
+  'GITHUB_REPOSITORY',
+  'GITHUB_SERVER_URL',
+  'GITHUB_EVENT_NAME',
+  'GITHUB_REPOSITORY_ID',
+  'GITHUB_REPOSITORY_OWNER_ID',
+  'GITHUB_REF',
+  'GITHUB_SHA',
+  'RUNNER_ENVIRONMENT',
+  'GITHUB_RUN_ID',
+  'GITHUB_RUN_ATTEMPT',
+];
+const MAX_ERROR_DETAIL_CHARS = 1_536;
+const MAX_ERROR_CAUSES = 4;
+
+function redactedErrorDetail(value, environment) {
+  let detail = String(value);
+  // npm's HTTP diagnostics can contain its complete OIDC capability URL.
+  // Keep error codes and explanatory text, never authentication URLs or tokens.
+  for (const [name, secret] of Object.entries(environment)) {
+    if (
+      /token|secret|password|credential|(?:^|_)auth(?:_|$)|(?:^|_)key(?:_|$)/i.test(name)
+      && typeof secret === 'string'
+      && secret.length >= 8
+    ) {
+      detail = detail.replaceAll(secret, '[redacted]');
+    }
+  }
+  detail = detail
+    .replaceAll('\\/', '/')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi, '[redacted URL]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted JWT]')
+    .replace(/\b(?:npm_|gh[pousr]_|github_pat_|sk_live_)[A-Za-z0-9_-]+\b/g, '[redacted token]')
+    .replace(/\b(Bearer|Basic)\s+[^\s,"'<>]+/gi, '$1 [redacted]')
+    .replace(/((?:["']?)(?:authorization|_authToken|_auth|token|password|secret|api[_-]?key)(?:["']?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[redacted]')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+  if (detail.length > MAX_ERROR_DETAIL_CHARS) {
+    detail = `${detail.slice(0, 512)}\n[truncated]\n${detail.slice(-1_000)}`;
+  }
+  return detail;
+}
+
+export function formatPublicationError(error, environment = process.env) {
+  const details = [];
+  const seen = new Set();
+  let current = error;
+  while (current !== undefined && current !== null && details.length < MAX_ERROR_CAUSES) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    const message = current instanceof Error
+      ? current.message
+      : typeof current === 'string' ? current : 'Unknown publication failure';
+    details.push(redactedErrorDetail(message, environment));
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return details.join('\nCaused by: ');
+}
 
 function parseArguments(argv) {
   const [command, ...rest] = argv;
@@ -716,6 +778,32 @@ export function requireOidcOnlyNpmEnvironment(environment = process.env) {
   }
 }
 
+export function npmPublisherEnvironment(source = process.env) {
+  requireOidcOnlyNpmEnvironment(source);
+  const missing = NPM_PROVENANCE_ENVIRONMENT.filter((name) =>
+    typeof source[name] !== 'string' || source[name].trim().length === 0
+  );
+  if (missing.length > 0) {
+    throw new PublicationError(
+      `npm provenance requires GitHub runner fields: ${missing.join(', ')}`
+    );
+  }
+  for (const name of [
+    'GITHUB_REPOSITORY_ID',
+    'GITHUB_REPOSITORY_OWNER_ID',
+    'GITHUB_RUN_ID',
+    'GITHUB_RUN_ATTEMPT',
+  ]) {
+    if (!/^[1-9][0-9]*$/.test(source[name])) {
+      throw new PublicationError(`npm provenance ${name} must be a positive integer`);
+    }
+  }
+  if (source.RUNNER_ENVIRONMENT !== 'github-hosted') {
+    throw new PublicationError('npm provenance requires the GitHub-hosted runner used by this workflow');
+  }
+  return childEnvironment(['HOME', ...OIDC_SUBPROCESS_ENVIRONMENT], source);
+}
+
 async function npmDistTags(packageName, registry) {
   const response = await fetchResponse(`${registry}/${encodeURIComponent(packageName)}`);
   if (!response.ok) {
@@ -794,6 +882,9 @@ export async function reconcileNpmDistTags({
 async function publishNpm(options) {
   const { bundle, metadata } = await bundleForRequest(options);
   requireNpmPublisherVersion(await run('npm', ['--version']));
+  // Validate provenance before settlement: local configuration errors must not
+  // consume the registry's propagation window or attempt any mutation.
+  const publisherEnvironment = npmPublisherEnvironment();
   const expected = metadata.npm;
   const registry = String(options.registry_url ?? DEFAULT_NPM_REGISTRY).replace(/\/$/, '');
   const tarball = path.join(bundle, 'npm', expected.tarball.filename);
@@ -814,10 +905,7 @@ async function publishNpm(options) {
         '--registry',
         `${registry}/`,
       ], {
-        env: childEnvironment([
-          'HOME',
-          ...OIDC_SUBPROCESS_ENVIRONMENT,
-        ]),
+        env: publisherEnvironment,
       });
     },
   });
@@ -834,10 +922,7 @@ async function publishNpm(options) {
         '--registry',
         `${registry}/`,
       ], {
-        env: childEnvironment([
-          'HOME',
-          ...OIDC_SUBPROCESS_ENVIRONMENT,
-        ]),
+        env: publisherEnvironment,
       });
     },
     removeTag: async (tag) => {
@@ -850,10 +935,7 @@ async function publishNpm(options) {
         '--registry',
         `${registry}/`,
       ], {
-        env: childEnvironment([
-          'HOME',
-          ...OIDC_SUBPROCESS_ENVIRONMENT,
-        ]),
+        env: publisherEnvironment,
       });
     },
   });
@@ -976,7 +1058,7 @@ if (isDirectExecution) {
     })
     .catch((error) => {
       console.error(
-        `[release] ${error instanceof Error ? error.message : String(error)}`
+        `[release] ${formatPublicationError(error)}`
       );
       process.exitCode = 1;
     });

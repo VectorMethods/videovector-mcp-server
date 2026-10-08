@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Bot-created annotated release tag, for example videovector-mcp-v2.1.0"
+        description: "Bot-created annotated release tag, for example videovector-mcp-v2.1.1"
         required: true
         type: string
       release_body_sha256:
@@ -424,6 +424,11 @@ jobs:
 
       - name: Install checksum-pinned OIDC dist-tag publisher
         run: bash scripts/install_pinned_npm.sh publisher
+
+      - name: Verify the pinned npm provenance contract offline
+        run: |
+          set -euo pipefail
+          node scripts/validate-npm-provenance.mjs --npm-root "$(npm root -g)/npm"
 
       - name: Reconcile npm version and monotonic dist-tags
         env:
