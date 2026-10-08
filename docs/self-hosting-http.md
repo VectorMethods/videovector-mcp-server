@@ -6,7 +6,7 @@ To use VectorMethods' existing OAuth service instead, connect to
 `https://api.vectormethods.com/mcp` as described in
 [hosted setup](hosted-oauth.md).
 
-The runtime in this repository (`package.json` version `2.1.1`) uses API-key
+The runtime in this repository (`package.json` version `2.1.2`) uses API-key
 authentication for self-hosted HTTP. It does not implement the hosted
 service's OAuth verifier or protected-resource discovery. The configuration below describes this package;
 adding `MCP_OAUTH_*` environment variables does not add OAuth support.

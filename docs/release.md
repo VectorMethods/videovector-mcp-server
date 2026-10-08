@@ -55,7 +55,10 @@ executing its contents and enforces the same closed inventory and identities.
 The standalone `server.json` must match the npm package's embedded metadata.
 It contains exactly one npm package with its version, stdio transport, and four
 canonical environment settings, including the required secret-marked
-`VIDEOVECTOR_API_KEY`. The separately deployed hosted OAuth service is documented
+`VIDEOVECTOR_API_KEY`. Optional settings omit `isRequired` and `isSecret`: the
+Registry schema defaults both to false and its API omits false values. This
+keeps the immutable descriptor identical to the published record without
+relaxing verification. The separately deployed hosted OAuth service is documented
 in [Hosted OAuth](./hosted-oauth.md); this package listing describes the npm
 runtime.
 

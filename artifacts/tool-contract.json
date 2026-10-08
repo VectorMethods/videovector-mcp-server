@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "server": {
     "name": "videovector",
-    "version": "2.1.1",
+    "version": "2.1.2",
     "protocol": "mcp",
     "primary_transport": "stdio",
     "supported_transports": [
@@ -12,7 +12,7 @@
   },
   "package": {
     "name": "@vectormethods/videovector-mcp-server",
-    "version": "2.1.1",
+    "version": "2.1.2",
     "bin": "videovector-mcp",
     "npm_install_command": "npx -y @vectormethods/videovector-mcp-server"
   },

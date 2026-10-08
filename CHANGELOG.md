@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.2
+
+- Omit redundant default-false flags from optional MCP Registry environment
+  settings so the immutable descriptor matches the official Registry response.
+- Preserve strict metadata verification and required secret API-key flags.
+- No changes to MCP tool behavior or dependencies from 2.1.1.
+
 ## 2.1.1
 
 - Preserve the complete GitHub Actions identity when generating npm provenance.
