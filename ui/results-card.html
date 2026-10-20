@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>VideoVector Studio</title>
+<style>/* WIDGET_STYLES */</style></head><body>
+<header class="studio-header"><h1>VideoVector Studio</h1><button class="studio-search-back-link" id="open-app">Open in app ↗</button></header>
+<div id="status" role="status">Loading results…</div>
+<div class="studio-layout">
+  <aside id="studio-video-rail"></aside>
+  <main id="studio-main">
+    <div id="studio-search" class="studio-search-surface" hidden></div>
+    <div id="player-area" class="studio-search-surface">
+      <button class="studio-search-back-link" id="back-results" hidden>← Back to results</button>
+      <div id="search-carousel" hidden></div>
+      <h2 id="selected-title" hidden></h2>
+      <div class="studio-player-content">
+        <div class="studio-playback">
+          <img id="image-preview" alt="Selected image" hidden>
+          <video id="player" aria-label="Selected result" controls preload="metadata" hidden></video>
+          <div id="timeline" hidden></div>
+          <div class="actions" id="downloads" hidden></div>
+          <div id="toolbar" hidden></div>
+          <div id="rows"></div><div id="empty" hidden>No results on this page.</div>
+          <button class="secondary" id="next" hidden>Load more</button>
+        </div>
+        <div class="studio-analysis">
+          <section id="analysis" aria-label="Analysis" hidden></section>
+          <section id="video-analysis" aria-label="Video analysis" hidden></section>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script type="module">/* RESULTS_SCRIPT */</script></body></html>

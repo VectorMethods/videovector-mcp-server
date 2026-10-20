@@ -16,7 +16,7 @@ their remote OAuth configurations are described in the [README](../README.md#con
 
 The only required runtime value for local stdio clients is `VIDEOVECTOR_API_KEY`.
 
-For the four-tool workflow surface, also set:
+For the simplified workflow surface, also set:
 
 ```bash
 VIDEOVECTOR_TOOL_PROFILE=simple

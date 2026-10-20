@@ -1,0 +1,291 @@
+/* Sleek Timeline - Apple Style */
+
+.segmented-timeline-container {
+  position: relative;
+  background: transparent;
+  border-radius: 4px;
+  margin-top: 0;
+  padding: 0 15px 4px;
+  user-select: none;
+  z-index: 1;
+}
+
+/* Hover preview - Professional tooltip style */
+.timeline-hover-preview {
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 15px;
+  z-index: 100;
+  pointer-events: none;
+}
+
+/* Video preview in hover */
+.hover-preview-video {
+  display: block;
+  width: 180px;
+  height: 101px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #000;
+}
+
+.hover-preview-time-only {
+  background: rgba(0, 0, 0, 0.9);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 4px 0 4px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Monaco', 'Courier New', monospace;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.hover-preview-content {
+  background: linear-gradient(135deg, #1e1e1e, #151515);
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  padding: 3px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.7);
+}
+
+.hover-preview-gif {
+  display: block;
+  width: 180px;
+  height: 101px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #000;
+}
+
+.hover-preview-placeholder {
+  width: 180px;
+  height: 101px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0a0a;
+  border-radius: 4px;
+  color: #666;
+  font-size: 12px;
+}
+
+.hover-preview-time {
+  text-align: center;
+  padding: 6px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.8);
+  border-radius: 4px 0 3px 3px;
+  font-family: 'Monaco', 'Courier New', monospace;
+}
+
+/* Timeline bar - Professional scrubber */
+.timeline-bar-container {
+  position: relative;
+  height: 40px;
+  padding: 12px 0;
+  cursor: pointer;
+  margin: 2px 0;
+  z-index: 5;
+}
+
+.timeline-bar-container.dragging {
+  cursor: grabbing;
+}
+
+.timeline-bar {
+  position: relative;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  overflow: visible;
+}
+
+/* Segment boundaries - Visible markers */
+.timeline-segment-boundary {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-right: 1px solid rgba(255, 255, 255, 0.2);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Segment markers - vertical lines at segment start points */
+.timeline-segment-marker {
+  position: absolute;
+  top: -10px;
+  width: 2px;
+  height: calc(100% + 20px);
+  background: linear-gradient(to bottom,
+    rgba(255, 255, 255, 0.9),
+    rgba(255, 255, 255, 0.7),
+    rgba(255, 255, 255, 0.9));
+  pointer-events: none;
+  z-index: 10;
+  box-shadow:
+    0 0 4px rgba(255, 255, 255, 0.5),
+    0 0 8px rgba(0, 0, 0, 0.3);
+  border-radius: 4pxpx;
+}
+
+/* Progress bar - Gradient fill */
+.timeline-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: linear-gradient(90deg,
+    #0066ff 0%,
+    #4a9eff 50%,
+    #66b3ff 100%);
+  border-radius: 4px;
+  transition: none;
+  pointer-events: none;
+  box-shadow: 0 0 8px rgba(74, 158, 255, 0.3);
+}
+
+/* Playhead - Professional scrubber handle */
+.timeline-playhead {
+  position: absolute;
+  top: -6px;
+  width: 4px;
+  height: 22px;
+  background: #fff;
+  border-radius: 4px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.3),
+    0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 12px rgba(74, 158, 255, 0.5);
+  transition: none;
+}
+
+.timeline-playhead::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 12px;
+  height: 30px;
+  border-radius: 4px;
+  background: transparent;
+}
+
+.timeline-bar-container:hover .timeline-playhead {
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.3),
+    0 2px 12px rgba(0, 0, 0, 0.7),
+    0 0 20px rgba(74, 158, 255, 0.8);
+}
+
+/* Controls - Modern playback controls */
+.timeline-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+  padding: 0;
+}
+
+.timeline-time-display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+  font-variant-numeric: tabular-nums;
+  margin-top: 4px;
+}
+
+.current-time {
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 500;
+}
+
+.time-separator {
+  margin: 0 6px;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.total-time {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.timeline-buttons {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.timeline-control-btn {
+  background: linear-gradient(135deg, #2a2a2a, #1a1a1a);
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #bbb;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+
+.timeline-control-btn:hover {
+  background: linear-gradient(135deg, #333, #222);
+  color: #fff;
+  border-color: #444;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.timeline-control-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.timeline-control-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Hide segment info text - cleaner look */
+.timeline-segment-info {
+  display: none;
+}
+
+/* Smooth transitions */
+.timeline-bar,
+.timeline-progress,
+.timeline-playhead {
+  will-change: transform, width, left;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .hover-preview-gif,
+  .hover-preview-placeholder {
+    width: 140px;
+    height: 79px;
+  }
+
+  .timeline-buttons {
+    gap: 4px;
+  }
+
+  .timeline-control-btn {
+    padding: 6px 8px;
+  }
+
+  .timeline-control-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+}
+

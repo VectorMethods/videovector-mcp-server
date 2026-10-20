@@ -820,14 +820,14 @@ describe('search tool handlers', () => {
       code: 'resource_quota_exceeded',
       details: { resource: 'indexes', limit: 5, used: 5, reserved: 0 },
       recoverable: true,
-      suggestion: 'Delete unused resources or upgrade',
+      suggestion: 'Delete unused resources or review the account limits',
     },
     {
       statusCode: 429,
       code: 'resource_rate_quota_exceeded',
       details: { resource: 'ingested_bytes_per_day', reset_time: '2026-07-18T00:00:00Z' },
       recoverable: true,
-      suggestion: 'quota reset time',
+      suggestion: 'usage quota resets',
     },
     {
       statusCode: 503,
@@ -836,7 +836,7 @@ describe('search tool handlers', () => {
       recoverable: true,
       suggestion: 'global budget guard',
     },
-  ])('preserves structured containment error $code', async ({
+  ])('preserves safe containment codes without backend diagnostics: $code', async ({
     statusCode,
     code,
     details,
@@ -860,7 +860,9 @@ describe('search tool handlers', () => {
     const payload = parseContent(result);
     expect(result.isError).toBe(true);
     expect(payload.code).toBe(code);
-    expect(payload.details).toEqual(details);
+    expect(payload.details).toBeUndefined();
+    expect(payload.request_id).toBeUndefined();
+    expect(payload.message).not.toBe('Containment guard rejected the request');
     expect(payload.recoverable).toBe(recoverable);
     expect(String(payload.suggestion)).toContain(suggestion);
   });

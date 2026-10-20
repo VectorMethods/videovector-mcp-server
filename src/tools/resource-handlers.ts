@@ -10,7 +10,7 @@
  * - get_video, get_video_segments, list_videos, get_videos_status
  *
  * Prompt Run Tools:
- * - execute_prompt, get_prompt_run_status, get_prompt_run_results
+ * - process_media, get_prompt_run_status, get_prompt_run_results
  *
  * Prompt Management Tools:
  * - create_prompt, get_prompt, update_prompt
@@ -45,7 +45,6 @@ import type {
   PromptRunSegmentRetry,
   PromptRunSegmentRetryStatus,
   PromptRunVideoResult,
-  SegmentRunResult,
   ExecutePromptRequest,
   ExecutePromptTarget,
   PromptUsageStats,
@@ -65,8 +64,16 @@ import type {
   Webhook,
   WebhookDelivery,
 } from '../types/index.js';
+import { attachmentFiles } from './workflow-handlers.js';
 import { TOOL_NAMES } from './definitions.js';
-import { formatError, validateRequired, validateOptional, formatDuration } from '../utils/helpers.js';
+import { appOrigin, artifactLink } from './workflow-result-projection.js';
+import {
+  formatDuration,
+  formatError,
+  ToolInputError,
+  validateOptional,
+  validateRequired,
+} from '../utils/helpers.js';
 
 // ============================================================================
 // Response Formatters
@@ -76,7 +83,6 @@ function formatIndex(index: Index): Record<string, unknown> {
   return {
     index_id: index.index_id,
     name: index.name,
-    user_id: index.user_id,
     is_default: index.is_default,
     created_at: index.created_at,
     description: index.description ?? null,
@@ -123,10 +129,10 @@ function validateOptionalStringArray(
     return undefined;
   }
   if (!Array.isArray(value)) {
-    throw new Error(`${field} must be an array of strings`);
+    throw new ToolInputError(`${field} must be an array of strings`);
   }
   if (!value.every((item) => typeof item === 'string')) {
-    throw new Error(`${field} must contain only strings`);
+    throw new ToolInputError(`${field} must contain only strings`);
   }
   return value;
 }
@@ -143,7 +149,7 @@ function validateConnectorScopes(args: Record<string, unknown>): ConnectorScope[
   const allowedScopes: ConnectorScope[] = ['import', 'export'];
   for (const scope of scopes) {
     if (!allowedScopes.includes(scope as ConnectorScope)) {
-      throw new Error(`scopes must contain only: ${allowedScopes.join(', ')}`);
+      throw new ToolInputError(`scopes must contain only: ${allowedScopes.join(', ')}`);
     }
   }
 
@@ -156,7 +162,7 @@ function validateConnectorImportMode(args: Record<string, unknown>): 'all' | 'ne
     return undefined;
   }
   if (rawImportMode !== 'all' && rawImportMode !== 'new_only') {
-    throw new Error('import_mode must be one of: all, new_only');
+    throw new ToolInputError('import_mode must be one of: all, new_only');
   }
   return rawImportMode;
 }
@@ -485,7 +491,6 @@ function formatVideoLevelConfig(
 
   return {
     instructions_text: config.instructions_text,
-    included_segment_fields: config.included_segment_fields,
     json_schema: config.json_schema,
   };
 }
@@ -511,6 +516,8 @@ function formatPrompt(prompt: Prompt): Record<string, unknown> {
     json_schema: prompt.json_schema,
     video_level: formatVideoLevelConfig(prompt.video_level),
     semantic_indexing: formatSemanticIndexingConfig(prompt.semantic_indexing),
+    execution_config: prompt.execution_config,
+    selection_filter: prompt.selection_filter ?? null,
     is_active: prompt.is_active,
     created_at: prompt.created_at,
     schema_fields: properties ? Object.keys(properties) : [],
@@ -529,6 +536,9 @@ function formatPromptRun(run: PromptRun): Record<string, unknown> {
     prompt_id: run.prompt_id,
     prompt_name: run.prompt_name,
     status: run.status,
+    selection_summary: run.selection_summary,
+    reuse_summary: run.reuse_summary,
+    results_tool: 'get_prompt_run_results',
     progress: {
       total_media: totalMedia,
       completed: completedMedia,
@@ -610,58 +620,6 @@ function formatPromptRun(run: PromptRun): Record<string, unknown> {
   };
 }
 
-function formatSegmentRunResult(result: SegmentRunResult): Record<string, unknown> {
-  const marker = formatMarker(result.marker);
-  const extractedMetadataMarkers = formatMetadataMarkers(
-    result.extracted_metadata_markers ?? result.metadata_markers
-  );
-  return {
-    result_type: result.result_type ?? 'segment',
-    result_id: result.result_id ?? `segment:${result.segment_id}:${result.run_id}`,
-    segment_id: result.segment_id,
-    video_id: result.video_id,
-    run_id: result.run_id,
-    prompt_id: result.prompt_id,
-    prompt_run_id: result.prompt_run_id ?? result.run_id,
-    video_name: result.video_name ?? null,
-    source_index_id: result.source_index_id ?? null,
-    metadata: result.metadata,
-    extracted_metadata: result.metadata,
-    metadata_text: result.metadata_text,
-    text_content: result.metadata_text,
-    content_preview: result.metadata_text,
-    start_time: result.start_time ?? null,
-    end_time: result.end_time ?? null,
-    segment_uri: result.segment_uri ?? null,
-    gcs_uri: result.gcs_uri ?? null,
-    thumbnail_gcs_uri: result.thumbnail_gcs_uri ?? null,
-    gif_gcs_uri: result.gif_gcs_uri ?? null,
-    thumbnail_uri: result.thumbnail_uri ?? null,
-    gif_uri: result.gif_uri ?? null,
-    thumbnail_available: Boolean(result.thumbnail_available),
-    gif_available: Boolean(result.gif_available),
-    operations: {
-      field_extraction: {
-        succeeded: result.field_extraction_succeeded,
-        error: result.field_extraction_error,
-      },
-      transcription: {
-        succeeded: result.transcription_succeeded,
-        error: result.transcription_error,
-      },
-      image_embedding: {
-        succeeded: result.image_embedding_succeeded,
-        error: result.image_embedding_error,
-      },
-    },
-    executed_at: result.executed_at,
-    processing_warning: result.processing_warning,
-    marker,
-    extracted_metadata_markers: extractedMetadataMarkers,
-    metadata_markers: extractedMetadataMarkers,
-  };
-}
-
 function formatPromptRunVideoResult(result: PromptRunVideoResult): Record<string, unknown> {
   const marker = formatMarker(result.marker);
   return {
@@ -682,10 +640,6 @@ function formatPromptRunVideoResult(result: PromptRunVideoResult): Record<string
     raw_llm_response: result.raw_llm_response,
     successful_segment_count: result.successful_segment_count,
     failed_segment_count: result.failed_segment_count,
-    omitted_segment_ids: result.omitted_segment_ids,
-    template_fields: result.template_fields,
-    llm_attempted: result.llm_attempted,
-    rendered_prompt_char_count: result.rendered_prompt_char_count,
     source_fingerprint: result.source_fingerprint,
     attempt_id: result.attempt_id,
     schema_used: result.schema_used,
@@ -873,7 +827,7 @@ async function handleListPrompts(
             total_count: response.total_count,
             active_count: response.active_count,
             prompts: formattedPrompts,
-            tip: 'Use a prompt_id with execute_prompt to analyze videos.',
+            tip: 'Use a prompt_id with process_media to analyze videos.',
           },
           null,
           2
@@ -952,27 +906,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function validatePromptRunTarget(rawTarget: unknown): ExecutePromptTarget {
   if (!isRecord(rawTarget)) {
-    throw new Error('target must be an object');
+    throw new ToolInputError('target must be an object');
   }
 
   const type = rawTarget.type;
   if (type !== 'index' && type !== 'videos' && type !== 'playground') {
-    throw new Error("target.type must be one of: index, videos, playground");
+    throw new ToolInputError("target.type must be one of: index, videos, playground");
   }
 
   if (type === 'index') {
     if (typeof rawTarget.index_id !== 'string' || rawTarget.index_id.trim().length === 0) {
-      throw new Error("target.index_id is required when target.type is 'index'");
+      throw new ToolInputError("target.index_id is required when target.type is 'index'");
     }
     return { type, index_id: rawTarget.index_id };
   }
 
   if (type === 'videos') {
     if (!Array.isArray(rawTarget.video_ids) || rawTarget.video_ids.length === 0) {
-      throw new Error("target.video_ids must be a non-empty array when target.type is 'videos'");
+      throw new ToolInputError(
+        "target.video_ids must be a non-empty array when target.type is 'videos'"
+      );
     }
     if (!rawTarget.video_ids.every((value) => typeof value === 'string' && value.trim().length > 0)) {
-      throw new Error('target.video_ids must contain non-empty strings');
+      throw new ToolInputError('target.video_ids must contain non-empty strings');
     }
 
     const target: ExecutePromptTarget = {
@@ -994,7 +950,7 @@ function validateOptionalIdempotencyKey(args: Record<string, unknown>): string |
     return undefined;
   }
   if (typeof value !== 'string') {
-    throw new Error('idempotency_key must be a string');
+    throw new ToolInputError('idempotency_key must be a string');
   }
   const candidate = value.trim();
   return candidate || undefined;
@@ -1003,7 +959,7 @@ function validateOptionalIdempotencyKey(args: Record<string, unknown>): string |
 function validateRequiredIdempotencyKey(args: Record<string, unknown>): string {
   const value = validateOptionalIdempotencyKey(args);
   if (!value) {
-    throw new Error('idempotency_key is required');
+    throw new ToolInputError('idempotency_key is required');
   }
   return value;
 }
@@ -1013,9 +969,9 @@ function parsePromptRunDuration(value: unknown, fieldName: string): number | und
     return undefined;
   }
 
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 300) {
-    throw new Error(`${fieldName} must be an integer between 1 and 300`);
+  const parsed = value;
+  if (typeof parsed !== 'number' || !Number.isInteger(parsed) || parsed < 1 || parsed > 300) {
+    throw new ToolInputError(`${fieldName} must be an integer between 1 and 300`);
   }
   return parsed;
 }
@@ -1044,7 +1000,7 @@ function buildPromptRunRequest(args: Record<string, unknown>): ExecutePromptRequ
     videoSegmentationType !== undefined &&
     !validVideoSegmentationTypes.includes(videoSegmentationType)
   ) {
-    throw new Error(
+    throw new ToolInputError(
       `video_segmentation_type must be one of: ${validVideoSegmentationTypes.join(', ')}`
     );
   }
@@ -1052,17 +1008,10 @@ function buildPromptRunRequest(args: Record<string, unknown>): ExecutePromptRequ
     audioSegmentationType !== undefined &&
     !validAudioSegmentationTypes.includes(audioSegmentationType)
   ) {
-    throw new Error(
+    throw new ToolInputError(
       `audio_segmentation_type must be one of: ${validAudioSegmentationTypes.join(', ')}`
     );
   }
-  if (videoSegmentationType === 'fixed' && videoSegmentDuration === undefined) {
-    throw new Error("video_segment_duration is required when video_segmentation_type is 'fixed'");
-  }
-  if (audioSegmentationType === 'fixed' && audioSegmentDuration === undefined) {
-    throw new Error("audio_segment_duration is required when audio_segmentation_type is 'fixed'");
-  }
-
   return {
     prompt_id: promptId,
     target,
@@ -1092,19 +1041,19 @@ async function handleListPromptRuns(
   const defaultedUserLimit = normalizedLimit ?? 200;
 
   if (indexId !== undefined && typeof indexId !== 'string') {
-    throw new Error('index_id must be a string');
+    throw new ToolInputError('index_id must be a string');
   }
   if (videoId !== undefined && typeof videoId !== 'string') {
-    throw new Error('video_id must be a string');
+    throw new ToolInputError('video_id must be a string');
   }
   if (indexId && videoId) {
-    throw new Error('Provide either index_id or video_id, not both');
+    throw new ToolInputError('Provide either index_id or video_id, not both');
   }
   if (cursor && !indexId) {
-    throw new Error('cursor is only supported when listing prompt runs for an index');
+    throw new ToolInputError('cursor is only supported when listing prompt runs for an index');
   }
   if (indexId && defaultedIndexLimit > 100) {
-    throw new Error('limit cannot exceed 100 when listing prompt runs for an index');
+    throw new ToolInputError('limit cannot exceed 100 when listing prompt runs for an index');
   }
 
   const response = await client.listPromptRuns({
@@ -1184,36 +1133,6 @@ async function handleEstimatePromptRun(
   };
 }
 
-async function handleExecutePrompt(
-  args: Record<string, unknown>,
-  client: VideoVectorClient
-): Promise<ToolHandlerResult> {
-  const request = buildPromptRunRequest(args);
-  const idempotencyKey = validateOptionalIdempotencyKey(args);
-  const run = await client.executePrompt(request, idempotencyKey);
-
-  return {
-    content: [
-      {
-        type: 'text',
-        text: JSON.stringify(
-          {
-            message: 'Prompt execution started successfully',
-            run_id: run.run_id,
-            status: run.status,
-            prompt_name: run.prompt_name,
-            target: request.target,
-            total_media: run.total_videos + run.total_audios + run.total_images,
-            tip: `Use get_prompt_run_status with run_id="${run.run_id}" to check progress.`,
-          },
-          null,
-          2
-        ),
-      },
-    ],
-  };
-}
-
 async function handleGetPromptRunStatus(
   args: Record<string, unknown>,
   client: VideoVectorClient
@@ -1229,6 +1148,7 @@ async function handleGetPromptRunStatus(
         text: JSON.stringify(formatPromptRun(run), null, 2),
       },
     ],
+    structuredContent: formatPromptRun(run),
   };
 }
 
@@ -1262,32 +1182,37 @@ async function handleGetPromptRunResults(
   args: Record<string, unknown>,
   client: VideoVectorClient
 ): Promise<ToolHandlerResult> {
+  const allowed = new Set([
+    'run_id', 'result_level', 'video_id', 'view', 'limit',
+    'filtered_cursor', 'unfiltered_cursor',
+  ]);
+  if (Object.keys(args).some((key) => !allowed.has(key))) {
+    throw new ToolInputError('Unsupported get_prompt_run_results argument');
+  }
   const runId = validateRequired<string>(args, 'run_id', 'string');
-  const videoId = validateRequired<string>(args, 'video_id', 'string');
-  const limit = validateOptional(args, 'limit', 'number', 50);
-
-  const response = await client.getPromptRunResults(runId, {
-    videoId,
-    limit: Math.min(Math.max(limit, 1), 100),
+  const resultLevel = validateOptional(args, 'result_level', 'string', 'segment');
+  const view = validateOptional(args, 'view', 'string', 'both');
+  const limit = validateOptional(args, 'limit', 'number', 10);
+  if (resultLevel !== 'segment' && resultLevel !== 'video') {
+    throw new ToolInputError('result_level must be segment or video');
+  }
+  if (view !== 'both' && view !== 'filtered' && view !== 'unfiltered') {
+    throw new ToolInputError('view must be both, filtered, or unfiltered');
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new ToolInputError('limit must be an integer between 1 and 50');
+  }
+  const payload = await client.workflowRunResults(runId, {
+    result_level: resultLevel,
+    view,
+    limit,
+    video_id: validateOptional<string | undefined>(args, 'video_id', 'string', undefined),
+    filtered_cursor: validateOptional<string | undefined>(args, 'filtered_cursor', 'string', undefined),
+    unfiltered_cursor: validateOptional<string | undefined>(args, 'unfiltered_cursor', 'string', undefined),
   });
-
-  const formattedResults = response.data.map(formatSegmentRunResult);
-  const payload = {
-    run_id: runId,
-    video_id: videoId,
-    total_results: formattedResults.length,
-    has_more: response.pagination.has_more,
-    results: formattedResults,
-  };
-
   return {
-    content: [
-      {
-        type: 'text',
-        text: JSON.stringify(payload, null, 2),
-      },
-    ],
-    structuredContent: payload,
+    content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+    structuredContent: { ...payload },
   };
 }
 
@@ -1392,16 +1317,16 @@ async function handleCreatePrompt(
   const idempotencyKey = validateOptionalIdempotencyKey(args);
 
   if (typeof (jsonSchema as { type?: unknown }).type !== 'string') {
-    throw new Error("json_schema must declare a root 'type'");
+    throw new ToolInputError("json_schema must declare a root 'type'");
   }
   if ((jsonSchema as { type?: string }).type !== 'object') {
-    throw new Error("json_schema root type must be 'object'");
+    throw new ToolInputError("json_schema root type must be 'object'");
   }
   if (videoLevel !== undefined && !isRecord(videoLevel)) {
-    throw new Error('video_level must be an object');
+    throw new ToolInputError('video_level must be an object');
   }
   if (semanticIndexing !== undefined && !isRecord(semanticIndexing)) {
-    throw new Error('semantic_indexing must be an object');
+    throw new ToolInputError('semantic_indexing must be an object');
   }
 
   const prompt = await client.createPrompt(
@@ -1412,6 +1337,8 @@ async function handleCreatePrompt(
       json_schema: jsonSchema,
       video_level: videoLevel as unknown as PromptVideoLevelConfig | undefined,
       semantic_indexing: semanticIndexing as unknown as Prompt['semantic_indexing'] | undefined,
+      execution_config: args.execution_config as Prompt['execution_config'],
+      selection_filter: args.selection_filter as Prompt['selection_filter'],
     },
     idempotencyKey
   );
@@ -1424,7 +1351,7 @@ async function handleCreatePrompt(
           {
             message: 'Prompt created successfully',
             prompt: formatPrompt(prompt),
-            tip: `Use execute_prompt with prompt_id="${prompt.prompt_id}" to analyze videos with this prompt.`,
+            tip: `Use process_media with prompt_id="${prompt.prompt_id}" to analyze videos with this prompt.`,
           },
           null,
           2
@@ -1489,6 +1416,9 @@ async function handleUpdatePrompt(
     video_level?: PromptVideoLevelConfig | null;
     semantic_indexing?: Prompt['semantic_indexing'] | null;
     clear_video_level?: boolean;
+    execution_config?: Prompt['execution_config'];
+    selection_filter?: Prompt['selection_filter'];
+    clear_selection_filter?: boolean;
   } = {};
   if (name !== undefined) {
     updateRequest.name = name;
@@ -1501,31 +1431,40 @@ async function handleUpdatePrompt(
   }
   if (jsonSchema !== undefined) {
     if (typeof (jsonSchema as { type?: unknown }).type !== 'string') {
-      throw new Error("json_schema must declare a root 'type'");
+      throw new ToolInputError("json_schema must declare a root 'type'");
     }
     if ((jsonSchema as { type?: string }).type !== 'object') {
-      throw new Error("json_schema root type must be 'object'");
+      throw new ToolInputError("json_schema root type must be 'object'");
     }
     updateRequest.json_schema = jsonSchema;
   }
   if (videoLevel !== undefined) {
     if (!isRecord(videoLevel)) {
-      throw new Error('video_level must be an object');
+      throw new ToolInputError('video_level must be an object');
     }
     updateRequest.video_level = videoLevel as unknown as PromptVideoLevelConfig;
   }
   if (semanticIndexing !== undefined) {
     if (!isRecord(semanticIndexing)) {
-      throw new Error('semantic_indexing must be an object');
+      throw new ToolInputError('semantic_indexing must be an object');
     }
     updateRequest.semantic_indexing = semanticIndexing as unknown as Prompt['semantic_indexing'];
   }
   if (clearVideoLevel) {
     updateRequest.clear_video_level = true;
   }
+  if (args.execution_config !== undefined) {
+    updateRequest.execution_config = args.execution_config as Prompt['execution_config'];
+  }
+  if (args.selection_filter !== undefined) {
+    updateRequest.selection_filter = args.selection_filter as Prompt['selection_filter'];
+  }
+  if (validateOptional(args, 'clear_selection_filter', 'boolean', false)) {
+    updateRequest.clear_selection_filter = true;
+  }
 
   if (Object.keys(updateRequest).length === 0) {
-    throw new Error('At least one prompt field must be provided');
+    throw new ToolInputError('At least one prompt field must be provided');
   }
 
   const prompt = await client.updatePrompt(promptId, updateRequest, idempotencyKey);
@@ -1562,7 +1501,6 @@ async function handleTestPromptSchema(
         text: JSON.stringify(result, null, 2),
       },
     ],
-    isError: !result.valid,
   };
 }
 
@@ -1660,13 +1598,13 @@ async function handleCreateGCSConnector(
   const requiredCredentialFields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email', 'token_uri'];
   const missingFields = requiredCredentialFields.filter((field) => !credentialsJson[field]);
   if (missingFields.length > 0) {
-    throw new Error(
+    throw new ToolInputError(
       `credentials_json is missing required fields: ${missingFields.join(', ')}. ` +
       'Ensure you are using a valid GCP service account key JSON file.'
     );
   }
   if (credentialsJson.type !== 'service_account') {
-    throw new Error("credentials_json.type must be 'service_account'");
+    throw new ToolInputError("credentials_json.type must be 'service_account'");
   }
 
   const request = {
@@ -1922,15 +1860,21 @@ function formatImportJob(job: ImportJob): Record<string, unknown> {
 
   return {
     job_id: job.job_id,
+    phase: job.phase, outputs: job.outputs, execution: job.execution,
     connector_id: job.connector_id,
     target_index_id: job.target_index_id,
     status: job.status,
+    source_kind: job.source_kind,
+    run_id: job.run_id ?? null,
     source: {
       prefix: job.source_prefix,
       pattern: job.file_pattern,
       recursive: job.recursive,
     },
     progress: {
+      parts_total: job.progress.parts_total,
+      parts_completed: job.progress.parts_completed,
+      parts_failed: job.progress.parts_failed,
       total_files: job.progress.total_files,
       imported: job.progress.imported,
       failed: job.progress.failed,
@@ -1947,8 +1891,8 @@ function formatImportJob(job: ImportJob): Record<string, unknown> {
     },
     video_ids: job.video_ids,
     error_message: job.error_message,
-    failed_files_count: job.failed_files.length,
-    skipped_files_count: job.skipped_files.length,
+    failed_files_count: job.progress.failed,
+    skipped_files_count: job.progress.skipped,
   };
 }
 
@@ -1956,8 +1900,15 @@ function formatImportJobDetail(job: ImportJob): Record<string, unknown> {
   const base = formatImportJob(job);
   return {
     ...base,
-    failed_files: job.failed_files.map((f) => ({ path: f.path, error: f.error })),
-    skipped_files: job.skipped_files.map((f) => ({ path: f.path, reason: f.reason })),
+    failed_files: job.failed_files.map((f) => ({
+      path: f.path, error: f.error,
+      ...(f.file_id === undefined ? {} : { file_id: f.file_id }),
+      ...(f.file_name === undefined ? {} : { file_name: f.file_name }),
+      ...(f.error_code === undefined ? {} : { error_code: f.error_code }),
+      ...(f.http_status === undefined ? {} : { http_status: f.http_status }),
+      ...(f.refresh_required === undefined ? {} : { refresh_required: f.refresh_required }),
+    })),
+    failed_files_next_cursor: job.failed_files_next_cursor,
   };
 }
 
@@ -2009,7 +1960,7 @@ async function handleListImportJobs(
   let statusFilter: ImportJobStatus | undefined;
   if (rawStatusFilter !== undefined) {
     if (typeof rawStatusFilter !== 'string') {
-      throw new Error('status must be a string');
+      throw new ToolInputError('status must be a string');
     }
     const normalizedStatus = rawStatusFilter.toLowerCase();
     const validStatuses: ImportJobStatus[] = [
@@ -2021,7 +1972,7 @@ async function handleListImportJobs(
       'cancelled',
     ];
     if (!validStatuses.includes(normalizedStatus as ImportJobStatus)) {
-      throw new Error(`status must be one of: ${validStatuses.join(', ')}`);
+      throw new ToolInputError(`status must be one of: ${validStatuses.join(', ')}`);
     }
     statusFilter = normalizedStatus as ImportJobStatus;
   }
@@ -2064,19 +2015,34 @@ async function handleGetImportJob(
   const jobId = validateRequired<string>(args, 'job_id', 'string');
 
   const job = await client.getImportJob(jobId);
-
-  // Mark as error if job failed so MCP clients can distinguish failed operations
-  const isError = job.status === 'failed';
+  const limit = validateOptional(args, 'limit', 'number', 100);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ToolInputError('limit must be an integer from 1 to 100');
+  const cursor = validateOptional(args, 'cursor', 'string', undefined);
+  const outputs = args.limit !== undefined || cursor !== undefined
+    ? await client.getImportJobOutputs(jobId, limit, cursor) : job.outputs;
+  const failuresCursor = validateOptional(args, 'failed_files_cursor', 'string', undefined);
+  const failures = failuresCursor !== undefined
+    ? await client.getImportJobFiles(jobId, limit, failuresCursor, true) : undefined;
+  const data = { ...formatImportJobDetail(job), outputs,
+    ...(failures ? { failed_files: failures.items.filter((file) => file.failure).map((file) => ({ path: file.file_id, file_id: file.file_id, file_name: file.file_name, ...file.failure })), failed_files_next_cursor: failures.next_cursor } : {}),
+    video_ids: outputs?.items.flatMap((part) => part.status === 'completed' && part.video_id ? [part.video_id] : []) ?? job.video_ids };
 
   return {
     content: [
       {
         type: 'text',
-        text: JSON.stringify(formatImportJobDetail(job), null, 2),
+        text: JSON.stringify(data, null, 2),
       },
     ],
-    isError,
+    structuredContent: data,
   };
+}
+
+async function handleRetryImportJob(args: Record<string, unknown>, client: VideoVectorClient): Promise<ToolHandlerResult> {
+  const jobId = validateRequired<string>(args, 'job_id', 'string');
+  const job = await client.retryImportJob(jobId, validateOptionalIdempotencyKey(args), attachmentFiles(args));
+  const data = { ...job };
+  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], structuredContent: data };
 }
 
 async function handleCancelImportJob(
@@ -2206,13 +2172,13 @@ async function handleGetVideosStatus(
   const videoIds = validateRequired<string[]>(args, 'video_ids', 'object');
 
   if (!Array.isArray(videoIds) || videoIds.length === 0) {
-    throw new Error('video_ids must be a non-empty array of strings');
+    throw new ToolInputError('video_ids must be a non-empty array of strings');
   }
   if (videoIds.length > 100) {
-    throw new Error('video_ids cannot contain more than 100 items');
+    throw new ToolInputError('video_ids cannot contain more than 100 items');
   }
   if (!videoIds.every((id) => typeof id === 'string')) {
-    throw new Error('video_ids must contain only strings');
+    throw new ToolInputError('video_ids must contain only strings');
   }
 
   const statuses = await client.getVideosStatus(videoIds);
@@ -2373,6 +2339,15 @@ async function handleGetExportStatus(
 
   const job = await client.getExportStatus(exportId);
   const result = formatExportJob(job);
+  const sourceKind = job.export_type === 'prompt_run' || job.export_type === 'search_snapshot'
+    ? job.export_type : undefined;
+  const sourceId = sourceKind ? job.target_id : undefined;
+  const scope = sourceKind === 'search_snapshot' ? 'search_results'
+    : job.export_params?.result_scope === 'matches' ? 'matches' : 'all';
+  const origin = appOrigin();
+  const links: Record<string, string> = {
+    open_in_app: artifactLink(sourceKind, sourceId, scope, job.export_id, origin),
+  };
 
   // Add contextual tip based on status
   let tip: string | undefined;
@@ -2385,10 +2360,10 @@ async function handleGetExportStatus(
     && job.destination_type === 'download'
     && job.download_url
   ) {
+    links.download_json = artifactLink(sourceKind, sourceId, scope, job.export_id, origin, true);
     tip =
-      'Export is ready at the authenticated download endpoint. ' +
-      'Use the VideoVector SDK/API for bounded streaming. Call get_export_download_url ' +
-      'only when another header-free client explicitly needs a short-lived bearer URL.';
+      'Export is ready. Open links.download_json to download with your signed-in VideoVector account, ' +
+      'or links.open_in_app to review it. download_url is the authenticated API endpoint for SDK/API clients.';
   } else if (job.status === 'completed' && job.destination_type === 'connector') {
     tip =
       'Export completed to the configured connector destination. ' +
@@ -2400,24 +2375,20 @@ async function handleGetExportStatus(
     tip = 'Export failed. Check error_message for details.';
   }
 
-  // Mark as error if job failed so MCP clients can distinguish failed operations
-  const isError = job.status === 'failed';
+  const payload = {
+    ...result,
+    links,
+    tip: tip ?? 'Export status is available.',
+  };
 
   return {
     content: [
       {
         type: 'text',
-        text: JSON.stringify(
-          {
-            ...result,
-            tip,
-          },
-          null,
-          2
-        ),
+        text: JSON.stringify(payload, null, 2),
       },
     ],
-    isError,
+    structuredContent: payload,
   };
 }
 
@@ -2494,11 +2465,11 @@ async function handleCreateWebhook(
   const events = validateRequired<string[]>(args, 'events', 'object');
 
   if (!Array.isArray(events) || events.length === 0) {
-    throw new Error('events must be a non-empty array of event types');
+    throw new ToolInputError('events must be a non-empty array of event types');
   }
 
   if (!url.startsWith('https://')) {
-    throw new Error('URL must use HTTPS');
+    throw new ToolInputError('URL must use HTTPS');
   }
 
   const indexIds = args.index_ids as string[] | undefined;
@@ -2612,13 +2583,13 @@ async function handleUpdateWebhook(
   }
   if (url !== undefined) {
     if (!url.startsWith('https://')) {
-      throw new Error('URL must use HTTPS');
+      throw new ToolInputError('URL must use HTTPS');
     }
     updateRequest.url = url;
   }
   if (events !== undefined) {
     if (events.length === 0) {
-      throw new Error('events cannot be empty');
+      throw new ToolInputError('events cannot be empty');
     }
     updateRequest.events = events;
   }
@@ -2627,7 +2598,7 @@ async function handleUpdateWebhook(
   }
   if (status !== undefined) {
     if (!['active', 'paused'].includes(status)) {
-      throw new Error("status must be 'active' or 'paused'");
+      throw new ToolInputError("status must be 'active' or 'paused'");
     }
     updateRequest.status = status;
   }
@@ -2636,7 +2607,7 @@ async function handleUpdateWebhook(
   }
 
   if (Object.keys(updateRequest).length === 0) {
-    throw new Error('At least one field must be provided to update');
+    throw new ToolInputError('At least one field must be provided to update');
   }
 
   const webhook = await client.updateWebhook(webhookId, updateRequest, idempotencyKey);
@@ -2733,12 +2704,12 @@ async function handleListWebhookDeliveries(
   let status: string | undefined;
   if (rawStatus !== undefined) {
     if (typeof rawStatus !== 'string') {
-      throw new Error('status must be a string');
+      throw new ToolInputError('status must be a string');
     }
     const normalizedStatus = rawStatus.toLowerCase();
     const validStatuses = ['pending', 'processing', 'delivered', 'failed', 'retrying'];
     if (!validStatuses.includes(normalizedStatus)) {
-      throw new Error(`status must be one of: ${validStatuses.join(', ')}`);
+      throw new ToolInputError(`status must be one of: ${validStatuses.join(', ')}`);
     }
     status = normalizedStatus;
   }
@@ -2796,7 +2767,6 @@ export const RESOURCE_HANDLERS: Record<string, ToolHandler> = {
   [TOOL_NAMES.GET_VIDEO_SEGMENTS]: handleGetVideoSegments,
   [TOOL_NAMES.LIST_PROMPT_RUNS]: handleListPromptRuns,
   [TOOL_NAMES.ESTIMATE_PROMPT_RUN]: handleEstimatePromptRun,
-  [TOOL_NAMES.EXECUTE_PROMPT]: handleExecutePrompt,
   [TOOL_NAMES.GET_PROMPT_RUN_STATUS]: handleGetPromptRunStatus,
   [TOOL_NAMES.CANCEL_PROMPT_RUN]: handleCancelPromptRun,
   [TOOL_NAMES.GET_PROMPT_RUN_RESULTS]: handleGetPromptRunResults,
@@ -2821,6 +2791,7 @@ export const RESOURCE_HANDLERS: Record<string, ToolHandler> = {
   [TOOL_NAMES.CREATE_IMPORT_JOB]: handleCreateImportJob,
   [TOOL_NAMES.LIST_IMPORT_JOBS]: handleListImportJobs,
   [TOOL_NAMES.GET_IMPORT_JOB]: handleGetImportJob,
+  [TOOL_NAMES.RETRY_IMPORT_JOB]: handleRetryImportJob,
   [TOOL_NAMES.CANCEL_IMPORT_JOB]: handleCancelImportJob,
   // Index Management
   [TOOL_NAMES.CREATE_INDEX]: handleCreateIndex,
@@ -2849,7 +2820,8 @@ export function isResourceTool(toolName: string): boolean {
 export async function executeResourceTool(
   toolName: string,
   args: Record<string, unknown>,
-  client: VideoVectorClient
+  client: VideoVectorClient,
+  authenticationKind?: 'api-key' | 'oauth'
 ): Promise<ToolHandlerResult> {
   const handler = RESOURCE_HANDLERS[toolName];
   if (!handler) {
@@ -2859,6 +2831,6 @@ export async function executeResourceTool(
   try {
     return await handler(args, client);
   } catch (error) {
-    return formatError(error);
+    return formatError(error, { authenticationKind });
   }
 }

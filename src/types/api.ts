@@ -23,8 +23,100 @@ export interface PaginatedResponse<T> {
 // Simplified Workflow Types
 // ============================================================================
 
-export type WorkflowSegmentationMode = 'content_aware' | 'fixed';
 export type WorkflowResultLevel = 'segment' | 'video';
+
+export interface WorkflowAttachment {
+  download_url: string;
+  file_id: string;
+  mime_type?: string;
+  file_name?: string;
+}
+
+export interface WorkflowAttachmentRequest {
+  files?: WorkflowAttachment[];
+  title?: string;
+  index_id?: string;
+  index_name?: string;
+}
+
+export interface WorkflowFindRequest {
+  instruction: string;
+  files?: WorkflowAttachment[];
+  artifact_delivery?: 'automatic' | 'none';
+}
+
+export interface WorkflowUploadGrant {
+  url: string;
+  complete_url: string;
+  token: string;
+  expires_at: string;
+  max_files: number;
+  accept: string;
+}
+
+export interface ImportJobOutput {
+  file_id: string;
+  file_name: string;
+  source_ordinal: number;
+  part_index: number;
+  part_count: number;
+  source_start_seconds: number;
+  source_end_seconds: number;
+  video_id: string | null;
+  title: string;
+  status: string;
+}
+export interface ImportJobOutputsPage {
+  items: ImportJobOutput[];
+  next_cursor: string | null;
+  total: number;
+}
+export interface ImportJobFile {
+  file_id: string;
+  file_name: string;
+  source_ordinal: number;
+  status: string;
+  part_count: number | null;
+  parts_completed: number | null;
+  parts_failed: number | null;
+  failure?: { error: string; error_code: string; http_status?: number | null; refresh_required: boolean } | null;
+  skip_reason?: string | null;
+}
+export interface ImportJobFilesPage {
+  items: ImportJobFile[];
+  next_cursor: string | null;
+  total: number;
+}
+export interface ImportJobExecution {
+  status: 'not_requested' | 'pending' | 'submitted' | 'blocked';
+  run_id?: string | null;
+  error_code?: string | null;
+  error?: string | null;
+}
+
+export interface WorkflowIntakeResponse {
+  job_id: string;
+  status: string;
+  video_ids: string[];
+  run_id?: string | null;
+  source_kind?: string;
+  target_index_id?: string | null;
+  phase: string;
+  outputs: ImportJobOutputsPage;
+  execution: ImportJobExecution;
+  progress?: ImportJobProgress;
+  error_message?: string | null;
+  upload?: WorkflowUploadGrant | null;
+  failed_files_next_cursor?: string | null;
+  failed_files?: Array<{
+    file_id: string;
+    file_name: string;
+    error_code: string;
+    error: string;
+    http_status?: number | null;
+    refresh_required: boolean;
+  }>;
+}
 
 export interface WorkflowUploadRequest {
   file_path: string;
@@ -33,16 +125,7 @@ export interface WorkflowUploadRequest {
   index_name?: string;
 }
 
-export interface WorkflowUploadResponse {
-  video: Video;
-  destination: {
-    type: 'playground' | 'index';
-    index_id: string | null;
-    index_name: string | null;
-    index_created: boolean;
-  };
-  [key: string]: unknown;
-}
+export type WorkflowUploadResponse = WorkflowIntakeResponse;
 
 export interface WorkflowDefineRequest {
   instruction: string;
@@ -58,26 +141,43 @@ export interface WorkflowDefineResponse {
   [key: string]: unknown;
 }
 
-export interface WorkflowProcessRequest {
+export interface WorkflowProcessRequest extends Partial<PromptExecutionConfig> {
+  import_job_id?: string;
+  artifact_delivery?: 'automatic' | 'none';
   prompt_id?: string;
   prompt_instruction?: string;
   video_ids?: string[];
   index_id?: string;
   index_name?: string;
-  segmentation_mode?: WorkflowSegmentationMode;
-  fixed_segment_duration_seconds?: number;
-  advanced_transcription?: boolean;
-  create_image_embeddings?: boolean;
+}
+
+export interface WorkflowRunResultsRequest {
+  result_level?: WorkflowResultLevel;
+  video_id?: string;
+  view?: 'both' | 'filtered' | 'unfiltered';
+  limit?: number;
+  filtered_cursor?: string;
+  unfiltered_cursor?: string;
+}
+
+export interface WorkflowRunResultsResponse {
+  destination?: { type: 'playground' | 'index'; index_id?: string };
+  run_id: string;
+  status: PromptRunStatus;
+  result_level: WorkflowResultLevel;
+  selection_filter: PromptSelectionFilter | null;
+  selection_summary: PromptRunSelectionSummary;
+  filtered: PaginatedResponse<Record<string, unknown>> | null;
+  unfiltered: PaginatedResponse<Record<string, unknown>> | null;
 }
 
 export interface WorkflowProcessResponse {
-  run_id?: string;
-  run?: PromptRun | Record<string, unknown>;
-  prompt_run?: PromptRun | Record<string, unknown>;
-  prompt?: Prompt | Record<string, unknown>;
-  prompt_generated_inline?: boolean;
-  prompt_created_inline?: boolean;
-  status_url?: string;
+  run_id: string;
+  run: PromptRun;
+  prompt: Prompt;
+  prompt_created_inline: boolean;
+  status_url: string;
+  results_url: string;
   [key: string]: unknown;
 }
 
@@ -88,6 +188,7 @@ export interface WorkflowFilterCondition {
 }
 
 export interface WorkflowSearchRequest {
+  artifact_delivery?: 'automatic' | 'none';
   query?: string;
   filters?: WorkflowFilterCondition[];
   result_level?: WorkflowResultLevel;
@@ -96,6 +197,25 @@ export interface WorkflowSearchRequest {
   index_id?: string;
   index_name?: string;
   limit?: number;
+}
+
+export interface WorkflowSearchScopeRequest {
+  video_ids?: string[];
+  prompt_run_ids?: string[];
+  index_id?: string;
+  index_name?: string;
+  result_level?: WorkflowResultLevel;
+}
+
+export interface WorkflowSearchScopeResponse {
+  scope: Record<string, unknown>;
+  coverage: Record<string, unknown>;
+  warnings: string[];
+  runs: Array<{ run_id: string; prompt_id: string; prompt_name: string; executed_at: string; status: string; video_ids: string[] }>;
+  browse_targets: Array<{ run_id: string; video_id: string }>;
+  fields: Array<{ name: string; type: string; itemType?: string; description?: string; run_ids: string[] }>;
+  conflicting_fields: string[];
+  missing_schema_run_ids: string[];
 }
 
 export interface WorkflowSearchPagination {
@@ -108,6 +228,8 @@ export interface WorkflowSearchPagination {
 }
 
 export interface WorkflowSearchResponse {
+  snapshot_id?: string;
+  expires_at?: string;
   data: Array<Record<string, unknown>>;
   mode: 'vector' | 'condition';
   result_level: WorkflowResultLevel;
@@ -116,6 +238,36 @@ export interface WorkflowSearchResponse {
   coverage?: Record<string, unknown>;
   warnings?: Array<Record<string, unknown> | string>;
   [key: string]: unknown;
+}
+
+export interface WorkflowDeliveryResponse {
+  source_kind: 'prompt_run' | 'search_snapshot';
+  source_id: string;
+  artifacts: Array<Record<string, unknown>>;
+}
+
+export interface WorkflowMediaGrant {
+  url: string;
+  expires_at: string;
+  mime_type: string;
+  start_time?: number;
+  end_time?: number;
+  filename?: string | null;
+}
+
+export type PreviewGrantIdentity =
+  | { kind: 'video'; video_id: string }
+  | { kind: 'segment'; video_id: string; segment_id: string };
+
+export interface PreviewGrantItem {
+  kind: 'video' | 'segment';
+  video_id: string;
+  segment_id?: string | null;
+  thumbnail_uri?: string | null;
+  thumbnail_available?: boolean;
+  gif_uri?: string | null;
+  gif_available?: boolean;
+  grant_expires_at?: string | null;
 }
 
 // ============================================================================
@@ -370,6 +522,7 @@ export interface FilterCondition {
   operator: FilterOperator;
   value?: unknown;
   type: FilterValueType;
+  item_type?: string | null;
 }
 
 export interface FilterSearchRequest {
@@ -399,6 +552,8 @@ export interface Prompt {
   json_schema: Record<string, unknown>;
   video_level: PromptVideoLevelConfig | null;
   semantic_indexing: PromptSemanticIndexingConfig;
+  execution_config?: PromptExecutionConfig;
+  selection_filter?: PromptSelectionFilter | null;
   is_active: boolean;
   created_at: string;
 }
@@ -434,13 +589,35 @@ export interface MarkerInfo {
 
 export interface PromptVideoLevelConfig {
   instructions_text: string;
-  included_segment_fields: string[];
   json_schema: Record<string, unknown>;
 }
 
 export interface PromptSemanticIndexingConfig {
   disabled_segment_fields: string[];
   disabled_video_level_fields: string[];
+}
+
+export interface PromptSelectionFilter {
+  segment?: { logic: 'and' | 'or'; conditions: FilterCondition[] } | null;
+  video?: { logic: 'and' | 'or'; conditions: FilterCondition[] } | null;
+  level_logic: 'and' | 'or';
+}
+
+export interface PromptExecutionConfig {
+  video_segmentation_type: VideoSegmentationType;
+  audio_segmentation_type: AudioSegmentationType;
+  video_segment_duration: number | null;
+  audio_segment_duration: number | null;
+  processing_model: string | null;
+  enable_transcription: boolean;
+  enable_image_embedding: boolean;
+}
+
+export interface PromptRunSelectionSummary {
+  status: 'not_applicable' | 'pending' | 'ready' | 'failed';
+  selected_media_count: number;
+  selected_video_count: number;
+  selected_segment_count: number;
 }
 
 // ============================================================================
@@ -535,6 +712,9 @@ export interface PromptRun {
   billing_status: string | null;
   billing_error: string | null;
   stop_state?: PromptRunStopState | null;
+  selection_summary?: PromptRunSelectionSummary;
+  selection_filter?: PromptSelectionFilter | null;
+  reuse_summary?: { target_media_count: number; reused_media_count: number; fresh_media_count: number };
   marker: MarkerInfo;
 }
 
@@ -600,11 +780,7 @@ export interface PromptRunVideoResult {
   schema_used: string | null;
   successful_segment_count: number;
   failed_segment_count: number;
-  omitted_segment_ids: string[];
-  template_fields: string[];
   source_fingerprint: string | null;
-  rendered_prompt_char_count: number;
-  llm_attempted: boolean;
   attempt_id: string | null;
   error_message: string | null;
   started_at: string | null;
@@ -624,6 +800,8 @@ export interface PromptRunVideoResult {
   preview_thumbnail_uri?: string | null;
   preview_gif_uri?: string | null;
   marker?: MarkerInfo | null;
+  embedding_status?: string | null;
+  embedding_error?: string | null;
 }
 
 export interface PromptRunFailureOperationCounts {
@@ -726,6 +904,8 @@ export interface CreatePromptRequest {
   json_schema: Record<string, unknown>;
   video_level?: PromptVideoLevelConfig | null;
   semantic_indexing?: PromptSemanticIndexingConfig | null;
+  execution_config?: Partial<PromptExecutionConfig>;
+  selection_filter?: PromptSelectionFilter | null;
 }
 
 export interface UpdatePromptRequest {
@@ -735,6 +915,9 @@ export interface UpdatePromptRequest {
   json_schema?: Record<string, unknown>;
   video_level?: PromptVideoLevelConfig | null;
   semantic_indexing?: PromptSemanticIndexingConfig | null;
+  execution_config?: Partial<PromptExecutionConfig>;
+  selection_filter?: PromptSelectionFilter | null;
+  clear_selection_filter?: boolean;
   clear_video_level?: boolean;
 }
 
@@ -824,7 +1007,7 @@ export interface CloudFile {
 // Import Job Types
 // ============================================================================
 
-export type ImportJobStatus = 'pending' | 'scanning' | 'importing' | 'completed' | 'failed' | 'cancelled';
+export type ImportJobStatus = 'awaiting_upload' | 'pending' | 'scanning' | 'importing' | 'completed' | 'failed' | 'cancelled';
 
 export interface CreateImportJobRequest {
   connector_id: string;
@@ -835,6 +1018,9 @@ export interface CreateImportJobRequest {
 }
 
 export interface ImportJobProgress {
+  parts_total: number;
+  parts_completed: number;
+  parts_failed: number;
   total_files: number;
   imported: number;
   failed: number;
@@ -846,29 +1032,34 @@ export interface ImportJobProgress {
 export interface ImportFileError {
   path: string;
   error: string;
-}
-
-export interface ImportFileSkip {
-  path: string;
-  reason: string;
+  file_id?: string;
+  file_name?: string;
+  error_code?: string;
+  http_status?: number;
+  refresh_required?: boolean;
 }
 
 export interface ImportJob {
+  phase: string;
+  outputs: ImportJobOutputsPage;
+  execution: ImportJobExecution;
   job_id: string;
-  connector_id: string;
-  target_index_id: string;
+  connector_id: string | null;
+  target_index_id: string | null;
   source_prefix: string;
   file_pattern: string;
   recursive: boolean;
   status: ImportJobStatus;
+  source_kind?: 'connector' | 'attachments';
+  run_id?: string | null;
   created_at: string | null;
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
   progress: ImportJobProgress;
   video_ids: string[];
+  failed_files_next_cursor?: string | null;
   failed_files: ImportFileError[];
-  skipped_files: ImportFileSkip[];
 }
 
 // ============================================================================
@@ -894,7 +1085,7 @@ export interface VideoStatus {
 // ============================================================================
 
 export type ExportStatus = 'pending' | 'processing' | 'completed' | 'failed';
-export type ExportType = 'index' | 'prompt_run';
+export type ExportType = 'index' | 'prompt_run' | 'search_snapshot';
 export type ExportDestinationType = 'download' | 'connector';
 
 export interface ExportDestinationRequest {
@@ -1019,6 +1210,13 @@ export interface TestWebhookResponse {
 // Error Types
 // ============================================================================
 
+const OAUTH_RELINKABLE_AUTHENTICATION_CODES = new Set([
+  'authentication_required',
+  'authentication_invalid_token',
+  'authentication_invalid_oauth_token',
+  'authentication_expired_token',
+]);
+
 export class VideoVectorApiError extends Error {
   public readonly code: string;
   public readonly statusCode: number;
@@ -1046,6 +1244,13 @@ export class VideoVectorApiError extends Error {
 
   public isAuthError(): boolean {
     return this.statusCode === 401 || this.statusCode === 403;
+  }
+
+  public isOAuthRelinkableAuthenticationError(): boolean {
+    return (
+      this.statusCode === 401
+      && OAUTH_RELINKABLE_AUTHENTICATION_CODES.has(this.code)
+    );
   }
 
   public isNotFound(): boolean {

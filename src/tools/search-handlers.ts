@@ -21,7 +21,7 @@ import type {
   MarkerInfo,
 } from '../types/index.js';
 import { FILTER_CONDITION_VALIDATION, TOOL_NAMES } from './definitions.js';
-import { formatError, validateRequired } from '../utils/helpers.js';
+import { formatError, ToolInputError, validateRequired } from '../utils/helpers.js';
 
 // ============================================================================
 // Response Formatters
@@ -251,11 +251,11 @@ function validateOptionalStringArray(
   }
 
   if (!Array.isArray(value)) {
-    throw new Error(`${field} must be an array of strings`);
+    throw new ToolInputError(`${field} must be an array of strings`);
   }
 
   if (!value.every((item) => typeof item === 'string')) {
-    throw new Error(`${field} must contain only strings`);
+    throw new ToolInputError(`${field} must contain only strings`);
   }
 
   return value;
@@ -264,7 +264,9 @@ function validateOptionalStringArray(
 function validateRequiredStringArray(args: Record<string, unknown>, field: string): string[] {
   const value = validateOptionalStringArray(args, field);
   if (!value || value.length === 0) {
-    throw new Error(`Required parameter '${field}' must be a non-empty array of strings`);
+    throw new ToolInputError(
+      `Required parameter '${field}' must be a non-empty array of strings`
+    );
   }
   return value;
 }
@@ -296,37 +298,41 @@ function validateFilterValueType(
   const prefix = `Condition ${index + 1}`;
   if (type === 'string') {
     if (typeof value !== 'string') {
-      throw new Error(`${prefix}: value for type 'string' must be a string`);
+      throw new ToolInputError(`${prefix}: value for type 'string' must be a string`);
     }
     return;
   }
   if (type === 'integer') {
     if (!isJsonInteger(value)) {
-      throw new Error(`${prefix}: value for type 'integer' must be an integer`);
+      throw new ToolInputError(`${prefix}: value for type 'integer' must be an integer`);
     }
     return;
   }
   if (type === 'number') {
     if (!isJsonNumber(value)) {
-      throw new Error(`${prefix}: value for type 'number' must be a finite number`);
+      throw new ToolInputError(`${prefix}: value for type 'number' must be a finite number`);
     }
     return;
   }
   if (type === 'boolean') {
     if (typeof value !== 'boolean') {
-      throw new Error(`${prefix}: value for type 'boolean' must be a boolean`);
+      throw new ToolInputError(`${prefix}: value for type 'boolean' must be a boolean`);
     }
     return;
   }
   if (type === 'array') {
     if (operator === 'length_equals' || operator === 'length_greater' || operator === 'length_less') {
       if (!isJsonInteger(value) || value < 0) {
-        throw new Error(`${prefix}: value for array length operators must be a non-negative integer`);
+        throw new ToolInputError(
+          `${prefix}: value for array length operators must be a non-negative integer`
+        );
       }
       return;
     }
     if (operator === 'item_contains' && typeof value !== 'string') {
-      throw new Error(`${prefix}: value for operator 'item_contains' must be a string`);
+      throw new ToolInputError(
+        `${prefix}: value for operator 'item_contains' must be a string`
+      );
     }
     if (
       operator === 'item_equals' &&
@@ -335,17 +341,19 @@ function validateFilterValueType(
         typeof value === 'object' ||
         !['string', 'number', 'boolean'].includes(typeof value))
     ) {
-      throw new Error(`${prefix}: value for operator 'item_equals' must be a string, number, or boolean`);
+      throw new ToolInputError(
+        `${prefix}: value for operator 'item_equals' must be a string, number, or boolean`
+      );
     }
     if (typeof value === 'number' && !Number.isFinite(value)) {
-      throw new Error(`${prefix}: value for operator '${operator}' must be finite`);
+      throw new ToolInputError(`${prefix}: value for operator '${operator}' must be finite`);
     }
   }
 }
 
 function validateFilterCondition(cond: unknown, index: number): FilterCondition {
   if (!cond || typeof cond !== 'object' || Array.isArray(cond)) {
-    throw new Error(`Condition ${index + 1}: must be an object`);
+    throw new ToolInputError(`Condition ${index + 1}: must be an object`);
   }
 
   const condition = cond as Record<string, unknown>;
@@ -353,35 +361,47 @@ function validateFilterCondition(cond: unknown, index: number): FilterCondition 
     (field) => !FILTER_CONDITION_ALLOWED_FIELDS.has(field)
   );
   if (unsupportedFields.length > 0) {
-    throw new Error(
+    throw new ToolInputError(
       `Condition ${index + 1}: unsupported fields: ${unsupportedFields.sort().join(', ')}`
     );
   }
   if (!condition.field || typeof condition.field !== 'string') {
-    throw new Error(`Condition ${index + 1}: 'field' is required and must be a string`);
+    throw new ToolInputError(
+      `Condition ${index + 1}: 'field' is required and must be a string`
+    );
   }
   if (!condition.operator || typeof condition.operator !== 'string') {
-    throw new Error(`Condition ${index + 1}: 'operator' is required and must be a string`);
+    throw new ToolInputError(
+      `Condition ${index + 1}: 'operator' is required and must be a string`
+    );
   }
   if (!condition.type || typeof condition.type !== 'string') {
-    throw new Error(`Condition ${index + 1}: 'type' is required and must be a string`);
+    throw new ToolInputError(
+      `Condition ${index + 1}: 'type' is required and must be a string`
+    );
   }
 
   const type = condition.type as FilterValueType;
   const operators = FILTER_OPERATORS_BY_TYPE[type];
   if (!operators) {
-    throw new Error(`Condition ${index + 1}: unsupported filter type '${condition.type}'`);
+    throw new ToolInputError(
+      `Condition ${index + 1}: unsupported filter type '${condition.type}'`
+    );
   }
 
   const operator = condition.operator as FilterOperator;
   if (!operators.has(operator)) {
-    throw new Error(`Condition ${index + 1}: unsupported operator '${condition.operator}' for type '${type}'`);
+    throw new ToolInputError(
+      `Condition ${index + 1}: unsupported operator '${condition.operator}' for type '${type}'`
+    );
   }
 
   const hasValue = hasConditionValue(condition.value);
   if (VALUELESS_FILTER_OPERATORS.has(operator)) {
     if ('value' in condition) {
-      throw new Error(`Condition ${index + 1}: operator '${operator}' does not accept a value`);
+      throw new ToolInputError(
+        `Condition ${index + 1}: operator '${operator}' does not accept a value`
+      );
     }
     return {
       field: condition.field,
@@ -391,7 +411,9 @@ function validateFilterCondition(cond: unknown, index: number): FilterCondition 
   }
 
   if (!hasValue) {
-    throw new Error(`Condition ${index + 1}: operator '${operator}' requires a value`);
+    throw new ToolInputError(
+      `Condition ${index + 1}: operator '${operator}' requires a value`
+    );
   }
   validateFilterValueType(type, operator, condition.value, index);
 
@@ -543,7 +565,7 @@ async function handleSearchVideos(
   const rawTopK = args.top_k;
   const topK = rawTopK !== undefined ? Number(rawTopK) : 10;
   if (rawTopK !== undefined && (isNaN(topK) || !Number.isInteger(topK))) {
-    throw new Error('top_k must be a valid integer');
+    throw new ToolInputError('top_k must be a valid integer');
   }
   const searchFields = validateOptionalStringArray(args, 'search_fields');
   const runIds = validateOptionalStringArray(args, 'run_ids');
@@ -608,14 +630,14 @@ async function handleSearchByImage(
   const rawTopK = args.top_k;
   const topK = rawTopK !== undefined ? Number(rawTopK) : 10;
   if (rawTopK !== undefined && (isNaN(topK) || !Number.isInteger(topK))) {
-    throw new Error('top_k must be a valid integer');
+    throw new ToolInputError('top_k must be a valid integer');
   }
   const runIds = validateOptionalStringArray(args, 'run_ids');
   const indexIds = validateOptionalStringArray(args, 'index_ids');
 
   // Validate image data is base64
   if (!/^[A-Za-z0-9+/=]+$/.test(imageData.replace(/\s/g, ''))) {
-    throw new Error('image_data must be valid base64-encoded data');
+    throw new ToolInputError('image_data must be valid base64-encoded data');
   }
 
   const results = await client.searchByImage(indexId, {
@@ -668,37 +690,37 @@ async function handleMultimodalSearch(
 
   // Validate weights are valid numbers in range [0, 1]
   if (typeof rawTextWeight !== 'undefined' && (isNaN(textWeight) || typeof rawTextWeight === 'string' && rawTextWeight.trim() === '')) {
-    throw new Error('text_weight must be a valid number');
+    throw new ToolInputError('text_weight must be a valid number');
   }
   if (typeof rawImageWeight !== 'undefined' && (isNaN(imageWeight) || typeof rawImageWeight === 'string' && rawImageWeight.trim() === '')) {
-    throw new Error('image_weight must be a valid number');
+    throw new ToolInputError('image_weight must be a valid number');
   }
   if (textWeight < 0 || textWeight > 1) {
-    throw new Error('text_weight must be between 0 and 1');
+    throw new ToolInputError('text_weight must be between 0 and 1');
   }
   if (imageWeight < 0 || imageWeight > 1) {
-    throw new Error('image_weight must be between 0 and 1');
+    throw new ToolInputError('image_weight must be between 0 and 1');
   }
 
   const rawTopK = args.top_k;
   const topK = rawTopK !== undefined ? Number(rawTopK) : 10;
   if (rawTopK !== undefined && (isNaN(topK) || !Number.isInteger(topK))) {
-    throw new Error('top_k must be a valid integer');
+    throw new ToolInputError('top_k must be a valid integer');
   }
 
   // Validate at least one query type is provided
   if (!textQuery && !imageData) {
-    throw new Error('At least one of text_query or image_data must be provided');
+    throw new ToolInputError('At least one of text_query or image_data must be provided');
   }
 
   // Validate weights sum to 1 (now safe since we've validated both are numbers)
   if (Math.abs(textWeight + imageWeight - 1.0) > 0.01) {
-    throw new Error('text_weight and image_weight must sum to 1.0');
+    throw new ToolInputError('text_weight and image_weight must sum to 1.0');
   }
 
   // Validate image data if provided
   if (imageData && !/^[A-Za-z0-9+/=]+$/.test(imageData.replace(/\s/g, ''))) {
-    throw new Error('image_data must be valid base64-encoded data');
+    throw new ToolInputError('image_data must be valid base64-encoded data');
   }
 
   const results = await client.searchMultimodal(indexId, {
@@ -745,26 +767,28 @@ async function handleFilterVideos(
   client: VideoVectorClient
 ): Promise<ToolHandlerResult> {
   if (FILTER_CONDITION_VALIDATION.pagination.forbidden_fields.some((field) => field in args)) {
-    throw new Error("'start_after' is not supported; use 'cursor'");
+    throw new ToolInputError("'start_after' is not supported; use 'cursor'");
   }
   const unsupportedFields = Object.keys(args).filter(
     (field) => !FILTER_REQUEST_ALLOWED_FIELDS.has(field)
   );
   if (unsupportedFields.length > 0) {
-    throw new Error(`Unsupported filter_videos fields: ${unsupportedFields.sort().join(', ')}`);
+    throw new ToolInputError(
+      `Unsupported filter_videos fields: ${unsupportedFields.sort().join(', ')}`
+    );
   }
   const indexId = validateRequired<string>(args, 'index_id', 'string');
   const conditions = validateRequired<unknown[]>(args, 'conditions', 'object');
   const cursor = args.cursor;
   if (cursor !== undefined && cursor !== null && typeof cursor !== 'string') {
-    throw new Error('cursor must be a string');
+    throw new ToolInputError('cursor must be a string');
   }
   const runIds = validateRequiredStringArray(args, 'run_ids');
   const indexIds = validateOptionalStringArray(args, 'index_ids');
   const rawPageSize = args.page_size;
   const pageSize = rawPageSize !== undefined ? Number(rawPageSize) : 50;
   if (rawPageSize !== undefined && (isNaN(pageSize) || !Number.isInteger(pageSize))) {
-    throw new Error('page_size must be a valid integer');
+    throw new ToolInputError('page_size must be a valid integer');
   }
 
   // Validate conditions
@@ -773,7 +797,7 @@ async function handleFilterVideos(
     conditions.length === 0 ||
     conditions.length > FILTER_CONDITION_VALIDATION.max_conditions
   ) {
-    throw new Error(
+    throw new ToolInputError(
       `conditions must be an array with 1-${FILTER_CONDITION_VALIDATION.max_conditions} filter conditions`
     );
   }
@@ -837,7 +861,8 @@ export function isSearchTool(toolName: string): boolean {
 export async function executeSearchTool(
   toolName: string,
   args: Record<string, unknown>,
-  client: VideoVectorClient
+  client: VideoVectorClient,
+  authenticationKind?: 'api-key' | 'oauth'
 ): Promise<ToolHandlerResult> {
   const handler = SEARCH_HANDLERS[toolName];
   if (!handler) {
@@ -847,6 +872,6 @@ export async function executeSearchTool(
   try {
     return await handler(args, client);
   } catch (error) {
-    return formatError(error);
+    return formatError(error, { authenticationKind });
   }
 }

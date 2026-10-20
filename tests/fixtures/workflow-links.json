@@ -1,0 +1,13 @@
+{
+  "result_links": [
+    { "pathname": "/playground", "search": "?step=studio&video=video-1&run=run-1&result=all&segment=segment-101&output=segment&metadata=json&t=123.5&field=scene.description", "video_id": "video-1", "run_id": "run-1", "segment_id": "segment-101", "scope": "all" },
+    { "pathname": "/index", "search": "?index=index-1&view=video&video=video-2&run=run-2&result=matches&output=video&metadata=fields", "video_id": "video-2", "run_id": "run-2", "segment_id": null, "scope": "matches" },
+    { "pathname": "/index", "search": "?index=index-1&view=video&video=video-2&run=run-2&result=all&playback=video&metadata=fields", "video_id": "video-2", "run_id": "run-2", "segment_id": null, "scope": "all", "playback": "video" },
+    { "pathname": "/playground", "search": "?step=studio&video=video-1&run=run-1&result=all&segment=segment-101&output=segment&playback=segment&metadata=fields&t=123.5", "video_id": "video-1", "run_id": "run-1", "segment_id": "segment-101", "scope": "all", "playback": "segment" }
+  ],
+  "artifact_links": [
+    { "pathname": "/jobs", "search": "?tab=exports&export=export-1&source_kind=prompt_run&source_id=run-1&scope=all&action=download", "export_id": "export-1", "source_kind": "prompt_run", "source_id": "run-1", "scope": "all" },
+    { "pathname": "/jobs", "search": "?tab=exports&source_kind=prompt_run&source_id=run-1&scope=matches", "export_id": null, "source_kind": "prompt_run", "source_id": "run-1", "scope": "matches" },
+    { "pathname": "/jobs", "search": "?tab=exports&export=export-2&source_kind=search_snapshot&source_id=snapshot-1&scope=search_results", "export_id": "export-2", "source_kind": "search_snapshot", "source_id": "snapshot-1", "scope": "search_results" }
+  ]
+}

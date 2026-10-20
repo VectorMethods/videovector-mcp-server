@@ -51,6 +51,8 @@ import {
   type ConnectorScope,
   type CreateImportJobRequest,
   type ImportJob,
+  type ImportJobOutputsPage,
+  type ImportJobFilesPage,
   type ImportJobStatus,
   type CreateIndexRequest,
   type VideoStatus,
@@ -68,10 +70,21 @@ import {
   type WorkflowDefineResponse,
   type WorkflowProcessRequest,
   type WorkflowProcessResponse,
+  type WorkflowRunResultsRequest,
+  type WorkflowRunResultsResponse,
   type WorkflowSearchRequest,
   type WorkflowSearchResponse,
   type WorkflowUploadRequest,
   type WorkflowUploadResponse,
+  type WorkflowAttachment,
+  type WorkflowAttachmentRequest,
+  type WorkflowFindRequest,
+  type WorkflowIntakeResponse,
+  type WorkflowUploadGrant,
+  type WorkflowDeliveryResponse,
+  type WorkflowMediaGrant,
+  type PreviewGrantIdentity,
+  type PreviewGrantItem,
   VideoVectorApiError,
 } from '../types/index.js';
 
@@ -79,12 +92,34 @@ import {
 // Configuration
 // ============================================================================
 
-export interface VideoVectorClientConfig {
+export interface VideoVectorApiKeyCredential {
+  kind: 'api-key';
   apiKey: string;
+}
+
+export interface VideoVectorOAuthCredential {
+  kind: 'oauth';
+  accessToken: string;
+  issuer: string;
+  subject: string;
+  resource: string;
+}
+
+export type VideoVectorCredential =
+  | VideoVectorApiKeyCredential
+  | VideoVectorOAuthCredential;
+
+interface VideoVectorClientBaseConfig {
   baseUrl?: string;
+  uploadBaseUrl?: string;
   timeout?: number;
   maxRetries?: number;
 }
+
+export type VideoVectorClientConfig = VideoVectorClientBaseConfig & (
+  | { apiKey: string; credential?: never }
+  | { apiKey?: never; credential: VideoVectorCredential }
+);
 
 const DEFAULT_BASE_URL = 'https://api.vectormethods.com/api/v2';
 const DEFAULT_TIMEOUT = 90000;
@@ -109,7 +144,7 @@ const RETRYABLE_NETWORK_ERROR_CODES = new Set([
   'UND_ERR_SOCKET',
 ]);
 const EXPORT_STATUS_VALUES = new Set(['pending', 'processing', 'completed', 'failed']);
-const EXPORT_TYPE_VALUES = new Set(['index', 'prompt_run']);
+const EXPORT_TYPE_VALUES = new Set(['index', 'prompt_run', 'search_snapshot']);
 const EXPORT_DESTINATION_VALUES = new Set(['download', 'connector']);
 const EXPORT_QUEUE_STATUS_VALUES = new Set([
   'queued',
@@ -379,28 +414,60 @@ function isRetryableResponsePayloadError(error: unknown): boolean {
 // ============================================================================
 
 export class VideoVectorClient {
-  private readonly apiKey: string;
+  private readonly credential: VideoVectorCredential;
   private readonly baseUrl: string;
   private readonly apiOrigin: string;
+  private readonly uploadBaseUrl: string;
   private readonly timeout: number;
   private readonly maxRetries: number;
 
   constructor(config: VideoVectorClientConfig) {
-    if (!config.apiKey) {
+    const credential = config.credential
+      ?? (config.apiKey ? { kind: 'api-key' as const, apiKey: config.apiKey } : undefined);
+    if (!credential) {
+      throw new Error('A VideoVector credential is required');
+    }
+    if (credential.kind === 'api-key' && credential.apiKey.length === 0) {
       throw new Error('VideoVector API key is required');
     }
+    if (
+      credential.kind === 'oauth'
+      && (
+        credential.accessToken.length === 0
+        || credential.issuer.length === 0
+        || credential.subject.length === 0
+        || credential.resource.length === 0
+      )
+    ) {
+      throw new Error('A complete OAuth credential is required');
+    }
 
-    this.apiKey = config.apiKey;
+    this.credential = credential;
     this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
     this.apiOrigin = new URL(this.baseUrl).origin;
+    this.uploadBaseUrl = (config.uploadBaseUrl ?? this.baseUrl).replace(/\/$/, '');
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
     this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
   }
 
   getIdempotencyScope(): string {
+    if (this.credential.kind === 'oauth') {
+      return createHash('sha256')
+        .update(
+          `${this.baseUrl}|oauth\0${this.credential.issuer}\0${this.credential.subject}\0${this.credential.resource}`
+        )
+        .digest('hex');
+    }
     return createHash('sha256')
-      .update(`${this.baseUrl}|${this.apiKey}`)
+      .update(`${this.baseUrl}|${this.credential.apiKey}`)
       .digest('hex');
+  }
+
+  private authenticationHeaders(): Record<string, string> {
+    if (this.credential.kind === 'oauth') {
+      return { Authorization: `Bearer ${this.credential.accessToken}` };
+    }
+    return { 'X-API-Key': this.credential.apiKey };
   }
 
   // ==========================================================================
@@ -416,6 +483,8 @@ export class VideoVectorClient {
       headers?: Record<string, string>;
       retryCount?: number;
       allowEmptyResponse?: boolean;
+      timeoutMs?: number;
+      capability?: { url: string; token: string };
     } = {}
   ): Promise<T> {
     const {
@@ -428,7 +497,7 @@ export class VideoVectorClient {
     const allowRetry = isAutomaticRetryAllowed(method, extraHeaders);
 
     // Build URL with query parameters
-    const url = new URL(`${this.baseUrl}${path}`);
+    const url = new URL(options.capability?.url ?? `${this.baseUrl}${path}`);
     if (query) {
       for (const [key, value] of Object.entries(query)) {
         if (value !== undefined && value !== null) {
@@ -447,10 +516,12 @@ export class VideoVectorClient {
 
     // Prepare headers
     const headers: Record<string, string> = {
-      'X-API-Key': this.apiKey,
       'Accept': 'application/json',
       'User-Agent': `videovector-mcp/${PACKAGE_VERSION}`,
       ...extraHeaders,
+      ...(options.capability
+        ? { Authorization: `Bearer ${options.capability.token}` }
+        : this.authenticationHeaders()),
     };
 
     if (body !== undefined) {
@@ -459,7 +530,7 @@ export class VideoVectorClient {
 
     // Create abort controller for timeout
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? this.timeout);
     const retryRequest = async (delay: number): Promise<T> => {
       clearTimeout(timeoutId);
       await this.sleep(delay);
@@ -469,6 +540,8 @@ export class VideoVectorClient {
         headers: extraHeaders,
         retryCount: retryCount + 1,
         allowEmptyResponse,
+        timeoutMs: options.timeoutMs,
+        capability: options.capability,
       });
     };
 
@@ -478,6 +551,7 @@ export class VideoVectorClient {
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: controller.signal,
+        redirect: options.capability ? 'error' : undefined,
       });
 
       // Handle non-2xx responses
@@ -875,6 +949,32 @@ export class VideoVectorClient {
     });
   }
 
+  /**
+   * Explicit foreground readiness signal. Credential checks and ordinary API
+   * requests never call this, so cache refreshes and polling cannot renew warmth.
+   * POST has no transport retry; the server owns receipt deduplication and leases.
+   */
+  async recordProcessingActivity(
+    activity:
+      | { reason: 'authentication' }
+      | {
+          reason: 'processing_intent';
+          operation: 'upload_media' | 'process_media' | 'find' | 'retry_prompt_run_segment';
+        },
+    eventId: string = randomUUID()
+  ): Promise<void> {
+    try {
+      await this.request('POST', '/auth/processing-activity', {
+        body: { event_id: eventId, surface: 'mcp', ...activity },
+        timeoutMs: Math.min(this.timeout, 3_000),
+      });
+    } catch {
+      // Warming is advisory. Do not expose backend bodies/credentials or turn
+      // successful authentication or a real processing intent into a failure.
+      console.error('[videovector-mcp] Processing readiness unavailable; continuing.');
+    }
+  }
+
   // ==========================================================================
   // Simplified Workflow Operations
   // ==========================================================================
@@ -889,6 +989,47 @@ export class VideoVectorClient {
       createIdempotencyKey('workflow-upload', idempotencyKey),
       expectedIdentity
     );
+  }
+
+  async workflowFind(request: WorkflowFindRequest, idempotencyKey?: string): Promise<WorkflowIntakeResponse> {
+    return this.request('POST', '/workflow/find', {
+      body: request,
+      headers: { 'Idempotency-Key': createIdempotencyKey('workflow-find', idempotencyKey) },
+    });
+  }
+
+  async workflowAttachments(request: WorkflowAttachmentRequest, idempotencyKey?: string): Promise<WorkflowIntakeResponse> {
+    return this.request('POST', '/workflow/attachments', {
+      body: request,
+      headers: { 'Idempotency-Key': createIdempotencyKey('workflow-attachments', idempotencyKey) },
+    });
+  }
+
+  validateUploadGrant(jobId: string, grant: WorkflowUploadGrant): void {
+    const prefix = `${this.uploadBaseUrl}/workflow/attachments/${encodeURIComponent(jobId)}`;
+    if (grant.url !== `${prefix}/files` || grant.complete_url !== `${prefix}/complete`
+      || typeof grant.token !== 'string' || !grant.token) {
+      throw new VideoVectorApiError('Invalid attachment upload destination', 'invalid_upload_grant', 502);
+    }
+  }
+
+  async workflowUploadAttachment(
+    jobId: string, grant: WorkflowUploadGrant, filePath: string, fileId: string,
+    expectedIdentity: WorkflowUploadFileIdentity,
+  ): Promise<WorkflowIntakeResponse> {
+    this.validateUploadGrant(jobId, grant);
+    return this.requestWorkflowUpload({ file_path: filePath }, `attachment:${jobId}:${fileId}`, expectedIdentity, { grant, fileId });
+  }
+
+  async workflowCompleteAttachments(
+    jobId: string, grant: WorkflowUploadGrant, fileIds: string[],
+  ): Promise<WorkflowIntakeResponse> {
+    this.validateUploadGrant(jobId, grant);
+    return this.request('POST', '', {
+      body: { file_ids: fileIds },
+      headers: { 'Idempotency-Key': `attachment-complete:${jobId}` },
+      capability: { url: grant.complete_url, token: grant.token },
+    });
   }
 
   async workflowDefinePrompt(
@@ -907,10 +1048,14 @@ export class VideoVectorClient {
     request: WorkflowProcessRequest,
     idempotencyKey?: string
   ): Promise<WorkflowProcessResponse> {
+    const { artifact_delivery, ...body } = request;
     return this.request<WorkflowProcessResponse>('POST', '/workflow/process', {
-      body: request,
+      // Preserve the original operation's body bytes across client upgrades.
+      // The source records its delivery policy only on first creation.
+      body,
       headers: {
         'Idempotency-Key': createIdempotencyKey('workflow-process', idempotencyKey),
+        ...(artifact_delivery === 'automatic' ? { 'X-Artifact-Delivery': artifact_delivery } : {}),
       },
     });
   }
@@ -919,18 +1064,55 @@ export class VideoVectorClient {
     request: WorkflowSearchRequest,
     idempotencyKey?: string
   ): Promise<WorkflowSearchResponse> {
+    const { artifact_delivery, ...body } = request;
     return this.request<WorkflowSearchResponse>('POST', '/workflow/search', {
-      body: request,
+      body,
       headers: {
         'Idempotency-Key': createIdempotencyKey('workflow-search', idempotencyKey),
+        ...(artifact_delivery === 'automatic' ? { 'X-Artifact-Delivery': artifact_delivery } : {}),
       },
     });
+  }
+
+  async workflowRunResults(
+    runId: string,
+    options: WorkflowRunResultsRequest = {}
+  ): Promise<WorkflowRunResultsResponse> {
+    return this.request<WorkflowRunResultsResponse>(
+      'GET',
+      `/workflow/runs/${encodeURIComponent(runId)}/results`,
+      { query: { ...options } }
+    );
   }
 
   async workflowSearchPage(cursor: string): Promise<WorkflowSearchResponse> {
     return this.request<WorkflowSearchResponse>('GET', '/workflow/search/page', {
       query: { cursor },
     });
+  }
+
+  async workflowSearchScope(request: import('../types/api.js').WorkflowSearchScopeRequest = {}): Promise<import('../types/api.js').WorkflowSearchScopeResponse> {
+    return this.request('POST', '/workflow/search/scope', { body: request });
+  }
+
+  async getPlaygroundVideos(options: { limit?: number; cursor?: string } = {}): Promise<PaginatedResponse<Video>> {
+    return this.request('GET', '/playground/videos', { query: { limit: options.limit ?? 100, cursor: options.cursor } });
+  }
+
+  async workflowDelivery(sourceKind: 'prompt_run' | 'search_snapshot', sourceId: string): Promise<WorkflowDeliveryResponse> {
+    return this.request('GET', `/workflow/deliveries/${sourceKind}/${encodeURIComponent(sourceId)}`);
+  }
+
+  async workflowSnapshotResults(snapshotId: string, options: { cursor?: string; limit?: number } = {}): Promise<WorkflowSearchResponse> {
+    return this.request('GET', `/workflow/searches/${encodeURIComponent(snapshotId)}/results`, { query: { ...options } });
+  }
+
+  async workflowMediaGrant(request: { video_id: string; run_id?: string; segment_id?: string; intent?: 'playback' | 'download' }): Promise<WorkflowMediaGrant> {
+    return this.request('POST', '/workflow/media-grants', { body: request });
+  }
+
+  async getPreviewGrants(items: PreviewGrantIdentity[]): Promise<{ items: PreviewGrantItem[] }> {
+    return this.request('POST', '/media/preview-grants', { body: { items } });
   }
 
   async listIndexes(includeDefaults: boolean = true): Promise<Index[]> {
@@ -1392,6 +1574,18 @@ export class VideoVectorClient {
     );
   }
 
+  async getImportJobOutputs(jobId: string, limit = 100, cursor?: string): Promise<ImportJobOutputsPage> {
+    return this.request<ImportJobOutputsPage>('GET', `/import-jobs/${encodeURIComponent(jobId)}/outputs`, {
+      query: { limit, ...(cursor ? { cursor } : {}) },
+    });
+  }
+
+  async getImportJobFiles(jobId: string, limit = 100, cursor?: string, failedOnly = false): Promise<ImportJobFilesPage> {
+    return this.request<ImportJobFilesPage>('GET', `/import-jobs/${encodeURIComponent(jobId)}/files`, {
+      query: { limit, failed_only: failedOnly, ...(cursor ? { cursor } : {}) },
+    });
+  }
+
   async cancelImportJob(jobId: string, idempotencyKey?: string): Promise<ImportJob> {
     return this.request<ImportJob>(
       'POST',
@@ -1400,6 +1594,13 @@ export class VideoVectorClient {
         headers: { 'Idempotency-Key': createIdempotencyKey('import-job-cancel', idempotencyKey) },
       }
     );
+  }
+
+  async retryImportJob(jobId: string, idempotencyKey?: string, files?: WorkflowAttachment[]): Promise<WorkflowIntakeResponse> {
+    return this.request<WorkflowIntakeResponse>('POST', `/import-jobs/${encodeURIComponent(jobId)}/retry`, {
+      headers: { 'Idempotency-Key': createIdempotencyKey('import-job-retry', idempotencyKey) },
+      ...(files === undefined ? {} : { body: { files } }),
+    });
   }
 
   // ==========================================================================
@@ -1629,10 +1830,12 @@ export class VideoVectorClient {
   private async requestWorkflowUpload<T>(
     request: WorkflowUploadRequest,
     idempotencyKey: string,
-    expectedIdentity?: WorkflowUploadFileIdentity
+    expectedIdentity?: WorkflowUploadFileIdentity,
+    attachment?: { grant: WorkflowUploadGrant; fileId: string },
   ): Promise<T> {
     const boundary = `videovector-${randomUUID()}`;
     const fields: Buffer[] = [];
+    if (attachment) fields.push(workflowMultipartField('file_id', attachment.fileId, boundary));
     // Send the file part first so Starlette can spool the large payload before
     // retaining any subsequent scalar multipart fields.
     if (request.title !== undefined) {
@@ -1651,7 +1854,7 @@ export class VideoVectorClient {
       workflowUploadContentType(request.file_path)
     );
     const fileFooter = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-    const url = new URL(`${this.baseUrl}/workflow/upload`);
+    const url = new URL(attachment?.grant.url ?? `${this.baseUrl}/workflow/upload`);
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
       let fileHandle: Awaited<ReturnType<typeof fs.open>>;
@@ -1715,16 +1918,19 @@ export class VideoVectorClient {
         const init: RequestInit & { duplex: 'half' } = {
           method: 'POST',
           headers: {
-            'X-API-Key': this.apiKey,
             'Accept': 'application/json',
             'User-Agent': `videovector-mcp/${PACKAGE_VERSION}`,
             'Idempotency-Key': idempotencyKey,
             'Content-Type': `multipart/form-data; boundary=${boundary}`,
             'Content-Length': String(contentLength),
+            ...(attachment
+              ? { Authorization: `Bearer ${attachment.grant.token}` }
+              : this.authenticationHeaders()),
           },
           body: body as unknown as RequestInit['body'],
           signal: controller.signal,
           duplex: 'half',
+          redirect: 'error',
         };
         const response = await fetch(url.toString(), init);
 
@@ -1829,10 +2035,10 @@ export class VideoVectorClient {
     const url = new URL(`${this.baseUrl}${path}`);
 
     const headers: Record<string, string> = {
-      'X-API-Key': this.apiKey,
       'Accept': 'application/json',
       'User-Agent': `videovector-mcp/${PACKAGE_VERSION}`,
       ...extraHeaders,
+      ...this.authenticationHeaders(),
       // Note: Content-Type is not set - fetch will set it with boundary for FormData
     };
 
