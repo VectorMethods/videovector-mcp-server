@@ -8,15 +8,6 @@ const page = { data: [row], pagination: { limit: 10, has_more: false, next_curso
 const runPage = { run_id: 'r1', status: 'completed', result_level: 'segment', filtered: page, unfiltered: page };
 
 describe('private workflow preview references', () => {
-  it.each(['summary', 'full'])('retains durable references privately without eagerly acquiring grants in %s mode', async detail => {
-    const client = { workflowRunResults: vi.fn().mockResolvedValue(runPage), workflowDelivery: vi.fn().mockResolvedValue({ artifacts: [] }), getPreviewGrants: vi.fn() } as unknown as VideoVectorClient;
-    const result = await executeTool('get_prompt_run_results', { run_id: 'r1', detail }, client);
-    expect(result.isError).not.toBe(true);
-    expect(result._meta).toMatchObject({ view: { unfiltered: { data: [{ thumbnail_gcs_uri: row.thumbnail_gcs_uri, gif_gcs_uri: row.gif_gcs_uri }] } } });
-    expect(JSON.stringify([result.content, result.structuredContent])).not.toContain('gs://private');
-    expect(JSON.stringify(result)).not.toContain('signature=secret');
-    expect(client.getPreviewGrants).not.toHaveBeenCalled();
-  });
   it('retains sibling segment previews on app-only run page hydration', async () => {
     const sibling = { ...row, result_id: 'segment:s2:r1', segment_id: 's2', thumbnail_gcs_uri: 'gs://private/sibling.jpg', gif_gcs_uri: 'gs://private/sibling.webp' };
     const client = { workflowRunResults: vi.fn().mockResolvedValue({ ...runPage, unfiltered: { ...page, data: [row, sibling] } }), getPreviewGrants: vi.fn() } as unknown as VideoVectorClient;

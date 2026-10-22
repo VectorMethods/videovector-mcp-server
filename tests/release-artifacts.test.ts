@@ -709,6 +709,27 @@ describe('release registry verification', () => {
     ).toThrow(ReleaseArtifactError);
   });
 
+  it('describes only the active npm and MCP Registry release with both tool contracts', () => {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'package.json'), 'utf8'));
+    const server = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'server.json'), 'utf8'));
+    const provenance = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'artifacts/provenance.json'), 'utf8'));
+
+    expect(provenance).not.toHaveProperty('container');
+    expect(provenance.package).toMatchObject({ registry: 'npm', name: packageJson.name });
+    expect(provenance.mcp_registry).toEqual({
+      registry: 'https://registry.modelcontextprotocol.io',
+      name: server.name,
+      metadata_path: 'server.json',
+    });
+    expect(provenance.release_inputs).toEqual(expect.arrayContaining([
+      'scripts/generate-contract.mjs',
+      'server.json',
+      'artifacts/tool-contract.json',
+      'artifacts/app-tool-contract.json',
+    ]));
+    expect(validateProjectMetadata(packageJson, server)).toBeDefined();
+  });
+
   it('rejects retired container metadata and binds the registry file to the npm package', () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'package.json'), 'utf8'));
     const server = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'server.json'), 'utf8'));

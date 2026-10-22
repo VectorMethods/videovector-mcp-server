@@ -43,16 +43,24 @@ afterEach(() => {
 });
 
 describe('VideoVectorClient request encoding', () => {
+  it('does not follow credentialed API requests to a redirected origin', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ indexes: [], pagination: { has_more: false } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new VideoVectorClient({ apiKey: 'private-account-key', baseUrl: 'https://api.example/api/v2', maxRetries: 0 });
+    await client.workflowListIndexes();
+    expect(fetchMock).toHaveBeenCalledWith('https://api.example/api/v2/workflow/indexes', expect.objectContaining({ redirect: 'error', headers: expect.objectContaining({ 'X-API-Key': 'private-account-key' }) }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
   it.each([
     ['index', 'all'],
     ['index', 'matches'],
     ['prompt_run', 'all'],
     ['prompt_run', 'matches'],
     ['search_snapshot', 'all'],
-  ])('accepts canonical %s export status with result_scope=%s through the OAuth tool', async (exportType, resultScope) => {
+  ])('accepts canonical %s export status with result_scope=%s through the retained native client API', async (exportType, resultScope) => {
     const payload = exportStatusPayload({ export_type: exportType, export_params: { result_scope: resultScope } });
     const fetchMock = vi.fn().mockImplementation(async (url: string) => new Response(JSON.stringify(
-      new URL(url).pathname.endsWith('/exports') ? [payload] : payload
+      new URL(url).pathname.endsWith('/exports') ? [payload] : new URL(url).pathname.endsWith('/download-url') ? {export_id:'exp_1',status:'completed',destination_type:'download',destination_connector_id:null,download_url:`https://example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}`} : payload
     ), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     const client = new VideoVectorClient({ apiKey: 'sk_test_abc', baseUrl: 'https://example.com/api/v2', maxRetries: 0 });
@@ -63,16 +71,7 @@ describe('VideoVectorClient request encoding', () => {
     await expect(client.listExports()).resolves.toEqual([expect.objectContaining({
       export_type: exportType, export_params: { result_scope: resultScope },
     })]);
-    const result = await executeTool('get_export_status', { export_id: 'exp_1' }, client, { authenticationKind: 'oauth' });
-    expect(result.isError).not.toBe(true);
-    expect(result.structuredContent).toMatchObject({ export_id: 'exp_1', export_type: exportType, status: 'completed', download_url: '/api/v2/exports/exp_1/download' });
-    const scope = exportType === 'search_snapshot' ? 'search_results' : resultScope;
-    const source = exportType === 'index' ? '' : `&source_kind=${exportType}&source_id=idx_1`;
-    const appLink = `https://app.vectormethods.com/jobs?tab=exports&export=exp_1${source}&scope=${scope}`;
-    expect(result.structuredContent?.links).toEqual({ open_in_app: appLink, download_json: `${appLink}&action=download` });
-    expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
-    expect(result.structuredContent).not.toHaveProperty('export_params');
-    expect(result.structuredContent).not.toHaveProperty('gcs_uri');
+    await expect(client.mintExportDownloadUrl('exp_1')).resolves.toMatchObject({download_url: `https://example.com/api/v2/exports/exp_1/download?token=${VALID_EXPORT_TOKEN}`});
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
@@ -552,8 +551,8 @@ describe('VideoVectorClient request encoding', () => {
     });
 
     const result = await executeTool(
-      'get_export_download_url',
-      { export_id: 'exp_1' },
+      'browse',
+      { resource: 'indexes' },
       client
     );
     const output = result.content[0]?.text ?? '';

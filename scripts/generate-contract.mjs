@@ -36,12 +36,16 @@ function writeOrCheck(relativePath, value) {
 const packageJson = readJson('package.json');
 const definitionsUrl = pathToFileURL(path.join(rootDir, 'dist', 'tools', 'definitions.js'));
 const {
-  FILTER_CONDITION_VALIDATION,
   TOOL_DEFINITIONS,
   getToolCategory,
   getToolAvailability,
   getToolRequiredScope,
 } = await import(definitionsUrl.href);
+const { RESULTS_APP_DEFINITIONS } = await import(pathToFileURL(path.join(rootDir, 'dist', 'tools', 'workflow-result-contract.js')).href);
+const appContract = {
+  schema_version: '1.0.0',
+  tools: RESULTS_APP_DEFINITIONS.map(({ name, annotations, _meta }) => ({ name, annotations, _meta })),
+};
 
 const contract = {
   schema_version: '1.0.0',
@@ -66,7 +70,6 @@ const contract = {
         'VIDEOVECTOR_BASE_URL',
         'VIDEOVECTOR_TIMEOUT',
         'VIDEOVECTOR_MAX_RETRIES',
-        'VIDEOVECTOR_TOOL_PROFILE',
         'VIDEOVECTOR_UPLOAD_ROOTS',
         'MCP_UPLOAD_API_BASE_URL',
         'MCP_APP_BASE_URL',
@@ -81,11 +84,6 @@ const contract = {
       required_scope: getToolRequiredScope(tool.name),
     };
 
-    if (tool.name === 'filter_videos') {
-      contractTool.validation = {
-        filter_conditions: FILTER_CONDITION_VALIDATION,
-      };
-    }
 
     return contractTool;
   }),
@@ -115,27 +113,38 @@ const provenance = {
     name: packageJson.name,
     tarball_command: 'npm pack --dry-run',
   },
-  container: {
-    registry: 'ghcr.io',
-    image: 'ghcr.io/vectormethods/videovector-mcp-server',
-    dockerfile: 'Dockerfile',
+  mcp_registry: {
+    registry: 'https://registry.modelcontextprotocol.io',
+    name: packageJson.mcpName,
+    metadata_path: 'server.json',
   },
   release_inputs: [
     'src/**',
     'ui/**',
     'scripts/build-picker.mjs',
+    'scripts/clean-dist.mjs',
+    'scripts/generate-contract.mjs',
     'package.json',
     'package-lock.json',
+    'server.json',
     'tsconfig.json',
     'README.md',
     'docs/**',
     'examples/**',
     'artifacts/tool-contract.json',
+    'artifacts/app-tool-contract.json',
   ],
 };
 
 fs.mkdirSync(artifactsDir, { recursive: true });
 writeOrCheck('artifacts/tool-contract.json', contract);
+writeOrCheck('artifacts/app-tool-contract.json', appContract);
+// The monorepo smoke uses the same generated metadata without a Node build.
+// Standalone public package generation has no backend config directory.
+if (fs.existsSync(path.join(rootDir, '..', 'config', 'mcp', 'tool-contract.json'))) {
+  writeOrCheck('../config/mcp/app-tool-contract.json', appContract);
+}
+
 writeOrCheck('artifacts/release-metadata.json', releaseMetadata);
 writeOrCheck('artifacts/provenance.json', provenance);
 

@@ -21,9 +21,9 @@ profile form; tool calls still enforce the account's credits and entitlements.
 Start linking from the MCP client, not by opening the login continuation URL
 directly: the continuation requires a current, one-use authorization request.
 
-OAuth is an account grant, including permitted tenant-level administration and
-destructive operations. It is not a `read`, `write`, `search`, or `admin`
-API-key scope. It does not grant platform administration, API-key management,
+OAuth authenticates the linked account for the six published media tools;
+MCP exposes no deletion or administration tools. OAuth is not a `read`,
+`write`, `search`, or `admin` API-key scope. It does not grant platform administration, API-key management,
 or access to Firebase-session-only and internal-service endpoints.
 
 ## Discovery and custom clients
@@ -62,13 +62,14 @@ authorize executing them.
 
 ## Available tools and existing API-key clients
 
-OAuth tools support media upload, processing, search, results, and resource
-management. Cloud-connector credential creation (`create_gcs_connector`,
-`create_s3_connector`, `create_azure_connector`), webhook secret creation
-(`create_webhook`), and bearer download URL creation (`get_export_download_url`)
-are excluded from the OAuth tool list. Configure connectors and webhooks in
-VideoVector, use existing resources from MCP, and open authenticated app links
-for exports.
+OAuth exposes the same six tools as direct integrations: `analyze`, `get_analysis`,
+`search`, `import_media`, `save_prompt`, and `browse`. Six additional Studio
+helpers are app-only. There is no profile setting. OAuth schemas omit cloud
+sources and credentials, import retry, and webhook arguments, and execution
+rejects those options. API-key/stdio integrations can use those direct options.
+Authorized analysis and search results include one-hour JSON download grants
+and direct segment links. These narrowly scoped result capabilities remain
+available in OAuth; no export management tools are published.
 
 Existing API-key HTTP and local stdio clients remain supported. HTTP clients
 send either `X-API-Key: <key>` or `Authorization: Bearer <key>`; do not combine

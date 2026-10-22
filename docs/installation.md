@@ -19,9 +19,8 @@ The only required runtime value for local stdio clients is `VIDEOVECTOR_API_KEY`
 For the simplified workflow surface, also set:
 
 ```bash
-VIDEOVECTOR_TOOL_PROFILE=simple
 VIDEOVECTOR_UPLOAD_ROOTS=/absolute/path/to/media
 ```
 
 `VIDEOVECTOR_UPLOAD_ROOTS` is optional and defaults to the server process's
-working directory. Use an explicit narrow root when enabling `upload_media`.
+working directory. Use an explicit narrow root when enabling `import_media`.

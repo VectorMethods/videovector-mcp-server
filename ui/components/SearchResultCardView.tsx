@@ -14,6 +14,7 @@ export interface SearchResultCardViewProps {
   onResultClick?: (result: SearchResult) => void;
   isActiveInSidebar?: boolean;
   markerAction?: React.ReactNode;
+  renderDownloadAction?: (button: React.ReactElement) => React.ReactNode;
   isVectorSearchTile?: boolean;
   /** Ranked segment evidence shown only by the synthesized full-video tile. */
   videoTileEvidence?: SearchResultCardEvidence | SearchResultCardEvidence[] | null;
@@ -427,6 +428,7 @@ const SearchResultCardView: React.FC<SearchResultCardViewProps> = ({
   onResultClick,
   isActiveInSidebar = false,
   markerAction,
+  renderDownloadAction = (button) => button,
   isVectorSearchTile = false,
   videoTileEvidence,
   prioritizedFieldPaths = EMPTY_PRIORITIZED_FIELD_PATHS,
@@ -560,7 +562,7 @@ const SearchResultCardView: React.FC<SearchResultCardViewProps> = ({
       {markerAction && <div className="result-card-marker" onClick={(event) => event.stopPropagation()}>
         {markerAction}
       </div>}
-      <button
+      {renderDownloadAction(<button
         type="button"
         className="result-card-download-btn"
         onClick={handleDownloadTileMetadata}
@@ -568,7 +570,7 @@ const SearchResultCardView: React.FC<SearchResultCardViewProps> = ({
         title="Download tile metadata JSON"
       >
         <Download size={12} />
-      </button>
+      </button>)}
 
       {/* Preview fills entire card */}
       <GrantedPreviewImage

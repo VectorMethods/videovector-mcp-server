@@ -15,12 +15,23 @@ const JWKS_URL = `${ISSUER}/oauth2/jwks`;
 const RESOURCE = 'https://api.example.com/mcp';
 const RESOURCE_METADATA_URL =
   'https://api.example.com/.well-known/oauth-protected-resource/mcp';
-const OAUTH_PUBLICATION_UNSAFE_TOOLS = [
+const OAUTH_UNPUBLISHED_TOOLS = [
   'create_gcs_connector',
   'create_s3_connector',
   'create_azure_connector',
+  'list_connectors',
+  'test_connector',
+  'browse_connector_files',
+  'create_import_job',
+  'list_import_jobs',
+  'retry_import_job',
   'create_webhook',
-  'get_export_download_url',
+  'list_webhooks',
+  'get_webhook',
+  'update_webhook',
+  'list_webhook_events',
+  'test_webhook',
+  'list_webhook_deliveries',
 ];
 
 let privateKey: CryptoKey;
@@ -88,7 +99,7 @@ function callToolRequest(id: string, name: string): Record<string, unknown> {
     jsonrpc: '2.0',
     id,
     method: 'tools/call',
-    params: { name, arguments: {} },
+    params: { name, arguments: name === 'browse' ? {resource:'indexes'} : {} },
   };
 }
 
@@ -118,11 +129,11 @@ function jwksResponse(): Response {
 }
 
 describe('hosted MCP OAuth authentication', () => {
-  it('keeps health checks local and JWKS-free', async () => {
+  it.each(['/health', '/mcp/health'])('keeps %s checks local and JWKS-free', async path => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     const { app } = createHttpApp(oauthHttpConfig);
-    const response = await request(app as any).get('/health');
+    const response = await request(app as any).get(path);
 
     expect(response.status).toBe(200);
     expect(response.body.status).toBe('ok');
@@ -146,10 +157,11 @@ describe('hosted MCP OAuth authentication', () => {
       .set('Accept', 'application/json, text/event-stream')
       .send(listToolsRequest('anonymous-tools'));
     expect(listed.status).toBe(200);
-    expect(listed.body.result.tools.length).toBeGreaterThan(0);
+    expect(listed.body.result.tools).toHaveLength(12);
     const names = listed.body.result.tools.map((tool: { name: string }) => tool.name);
-    for (const unsafeTool of OAUTH_PUBLICATION_UNSAFE_TOOLS) {
-      expect(names).not.toContain(unsafeTool);
+    expect(names).toContain('get_analysis');
+    for (const unpublishedTool of OAUTH_UNPUBLISHED_TOOLS) {
+      expect(names).not.toContain(unpublishedTool);
     }
     for (const tool of listed.body.result.tools as Array<Record<string, any>>) {
       expect(tool.securitySchemes).toEqual([{ type: 'oauth2', scopes: [] }]);
@@ -158,7 +170,7 @@ describe('hosted MCP OAuth authentication', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it.each(['list_indexes', 'find', 'play_workflow_media'])('challenges anonymous %s at the HTTP boundary before backend access', async tool => {
+  it.each(['browse', 'find', 'play_workflow_media'])('challenges anonymous %s at the HTTP boundary before backend access', async tool => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
     const context = createHttpApp(oauthHttpConfig);
@@ -200,13 +212,13 @@ describe('hosted MCP OAuth authentication', () => {
       .set('Accept', 'application/json, text/event-stream')
       .send({ jsonrpc: '2.0', id: 'anonymous-picker', method: 'resources/read', params: { uri: ATTACHMENT_PICKER_URI } });
     expect(resource.status).toBe(200);
-    expect(resource.body.result.contents).toEqual([{
+    expect(resource.body.result.contents).toMatchObject([{
       uri: ATTACHMENT_PICKER_URI,
       mimeType: 'text/html;profile=mcp-app',
-      text: await readFile(new URL('../dist/ui/attachment-picker.html', import.meta.url), 'utf8'),
+      text: await readFile(new URL('../dist/ui/results-card.html', import.meta.url), 'utf8'),
       _meta: {
         ui: { csp: { connectDomains: ['https://api.example.com'] }, prefersBorder: true },
-        'openai/widgetCSP': { connect_domains: ['https://api.example.com'], resource_domains: [] },
+        'openai/widgetCSP': { connect_domains: ['https://api.example.com'], resource_domains: ['https://storage.googleapis.com'] },
         'openai/widgetPrefersBorder': true,
       },
     }]);
@@ -219,8 +231,8 @@ describe('hosted MCP OAuth authentication', () => {
       .send(listToolsRequest('anonymous-result-templates'));
     expect(tools.status).toBe(200);
     const resultTools = tools.body.result.tools.filter((tool: { name: string }) =>
-      ['search_media', 'get_prompt_run_results'].includes(tool.name));
-    expect(resultTools).toHaveLength(2);
+      ['analyze', 'get_analysis', 'search'].includes(tool.name));
+    expect(resultTools).toHaveLength(3);
     for (const tool of resultTools) {
       expect(tool._meta.ui.resourceUri).toBe(RESULTS_CARD_URI);
       expect(tool._meta['openai/outputTemplate']).toBe(RESULTS_CARD_URI);
@@ -236,10 +248,10 @@ describe('hosted MCP OAuth authentication', () => {
       // Assert the complete allowlists so a missing policy, extra domain, or
       // wildcard cannot silently reappear in either metadata format.
       expect(meta.ui.csp).toEqual({
-        resourceDomains: ['https://storage.googleapis.com'], connectDomains: [],
+        resourceDomains: ['https://storage.googleapis.com'], connectDomains: ['https://api.example.com'],
       });
       expect(meta['openai/widgetCSP']).toEqual({
-        resource_domains: ['https://storage.googleapis.com'], connect_domains: [],
+        resource_domains: ['https://storage.googleapis.com'], connect_domains: ['https://api.example.com'],
       });
     }
 
@@ -316,12 +328,13 @@ describe('hosted MCP OAuth authentication', () => {
       .send(listToolsRequest('oauth-tools'));
 
     expect(response.status).toBe(200);
-    expect(response.body.result.tools.length).toBeGreaterThan(0);
+    expect(response.body.result.tools).toHaveLength(12);
     expect(response.body.result.tools.map((tool: { name: string }) => tool.name))
-      .toContain('upload_media');
+      .toContain('analyze');
     const names = response.body.result.tools.map((tool: { name: string }) => tool.name);
-    for (const unsafeTool of OAUTH_PUBLICATION_UNSAFE_TOOLS) {
-      expect(names).not.toContain(unsafeTool);
+    expect(names).toContain('get_analysis');
+    for (const unpublishedTool of OAUTH_UNPUBLISHED_TOOLS) {
+      expect(names).not.toContain(unpublishedTool);
     }
     for (const tool of response.body.result.tools as Array<Record<string, any>>) {
       expect(tool.securitySchemes).toEqual([{ type: 'oauth2', scopes: [] }]);
@@ -329,7 +342,31 @@ describe('hosted MCP OAuth authentication', () => {
     }
   });
 
-  it('preserves the complete legacy HTTP tool surface for API-key clients', async () => {
+  it.each(OAUTH_UNPUBLISHED_TOOLS)('rejects OAuth calls to unpublished %s before backend dispatch', async (tool) => {
+    const fetchSpy = vi.fn(async (input: string | URL | Request) => {
+      expect(String(input)).toBe(JWKS_URL);
+      return jwksResponse();
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const context = createHttpApp(oauthHttpConfig);
+    const response = await request(context.app as any)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${await oauthToken()}`)
+      .set('Accept', 'application/json, text/event-stream')
+      .send(callToolRequest(`unpublished-${tool}`, tool));
+
+    expect(response.status).toBe(200);
+    expect(response.body.result.isError).toBe(true);
+    expect(JSON.parse(response.body.result.content[0].text)).toEqual({
+      error: true,
+      message: `Tool is not available in this transport: ${tool}`,
+      next_action: { type: 'correct_arguments' },
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(context.activeRequests.size).toBe(0);
+  });
+
+  it('preserves the same six-name HTTP tool surface for API-key clients', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal('fetch', fetchSpy);
     const { app } = createHttpApp(oauthHttpConfig);
@@ -341,8 +378,9 @@ describe('hosted MCP OAuth authentication', () => {
 
     expect(response.status).toBe(200);
     const names = response.body.result.tools.map((tool: { name: string }) => tool.name);
-    expect(names).toEqual(expect.arrayContaining(OAUTH_PUBLICATION_UNSAFE_TOOLS));
-    expect(names).toContain('upload_media');
+    expect(names).toHaveLength(12);
+    for (const retired of OAUTH_UNPUBLISHED_TOOLS) expect(names).not.toContain(retired);
+    expect(names).toContain('analyze');
     for (const tool of response.body.result.tools as Array<Record<string, any>>) {
       expect(tool.securitySchemes).toBeUndefined();
       expect(tool._meta?.securitySchemes).toBeUndefined();
@@ -433,11 +471,11 @@ describe('hosted MCP OAuth authentication', () => {
       if (url.href === JWKS_URL) {
         return jwksResponse();
       }
-      expect(url.pathname).toBe('/api/v2/indexes');
+      expect(url.pathname).toBe('/api/v2/workflow/mcp/browse');
       const headers = init?.headers as Record<string, string>;
       expect(headers.Authorization).toBe(`Bearer ${token}`);
       expect(headers['X-API-Key']).toBeUndefined();
-      return new Response(JSON.stringify([]), {
+      return new Response(JSON.stringify({content:[{type:'text',text:'{}'}],structuredContent:{items:[],next_action:{type:'select_resource'}}}), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -448,7 +486,7 @@ describe('hosted MCP OAuth authentication', () => {
       .post('/mcp')
       .set('Authorization', `Bearer ${token}`)
       .set('Accept', 'application/json, text/event-stream')
-      .send(callToolRequest('forward-token', 'list_indexes'));
+      .send(callToolRequest('forward-token', 'browse'));
 
     expect(response.status).toBe(200);
     expect(response.body.result.isError).not.toBe(true);
@@ -476,7 +514,7 @@ describe('hosted MCP OAuth authentication', () => {
       .post('/mcp')
       .set('Authorization', `Bearer ${await oauthToken()}`)
       .set('Accept', 'application/json, text/event-stream')
-      .send(callToolRequest(`backend-${code}`, 'list_indexes'));
+      .send(callToolRequest(`backend-${code}`, 'browse'));
 
     expect(response.status).toBe(200);
     expect(response.body.result.isError).toBe(true);
@@ -506,7 +544,7 @@ describe('hosted MCP OAuth authentication', () => {
       .post('/mcp')
       .set('Authorization', `Bearer ${await oauthToken()}`)
       .set('Accept', 'application/json, text/event-stream')
-      .send(callToolRequest(`backend-${code}`, 'list_indexes'));
+      .send(callToolRequest(`backend-${code}`, 'browse'));
 
     expect(response.status).toBe(200);
     expect(response.body.result.isError).toBe(true);
@@ -516,7 +554,7 @@ describe('hosted MCP OAuth authentication', () => {
   it.each([
     ['initialize', initializeRequest('invalid-oauth-initialize')],
     ['tools/list', listToolsRequest('invalid-oauth-list')],
-    ['tools/call', callToolRequest('invalid-oauth-call', 'list_indexes')],
+    ['tools/call', callToolRequest('invalid-oauth-call', 'browse')],
   ])('returns an HTTP OAuth challenge for an invalid bearer on %s', async (_method, body) => {
     vi.stubGlobal(
       'fetch',

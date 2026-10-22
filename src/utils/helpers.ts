@@ -91,6 +91,11 @@ const MODEL_SAFE_API_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.f
   empty_response: 'The VideoVector service returned an incomplete response.',
   invalid_json_response: 'The VideoVector service returned an invalid response.',
   upload_source_error: 'The selected upload source could not be read.',
+  published_search_vectors_unavailable: 'The selected results do not have the saved text or image vectors required for this search.',
+  scope_too_large: 'The selected scope exceeds the size supported by one search.',
+  index_name_ambiguous: 'Multiple accessible libraries have this name. Select an explicit index ID.',
+  validation_search_snapshot_too_large: 'The selected results are too large to capture in one saved search.',
+  validation_search_snapshot_result_too_large: 'A selected result cannot be captured within the saved-search size limit.',
 });
 
 function modelSafeApiErrorPresentation(
@@ -146,6 +151,23 @@ function modelSafeApiErrorPresentation(
   };
 }
 
+function errorNextAction(
+  code: string,
+  statusCode: number
+): { type: 'request_input' | 'correct_arguments' | 'review_error' } {
+  // A provider outage is not an instruction to reconnect, change billing, or
+  // repeat a mutation. Only analyze's admission receipt authorizes a same-key retry.
+  if (statusCode >= 500) return { type: 'review_error' };
+  if ([401, 402, 403].includes(statusCode) || [
+    'resource_quota_exceeded', 'resource_rate_quota_exceeded',
+    'llm_daily_budget_exceeded', 'llm_user_budget_exceeded',
+  ].includes(code)) return { type: 'request_input' };
+  if ([400, 404, 422].includes(statusCode) || [
+    'resource_already_exists', 'idempotency_key_reused', 'idempotency_key_too_long',
+  ].includes(code)) return { type: 'correct_arguments' };
+  return { type: 'review_error' };
+}
+
 export function formatError(
   error: unknown,
   options: ErrorFormattingOptions = {}
@@ -167,6 +189,7 @@ export function formatError(
               message: publicError.message,
               recoverable: !error.isAuthError(),
               suggestion: getErrorSuggestion(error, options.authenticationKind),
+              next_action: errorNextAction(publicError.code, error.statusCode),
             },
             null,
             2
@@ -189,6 +212,7 @@ export function formatError(
               code: error.code,
               message: error.message,
               recoverable: true,
+              next_action: { type: 'correct_arguments' },
             },
             null,
             2
@@ -210,6 +234,7 @@ export function formatError(
               code: 'tool_error',
               message: 'The tool could not complete the request.',
               recoverable: true,
+              next_action: { type: 'review_error' },
             },
             null,
             2
@@ -230,6 +255,7 @@ export function formatError(
             code: 'tool_error',
             message: 'The tool could not complete the request.',
             recoverable: true,
+            next_action: { type: 'review_error' },
           },
           null,
           2
@@ -244,6 +270,15 @@ function getErrorSuggestion(
   error: VideoVectorApiError,
   authenticationKind?: 'api-key' | 'oauth'
 ): string {
+  if (error.code === 'published_search_vectors_unavailable') {
+    return 'Use metadata filters without query or image_data, or start a new analyze configured to produce the required embeddings when the user requests new analysis. Do not automatically resubmit analysis.';
+  }
+  if (['scope_too_large', 'validation_search_snapshot_too_large', 'validation_search_snapshot_result_too_large'].includes(error.code)) {
+    return 'Narrow scope.video_ids, select one scope.index_id, or use more selective metadata filters before searching again. Changing page_size alone does not reduce the captured scope.';
+  }
+  if (error.code === 'index_name_ambiguous') {
+    return 'Use browse with resource=indexes and name to inspect the matching libraries, then use the selected index_id.';
+  }
   if (
     authenticationKind === 'oauth'
     && error.isOAuthRelinkableAuthenticationError()
@@ -283,25 +318,25 @@ function getErrorSuggestion(
 
   if (error.isNotFound()) {
     if (error.code.includes('index')) {
-      return 'Use list_indexes to discover available indexes.';
+      return 'Use browse with resource=indexes to discover available indexes.';
     }
     if (error.code.includes('video')) {
       return 'Verify the video_id is correct. Search results include valid video IDs.';
     }
-    if (error.code.includes('prompt')) {
-      return 'Use list_prompts to discover available prompts, or get_prompt to check a specific prompt.';
+    if (error.code.includes('run') || error.code.includes('analysis')) {
+      return 'Use browse with resource=analyses to find the analysis_id, then read it with get_analysis.';
     }
-    if (error.code.includes('run')) {
-      return 'Verify the run_id is correct. Execute_prompt returns valid run IDs.';
+    if (error.code.includes('prompt')) {
+      return 'Use browse with resource=prompts to discover prompts, or pass ids to inspect a specific prompt.';
     }
     if (error.code.includes('connector')) {
-      return 'Use list_connectors to discover available connectors.';
+      return 'Review the cloud connection in the signed-in VideoVector app.';
     }
     if (error.code.includes('import') || error.code.includes('job')) {
-      return 'Use list_import_jobs to discover available import jobs.';
+      return 'Use browse with resource=imports to find the import_id, then inspect it with import_media. For an analysis task, retain its analysis_id and use get_analysis.';
     }
     if (error.code.includes('export')) {
-      return 'Verify the export_id is correct. Use export_index_metadata or export_prompt_run to create a new export.';
+      return 'Refresh the existing analysis with get_analysis or read the saved search with search_id to renew its download. Do not start new work to replace an unavailable download.';
     }
     return 'The requested resource was not found.';
   }
@@ -315,7 +350,7 @@ function getErrorSuggestion(
   }
 
   if (error.isRetryable()) {
-    return 'This is a temporary error. The operation can be retried.';
+    return 'Review the temporary failure before retrying. Do not automatically repeat a mutation; use retry_same_submission only when an admission receipt explicitly supplies it.';
   }
 
   return 'An unexpected error occurred.';

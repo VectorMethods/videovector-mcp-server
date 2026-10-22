@@ -12,17 +12,16 @@ export const resultsCardResource = {
   mimeType: 'text/html;profile=mcp-app',
 };
 
-export async function readResultsCard(uri = RESULTS_CARD_URI) {
-  // Playback and preview grants use path-style GCS URLs. No bucket subdomain
-  // wildcard is needed; data requests go through the host's MCP tool bridge.
+export async function readResultsCard(uri = RESULTS_CARD_URI, uploadBaseUrl?: string) {
   const mediaOrigins = ['https://storage.googleapis.com'];
+  const connectDomains = uploadBaseUrl ? [new URL(uploadBaseUrl).origin] : [];
   return { contents: [{
     ...resultsCardResource,
     uri,
     text: await readFile(join(__dirname, '../ui/results-card.html'), 'utf8'),
     _meta: {
-      ui: { csp: { resourceDomains: mediaOrigins, connectDomains: [] }, prefersBorder: true },
-      'openai/widgetCSP': { resource_domains: mediaOrigins, connect_domains: [] },
+      ui: { csp: { resourceDomains: mediaOrigins, connectDomains }, prefersBorder: true },
+      'openai/widgetCSP': { resource_domains: mediaOrigins, connect_domains: connectDomains },
       'openai/widgetPrefersBorder': true,
       'openai/widgetDescription': 'A video result viewer with a preloaded paused player, selectable segments, formatted analysis, and JSON downloads. The user can inspect results here; avoid repeating the displayed fields or setup steps in the conversation.',
     },

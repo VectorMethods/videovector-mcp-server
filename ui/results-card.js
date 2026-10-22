@@ -3,6 +3,8 @@ import { getSearchResultKey } from './utils/searchResultIdentity';
 import { App } from '@modelcontextprotocol/ext-apps';
 import { renderMetadata, renderTimeline, renderToolbar, renderDownloads, createResultState, filterResultRows, resultVideoKey, buildSegmentMetadataExport, buildStudioRunMetadata, buildStudioMetadataExport, sanitizeDownloadFilenamePart } from './results-view';
 import './results-card.css';
+import { createAnalysisProgressController, analysisResultView, readCompletedAnalysisVideo } from './analysis-progress';
+import { uploadAttachmentBatch } from '../src/attachments/upload-batch.js';
 
 const app = new App({ name: 'VideoVector results', version: '2.0.0' });
 const byId = id => document.getElementById(id);
@@ -21,6 +23,8 @@ const mediaRetries = new Set();
 const downloads = new Map();
 let catalogRevision = 0, restoringPlayer = false;
 let sessionKey = '', studioMode = 'studio', searchMounted = false, searchState, searchResults = [], originalPlayer, pendingRestoreSelected;
+let activeImportId, activeAnalysisId, completedRevision, uploadGrant, uploadFiles = [], disposed = false, analysisLoadController;
+const uploadedFiles = new Set();
 const callStudioTool = async (name, args, signal) => {
   const result = await app.callServerTool({ name, arguments: args }, signal ? { signal } : undefined);
   if (result.isError) {
@@ -32,6 +36,86 @@ const callStudioTool = async (name, args, signal) => {
 };
 let studioTransport = createStudioTransport(callStudioTool);
 const studioHost = createStudioSearchHost(byId('studio-search'));
+const analysisProgress = createAnalysisProgressController({
+  read: async (analysisId, signal) => {
+    const response = await callStudioTool('read_analysis', activeImportId ? { import_id: analysisId } : { analysis_id: analysisId }, signal);
+    const snapshot = response._meta?.analysis ?? response._meta?.import;
+    if (!snapshot) throw new Error('Progress is unavailable.');
+    return snapshot;
+  },
+  apply: applyAnalysisSnapshot,
+  unavailable: () => { byId('analysis-updated').textContent = 'Live updates are temporarily unavailable. Retrying…'; },
+});
+function showAnalysisProgress(value) {
+  byId('result-workspace').hidden = !source;
+  byId('analysis-progress').hidden = false;
+  byId('analysis-stage').textContent = String(value.stage ?? value.status ?? '').replaceAll('_', ' ');
+  byId('analysis-message').textContent = value.message ?? '';
+  const progress = value.progress ?? {};
+  byId('analysis-counts').textContent = [
+    typeof progress.imported === 'number' ? `${progress.imported} received` : '',
+    typeof (progress.completed ?? progress.parts_completed) === 'number' ? `${progress.completed ?? progress.parts_completed} complete` : '',
+    progress.processing ? `${progress.processing} processing` : '',
+    progress.partial ? `${progress.partial} with partial results` : '',
+    progress.failed ? `${progress.failed} failed` : '',
+  ].filter(Boolean).join(' · ');
+  byId('analysis-files').textContent = (value.files?.items ?? value.files ?? []).map(file => `${file.name ?? file.file_name ?? file.video_id ?? 'Media'}: ${String(file.status ?? 'received').replaceAll('_', ' ')}`).join(' · ');
+  byId('analysis-newer').hidden = !value.newer_processing?.length;
+  byId('analysis-newer').textContent = 'A newer analysis is processing. You are viewing the completed analysis shown here.';
+  byId('analysis-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}
+async function applyAnalysisSnapshot(value, signal) {
+  if (value.import_id) {
+    if (!disposed && value.import_id === activeImportId) showAnalysisProgress(value);
+    return;
+  }
+  if (disposed || value.analysis_id !== activeAnalysisId) return;
+  showAnalysisProgress(value);
+  const revision = value.results?.revision;
+  if (revision !== completedRevision) {
+    completedRevision = revision;
+    ++catalogRevision; studioTransport.invalidateCatalog?.();
+  }
+  // Progress updates refresh discovery, retaining an explicit execution and player.
+  if (source) { render(); return; }
+  if (!value.results?.included_videos) return;
+  const videoId = value.results.videos?.[0]?.video_id ?? value.results.data?.[0]?.video_id;
+  if (!videoId) return;
+  const complete = await readCompletedAnalysisVideo(callStudioTool, value.analysis_id, videoId, signal);
+  if (disposed || signal?.aborted || value.analysis_id !== activeAnalysisId || selected) return;
+  const view = analysisResultView(complete);
+  source = { kind: 'prompt_run', id: activeAnalysisId }; sessionKey = `analysis:${activeAnalysisId}`;
+  studioTransport = createStudioTransport(callStudioTool, complete.scope);
+  const restored = readStudioState(sessionKey);
+  searchState = restored?.search ?? { videoIds: null, query: '', filters: [], selectedResultKey: null, scrollTop: 0 };
+  studioMode = restored?.mode ?? 'studio'; searchMounted = studioMode !== 'studio' || Boolean(searchState.snapshotId); viewRequest = {};
+  if (restored?.mode === 'result') { pendingRestoreSelected = restored.selected; studioMode = 'results'; }
+  filterState = createResultState(null, activeAnalysisId); resultMode = 'all';
+  data = view; initialRows = analysisInitialRows(view); initialMatches = view.filtered?.data ?? [];
+  cacheCompleteViews(complete, view);
+  status(''); render();
+  if (restored?.mode === 'studio' && restored.selected) { await restoreStudioSelection(restored.selected); return; }
+  if (studioMode === 'studio' && initialRows[0]) await choose(initialRows[0]);
+}
+function beginAnalysisRead() {
+  analysisLoadController?.abort(); analysisLoadController = new AbortController();
+  return analysisLoadController.signal;
+}
+function analysisInitialRows(view) {
+  const segmented = new Set(view.unfiltered.data.filter(row => row.result_type === 'segment').map(row => row.video_id));
+  return view.unfiltered.data.filter(row => row.result_type === 'segment' || !segmented.has(row.video_id));
+}
+function cacheCompleteViews(analysis, view = analysisResultView(analysis)) {
+  const page = rows => ({ data: rows, pagination: { has_more: false, next_cursor: null } });
+  for (const video of view.videos) {
+    const matching = new Set(video.selection?.matched_segment_ids ?? []);
+    videoViews.set(viewKey(video.video_id, analysis.analysis_id), { runId: analysis.analysis_id, videoId: video.video_id, loading: false,
+      context: { run: { run_id: analysis.analysis_id, status: analysis.status }, video: { video_id: video.video_id, title: video.name, media_type: video.media_type }, video_level_output: video.videoRows[0] ?? null },
+      segment: { unfiltered: page(video.rows), filtered: page(video.rows.filter(row => matching.has(row.segment_id))) },
+      video: { unfiltered: page(video.videoRows), filtered: page(video.selection?.video_matched ? video.videoRows : []) },
+    });
+  }
+}
 function persistStudio() { if (sessionKey) saveStudioState(sessionKey, studioMode, searchState, selected); }
 function showSearch() {
   if (studioMode === 'studio') originalPlayer = { source, data, initialRows, initialMatches, viewRequest, resultMode, filterState, selected };
@@ -67,17 +151,22 @@ async function selectStudioVideo(video) {
   const requestSelection = ++selectionSequence;
   status('Loading video…');
   try {
-    const catalog = await studioTransport.catalog({ videoIds: [video.video_id] });
+    const signal = beginAnalysisRead();
+    const catalog = await studioTransport.catalog({ videoIds: [video.video_id], signal });
     if (catalog.scopeError) throw new Error(catalog.scopeError);
     const target = catalog.browse_targets.find(item => item.video_id === video.video_id);
-    const page = target ? (await studioTransport.browse({ targets: [{ ...target, limit: 50 }] }))[0] : null;
+    const analysis = target && activeAnalysisId ? await readCompletedAnalysisVideo(callStudioTool, target.run_id, video.video_id, signal) : null;
+    const completeView = analysis ? analysisResultView(analysis) : null;
+    const page = completeView ? { results: analysisInitialRows(completeView), nextCursor: null }
+      : target ? (await studioTransport.browse({ targets: [{ ...target, limit: 50 }] }))[0] : null;
     if (requestSelection !== selectionSequence) return;
     studioMode = 'studio'; originalPlayer = undefined; initialContext = undefined;
     initialMatches = []; resultMode = 'all';
     source = target ? { kind: 'prompt_run', id: target.run_id } : { kind: 'media', id: video.video_id };
     initialRows = page?.results ?? [];
+    if (completeView) cacheCompleteViews(analysis, completeView);
     viewRequest = { video_id: video.video_id, result_level: 'segment', view: 'unfiltered' };
-    data = { run_id: target?.run_id, filtered: null, unfiltered: page ? { data: initialRows, pagination: { has_more: Boolean(page.nextCursor), next_cursor: page.nextCursor } } : null };
+    data = { run_id: target?.run_id, ...(completeView ? { links: completeView.links } : {}), filtered: null, unfiltered: page ? { data: initialRows, pagination: { has_more: Boolean(page.nextCursor), next_cursor: page.nextCursor } } : null };
     filterState = createResultState(video.video_id, target?.run_id ?? null);
     status('');
     await choose(initialRows[0] ?? { result_id: `media:${video.video_id}`, result_type: 'video', video_id: video.video_id, video_name: video.title, media_type: video.media_type });
@@ -191,6 +280,7 @@ function viewComplete(view) {
 }
 function render() {
   if (!source) return;
+  byId('result-workspace').hidden = false;
   const rows = allRows();
   const matches = new Set(matchedRows().map(identity));
   const videoMatches = new Set(matchedRows('video').map(identity));
@@ -283,6 +373,12 @@ async function preload(videoId, complete = false) {
   if (!view) { view = seedView(videoId); videoViews.set(key, view); }
   if (view.promise) { await view.promise; if (!complete || viewComplete(view)) return; }
   if (viewComplete(view)) return;
+  if (activeAnalysisId) {
+    const signal = beginAnalysisRead();
+    const analysis = await readCompletedAnalysisVideo(callStudioTool, requestSource.id, videoId, signal);
+    if (source !== requestSource || signal.aborted) return;
+    cacheCompleteViews(analysis); render(); return;
+  }
   if (view.error && !complete) return;
   view.loading = true; view.error = null;
   const active = () => source === requestSource;
@@ -398,6 +494,16 @@ function downloadAllMetadata() {
   if (!selected) return Promise.resolve();
   const row = selected, requestSource = source;
   return downloadAction(`all:${row.video_id}`, async () => {
+    if (activeAnalysisId && runId(row)) {
+      const response = await callStudioTool('read_analysis', { analysis_id: runId(row), video_id: row.video_id, intent: 'download' });
+      const url = response._meta?.analysis?.results?.download_url;
+      if (!url) throw new Error('This video’s analysis is not ready for download yet.');
+      const outcome = app.getHostCapabilities()?.downloadFile
+        ? await app.downloadFile({ contents: [{ type: 'resource_link', uri: url, name: `${sanitizeDownloadFilenamePart(label(row), 'video', 30)}_analysis.json`, mimeType: 'application/json' }] })
+        : await app.openLink({ url });
+      if (outcome.isError) throw new Error('The download was cancelled or unavailable.');
+      return;
+    }
     if (!app.getHostCapabilities()?.downloadFile) return metadataFallback(row);
     await preload(row.video_id, true);
     if (source !== requestSource) return;
@@ -455,7 +561,7 @@ function recoverMedia(kind) {
   mediaRetries.add(key); mediaGrants.delete(key);
   void preparePlayback();
 }
-app.ontoolresult = async result => {
+async function receiveResult(result) {
   ++catalogRevision; studioTransport.invalidateCatalog?.();
   const incomingKey = result.structuredContent?.source_id ? `${result.structuredContent.source_kind}:${result.structuredContent.source_id}` : '';
   if (incomingKey && incomingKey === sessionKey && source && (studioMode !== 'studio' || result.structuredContent.source_kind === 'search_snapshot')) { render(); return; }
@@ -490,7 +596,7 @@ app.ontoolresult = async result => {
   studioMode = restored?.mode ?? (source.kind === 'search_snapshot' ? 'results' : 'studio');
   searchMounted = studioMode !== 'studio' || Boolean(searchState.snapshotId);
   if (restored?.mode === 'result') { pendingRestoreSelected = restored.selected; studioMode = 'results'; }
-  studioTransport = createStudioTransport(callStudioTool);
+  studioTransport = createStudioTransport(callStudioTool, data.destination ?? data.scope);
   if (!result._meta?.view) {
     const loaded = await app.callServerTool({ name: 'view_workflow_results', arguments: { source_kind: source.kind, source_id: source.id, ...(source.kind === 'search_snapshot' ? { cursor: viewRequest.cursor, limit: viewRequest.limit ?? 50 } : viewRequest) } });
     if (source !== requestSource) return;
@@ -506,7 +612,65 @@ app.ontoolresult = async result => {
   const first = (resultMode === 'matches' ? initialMatches[0] : undefined) ?? initialRows[0];
   if (first) await choose(first);
   else if (viewRequest.video_id) await preload(viewRequest.video_id);
+}
+app.ontoolresult = async result => {
+  const value = result._meta?.analysis ?? result._meta?.import ?? result.structuredContent;
+  if (!result.isError && (value?.analysis_id || value?.import_id)) {
+    if (activeAnalysisId !== value.analysis_id || activeImportId !== value.import_id) {
+      activeImportId = value.import_id; activeAnalysisId = value.analysis_id; completedRevision = undefined; originalPlayer = undefined; searchResults = []; pendingRestoreSelected = undefined;
+      uploadGrant = undefined; uploadFiles = []; uploadedFiles.clear(); byId('files').value = ''; byId('selection').textContent = ''; byId('upload-message').textContent = '';
+      clearSelection(); videoViews.clear(); source = undefined; data = undefined;
+      initialRows = []; initialMatches = []; visibleRows = [];
+      for (const id of ['toolbar', 'rows', 'next', 'empty']) byId(id).hidden = true;
+    }
+    uploadGrant = result._meta?.upload ?? uploadGrant;
+    byId('upload-form').hidden = !(uploadGrant && (value.stage === 'awaiting_upload' || value.status === 'awaiting_upload'));
+    if (uploadGrant) byId('files').accept = uploadGrant.accept;
+    showAnalysisProgress(value); status('');
+    try { if (document.visibilityState !== 'hidden') await applyAnalysisSnapshot(value, beginAnalysisRead()); } catch (error) { if (error.name !== 'AbortError') status(error.message, true); }
+    analysisProgress.start(value);
+    return;
+  }
+  analysisProgress.reset(); analysisLoadController?.abort(); activeAnalysisId = undefined; activeImportId = undefined;
+  byId('analysis-progress').hidden = true; byId('upload-form').hidden = true;
+  await receiveResult(result);
 };
+byId('files').addEventListener('change', () => {
+  uploadFiles = Array.from(byId('files').files ?? [], file => ({ file, file_id: crypto.randomUUID() }));
+  uploadedFiles.clear();
+  byId('selection').textContent = `${uploadFiles.length} files selected`;
+});
+byId('upload-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!uploadGrant || !uploadFiles.length) return;
+  const grant = uploadGrant, taskId = activeAnalysisId ?? activeImportId;
+  if (uploadFiles.length > grant.max_files) { byId('upload-message').textContent = `Choose no more than ${grant.max_files} files.`; return; }
+  const send = async (url, body) => {
+    const target = new URL(url), origin = new URL(grant.url);
+    if (target.protocol !== 'https:' || target.origin !== origin.origin || target.username || target.password) throw new Error('The upload destination is unavailable.');
+    const response = await fetch(target.href, { method: 'POST', credentials: 'omit', redirect: 'error',
+      headers: { Authorization: `Bearer ${grant.token}`, ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) },
+      body: body instanceof FormData ? body : JSON.stringify(body) });
+    if (!response.ok) throw new Error(response.status === 401 || response.status === 403
+      ? 'This upload session expired. Refresh this analysis to continue.' : 'Upload did not finish. Try again to resume the selected files.');
+    return response.json();
+  };
+  byId('submit').disabled = true; byId('files').disabled = true;
+  try {
+    await uploadAttachmentBatch(uploadFiles.filter(entry => !uploadedFiles.has(entry.file_id)), async entry => {
+      byId('upload-message').textContent = `Uploading: ${entry.file.name} (${uploadedFiles.size} of ${uploadFiles.length} received)`;
+      const body = new FormData(); body.append('file', entry.file); body.append('file_id', entry.file_id);
+      await send(grant.url, body); uploadedFiles.add(entry.file_id);
+      byId('upload-message').textContent = `${uploadedFiles.size} of ${uploadFiles.length} files received`;
+    });
+    await send(grant.complete_url, { file_ids: uploadFiles.map(entry => entry.file_id) });
+    if ((activeAnalysisId ?? activeImportId) !== taskId || disposed) return;
+    uploadGrant = undefined; byId('upload-form').hidden = true;
+    byId('analysis-message').textContent = activeImportId ? 'Files received. Importing media…' : 'Files received. Preparing the analysis…';
+    await analysisProgress.refresh();
+  } catch (error) { if (!disposed && (activeAnalysisId ?? activeImportId) === taskId) byId('upload-message').textContent = error.message; }
+  finally { byId('submit').disabled = false; byId('files').disabled = false; }
+});
 byId('next').addEventListener('click', async () => {
   const requestSource = source;
   try {
@@ -542,5 +706,7 @@ player.addEventListener('play', () => {
 });
 player.addEventListener('error', () => { if (!player.hidden && player.getAttribute('src')) recoverMedia('Playback'); });
 imagePreview.addEventListener('error', () => { if (!imagePreview.hidden && imagePreview.getAttribute('src')) recoverMedia('Image'); });
-app.onteardown = async () => { persistStudio(); studioHost.unmount(); source = undefined; clearSelection(); videoViews.clear(); mediaGrants.clear(); return {}; };
+const pauseAnalysisReads = () => { if (document.visibilityState === 'hidden') analysisLoadController?.abort(); };
+document.addEventListener?.('visibilitychange', pauseAnalysisReads);
+app.onteardown = async () => { disposed = true; analysisLoadController?.abort(); document.removeEventListener?.('visibilitychange', pauseAnalysisReads); analysisProgress.stop(); persistStudio(); studioHost.unmount(); source = undefined; clearSelection(); videoViews.clear(); mediaGrants.clear(); return {}; };
 await app.connect();

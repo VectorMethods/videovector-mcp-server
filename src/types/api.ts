@@ -188,6 +188,14 @@ export interface WorkflowFilterCondition {
 }
 
 export interface WorkflowSearchRequest {
+  image_data?: string;
+  text_weight?: number;
+  image_weight?: number;
+  result_limit?: number;
+  analysis_id?: string;
+  prompt_run_id?: string;
+  latest_only?: boolean;
+  container_index_id?: string;
   artifact_delivery?: 'automatic' | 'none';
   query?: string;
   filters?: WorkflowFilterCondition[];
@@ -200,6 +208,8 @@ export interface WorkflowSearchRequest {
 }
 
 export interface WorkflowSearchScopeRequest {
+  latest_only?: boolean;
+  container_index_id?: string;
   video_ids?: string[];
   prompt_run_ids?: string[];
   index_id?: string;
@@ -498,7 +508,7 @@ export interface MultimodalSearchResult extends SearchResult {
 // Filter Search Types
 // ============================================================================
 
-// Backend canonical operators exposed by the public MCP filter_videos contract.
+// Backend canonical operators exposed by metadata filters in the MCP search contract.
 export type FilterOperator =
   | 'equals'
   | 'greater_than'

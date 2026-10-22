@@ -86,7 +86,6 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
   const libraryRef = useRef<StudioSearchCatalog | null>(null);
   const [truncated, setTruncated] = useState(false);
   const attemptedRestore = useRef(false);
-  const searchWindowStale = useRef(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
   const restoredScroll = useRef(false);
@@ -147,7 +146,6 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
     }
     if (previousRefreshKey.current !== refreshKey) {
       previousRefreshKey.current = refreshKey;
-      searchWindowStale.current = true;
       transport.invalidateCatalog?.();
       libraryRef.current = null;
     }
@@ -162,7 +160,7 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
           if (seenCursors.has(all.nextCursor)) throw new Error('Video listing returned a repeated page. Please refresh the scope.');
           seenCursors.add(all.nextCursor);
           const page: StudioSearchCatalog = await transport.catalog({ cursor: all.nextCursor, signal: controller.signal });
-          all = { ...all, videos: Array.from(new Map([...all.videos, ...page.videos].map(video => [video.video_id, video])).values()), nextCursor: page.nextCursor };
+          all = { ...all, ...page, videos: Array.from(new Map([...all.videos, ...page.videos].map(video => [video.video_id, video])).values()), nextCursor: page.nextCursor };
         }
         if (controller.signal.aborted) return;
         libraryRef.current = all;
@@ -265,28 +263,25 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
       await loadBrowse(catalog.browse_targets, true);
       return;
     }
-    // Filter edits reuse the same unfiltered ranked candidate set.
-    if (dataset === 'vector' && query === state.submittedQuery && !state.semanticWindowFiltered && !searchWindowStale.current) { setError(null); return; }
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
     setPending(true);
     setError(null);
     try {
-      const page = await transport.search({ videoIds: Array.from(selectedIds), query, filters: query ? [] : state.filters, signal: controller.signal });
+      const page = await transport.search({ videoIds: Array.from(selectedIds), query, filters: state.filters, signal: controller.signal });
       if (controller.signal.aborted) return;
       let candidates = page.results;
       let cursor = page.nextCursor;
       let loadedPageCursors: Array<string | null> = [null];
       attemptedRestore.current = true;
-      searchWindowStale.current = false;
       setResults(candidates);
       setDataset(query ? 'vector' : 'condition');
       setNextCursor(cursor || null);
       setTruncated(Boolean(page.truncated));
       // Save the billed search before subsequent reads, so a page failure can resume it.
-      update({ snapshotId: page.snapshotId, loadedPageCursors, submittedQuery: query, semanticWindowFiltered: false, selectedResultKey: null, scrollTop: 0 });
-      // Semantic filters evaluate the complete existing ranked window, not just page one.
+      update({ snapshotId: page.snapshotId, loadedPageCursors, submittedQuery: query, semanticWindowFiltered: true, selectedResultKey: null, scrollTop: 0 });
+      // Continue the frozen result set without submitting another search.
       while (query && cursor && !controller.signal.aborted) {
         const next = await transport.page({ snapshotId: page.snapshotId, cursor, signal: controller.signal });
         if (controller.signal.aborted) return;
@@ -332,7 +327,6 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
     controllerRef.current?.abort();
     ++scopeGeneration.current;
     attemptedRestore.current = true;
-    searchWindowStale.current = false;
     setScopeOpen(false);
     setResults([]);
     setDataset('browse');
@@ -369,7 +363,7 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
   </DeferredPreviewTile>);
   const canClear = Boolean(state.query || state.filters.length || state.snapshotId || dataset !== 'browse');
 
-  return <TabActivityProvider isActive={isActive && parentActivity.isActive}><section className="studio-search-workspace" aria-label="Search Playground videos">
+  return <TabActivityProvider isActive={isActive && parentActivity.isActive}><section className="studio-search-workspace" aria-label={library?.container?.type === 'index' ? 'Search index videos' : 'Search Playground videos'}>
     <SearchConfigurationPanel>
       <header className="studio-search-header">
         <button type="button" className="studio-search-back-link" onClick={onExit}><ArrowLeft size={14} /><span>Back to Studio</span></button>
@@ -379,7 +373,7 @@ const StudioSearchWorkspace: React.FC<StudioSearchWorkspaceProps> = ({
           <label className="form-label" id="studio-search-scope-label">Videos</label>
           <div className="custom-select-container studio-search-scope" ref={scopeRef}>
             <button type="button" className="custom-select-trigger" onClick={() => setScopeOpen(!scopeOpen)} aria-expanded={scopeOpen}>
-              <span>{state.videoIds === null ? 'All Playground videos' : `${selectedIds.size} videos selected`}</span><ChevronDown size={14} />
+              <span>{state.videoIds === null ? (library?.container?.type === 'index' ? 'All index videos' : 'All Playground videos') : `${selectedIds.size} videos selected`}</span><ChevronDown size={14} />
             </button>
             {scopeOpen && <div className="custom-dropdown search-index-dropdown studio-search-scope-menu" aria-labelledby="studio-search-scope-label">
               <div className="dropdown-header"><span>Select videos</span><button type="button" className="clear-selection-btn" onClick={() => selectVideos(null)}>All</button><button type="button" className="clear-selection-btn" onClick={() => selectVideos(new Set())}>None</button></div>

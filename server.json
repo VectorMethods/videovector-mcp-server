@@ -3,12 +3,12 @@
   "name": "io.github.VectorMethods/videovector-mcp-server",
   "title": "VideoVector MCP Server",
   "description": "Model Context Protocol server for the VectorMethods VideoVector media intelligence API.",
-  "version": "4.0.1",
+  "version": "5.0.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@vectormethods/videovector-mcp-server",
-      "version": "4.0.1",
+      "version": "5.0.0",
       "transport": {
         "type": "stdio"
       },

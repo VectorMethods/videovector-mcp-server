@@ -3,7 +3,18 @@
 <style>/* WIDGET_STYLES */</style></head><body>
 <header class="studio-header"><h1>VideoVector Studio</h1><button class="studio-search-back-link" id="open-app">Open in app ↗</button></header>
 <div id="status" role="status">Loading results…</div>
-<div class="studio-layout">
+<section id="analysis-progress" aria-live="polite" hidden>
+  <strong id="analysis-stage"></strong><p id="analysis-message"></p>
+  <p id="analysis-counts" class="muted"></p><p id="analysis-files" class="muted"></p><p id="analysis-newer" class="muted" hidden></p><p id="analysis-updated" class="muted"></p>
+</section>
+<form id="upload-form" hidden>
+  <label for="files">Choose the files for this analysis</label>
+  <input id="files" type="file" multiple required>
+  <p id="selection" class="muted"></p>
+  <button id="submit" class="secondary" type="submit">Upload and continue</button>
+  <p id="upload-message" role="status"></p>
+</form>
+<div class="studio-layout" id="result-workspace">
   <aside id="studio-video-rail"></aside>
   <main id="studio-main">
     <div id="studio-search" class="studio-search-surface" hidden></div>
