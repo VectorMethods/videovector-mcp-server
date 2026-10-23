@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
-import type { VideoVectorClient } from '../src/client/index.js';
+import { VideoVectorClient } from '../src/client/index.js';
 import { VideoVectorApiError } from '../src/types/index.js';
 import { executeTool, getToolDefinitions, getToolDefinition, getToolRequiredScope } from '../src/tools/index.js';
 const names = ['analyze','get_analysis','search','import_media','save_prompt','browse'];
@@ -8,7 +8,7 @@ const data = { analysis_id:'analysis-1',status:'processing',stage:'extracting',m
 const response = (value: Record<string, unknown> = data, meta = {}) => ({content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value,_meta:meta});
 function client() { return { mcpTool:vi.fn().mockResolvedValue(response()) } as unknown as VideoVectorClient; }
 const parse = (result:any) => result.structuredContent ?? JSON.parse(result.content[0].text);
-afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('single six-tool facade', () => {
   it('publishes identical names on both transports and OAuth, with no profile or aliases', () => {
     for(const includeLocalUpload of [true,false]) for(const advertiseOAuth of [true,false]) expect(getToolDefinitions({includeLocalUpload,advertiseOAuth}).map(t=>t.name)).toEqual(names);
@@ -39,6 +39,59 @@ describe('single six-tool facade', () => {
   it('retains accepted identity after observation timeout without another submission',async()=>{
     const backend=client();vi.mocked(backend.mcpTool).mockResolvedValueOnce(response()).mockRejectedValueOnce(new VideoVectorApiError('private','timeout_error',408));
     const out=await executeTool('analyze',{instruction:'Describe'},backend);expect(parse(out)).toMatchObject({analysis_id:'analysis-1',next_action:{type:'continue_polling'}});expect(backend.mcpTool).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    ['get_analysis',{analysis_id:'a',detail:'full',cursor:'page-2'}],
+    ['get_analysis',{video_id:'v'}],
+    ['import_media',{import_id:'i',outputs_cursor:'outputs-2',failures_cursor:'failures-2',wait_seconds:0}],
+    ['search',{search_id:'s',cursor:'page-2',page_size:5}],
+  ] as const)('directs interrupted %s observations to the original read without hidden retries',async(name,args)=>{
+    for (const code of ['network_error','timeout_error']) {
+      const backend=client();vi.mocked(backend.mcpTool).mockRejectedValue(new VideoVectorApiError('private socket token',code,code==='timeout_error'?408:0));
+      const out=await executeTool(name,args,backend);
+      const expectedIds=Object.fromEntries(Object.entries(args).filter(([key])=>['analysis_id','video_id','import_id','search_id','cursor','outputs_cursor','failures_cursor'].includes(key)));
+      expect(parse(out)).toMatchObject({...expectedIds,code,next_action:{type:'continue_polling',tool:name,after_seconds:15}});
+      if (!('analysis_id' in args)) expect(parse(out)).not.toHaveProperty('analysis_id');
+      expect(JSON.stringify(out)).not.toContain('private socket token');
+      expect(backend.mcpTool).toHaveBeenCalledExactlyOnceWith(name,args,expect.objectContaining({idempotencyKey:undefined}));
+    }
+  });
+  it('returns same-analysis continuation after a real API response stream interruption without replaying its POST',async()=>{
+    const fetch=vi.fn().mockResolvedValue({ok:true,text:async()=>{throw new TypeError('terminated');}});vi.stubGlobal('fetch',fetch);
+    const backend=new VideoVectorClient({apiKey:'synthetic-key',baseUrl:'https://api.example/api/v2'});
+    const args={analysis_id:'a',wait_seconds:0};
+    const out=await executeTool('get_analysis',args,backend);
+    expect(parse(out)).toMatchObject({analysis_id:'a',code:'network_error',next_action:{type:'continue_polling',tool:'get_analysis',after_seconds:15}});
+    expect(fetch).toHaveBeenCalledExactlyOnceWith('https://api.example/api/v2/workflow/mcp/get_analysis',expect.objectContaining({method:'POST',body:JSON.stringify(args)}));
+  });
+  it('does not continue observing when cancellation coincides with a network failure',async()=>{
+    const backend=client();const cancelled=new AbortController();
+    vi.mocked(backend.mcpTool).mockImplementation(async()=>{cancelled.abort();throw new VideoVectorApiError('terminated','network_error',0);});
+    const out=await executeTool('get_analysis',{analysis_id:'a'},backend,{signal:cancelled.signal});
+    expect(parse(out)).toMatchObject({analysis_id:'a',next_action:{type:'review_error'}});expect(backend.mcpTool).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ['analyze',{instruction:'Describe'},'analysis_id','analysis-1','get_analysis'],
+    ['import_media',{},'import_id','import-1','import_media'],
+  ] as const)('preserves the same-task actionable observation receipt after %s admission',async(name,args,idField,id,readTool)=>{
+    const backend=client();const accepted=response({[idField]:id,next_action:{type:'continue_polling'}});
+    const unavailable={...response({[idField]:id,code:'observation_unavailable',message:'Read this same task.',next_action:{type:'continue_polling',tool:readTool,after_seconds:15}}),isError:true};
+    vi.mocked(backend.mcpTool).mockResolvedValueOnce(accepted).mockResolvedValueOnce(unavailable);
+    expect(await executeTool(name,args,backend)).toEqual(unavailable);
+    expect(vi.mocked(backend.mcpTool).mock.calls.map(call=>call[0])).toEqual([name,readTool]);
+    expect(vi.mocked(backend.mcpTool).mock.calls[1][1]).toEqual({[idField]:id,wait_seconds:30});
+  });
+  it('rejects a different-task observation receipt after admission',async()=>{
+    const backend=client();vi.mocked(backend.mcpTool).mockResolvedValueOnce(response()).mockResolvedValueOnce({...response({analysis_id:'different',code:'observation_unavailable',next_action:{type:'continue_polling'}}),isError:true});
+    expect(parse(await executeTool('analyze',{instruction:'Describe'},backend))).toMatchObject({analysis_id:'analysis-1',next_action:{type:'review_error'}});
+    expect(backend.mcpTool).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    ['invalid_api_key',401,'request_input'],['authorization_denied',403,'request_input'],['request_cancelled',499,'review_error'],
+  ] as const)('keeps %s outside automatic observation recovery',async(code,status,nextAction)=>{
+    const backend=client();vi.mocked(backend.mcpTool).mockRejectedValue(new VideoVectorApiError('private',code,status));
+    const out=await executeTool('get_analysis',{analysis_id:'a'},backend);
+    expect(parse(out)).toMatchObject({analysis_id:'a',next_action:{type:nextAction}});expect(backend.mcpTool).toHaveBeenCalledTimes(1);
   });
   it.each([['get_analysis',{analysis_id:'a'}],['import_media',{import_id:'i'}],['search',{search_id:'s'}]] as const)('retains read identity and typed auth guidance for %s',async(name,args)=>{
     const backend=client();vi.mocked(backend.mcpTool).mockRejectedValue(new VideoVectorApiError('private','invalid_api_key',401));const out=await executeTool(name,args,backend);expect(parse(out)).toMatchObject({...args,next_action:{type:'request_input'}});expect(backend.mcpTool).toHaveBeenCalledTimes(1);

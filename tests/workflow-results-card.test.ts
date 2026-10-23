@@ -721,6 +721,60 @@ describe('unified picker batch recovery', () => {
     expect(ui.card.control('upload-message').textContent).toBe('Choose no more than 8 files.');
   });
 
+  it('resumes expired finalization with a public get_analysis grant and keeps private refresh grant-free', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn().mockImplementation(async (url: string) => new Response('{}', { status: url.endsWith('/complete') ? 401 : 200 }));
+    vi.stubGlobal('fetch', fetch);
+    const ui = await unifiedPicker(2);
+    const awaiting = liveAnalysis('empty', { stage: 'awaiting_upload', status: 'awaiting_upload', results: { revision: 'empty', included_videos: 0, final: false }, next_action: { type: 'request_input' } });
+    const renewedGrant = { url: 'https://api.example/files', complete_url: 'https://api.example/complete', token: 'renewed-private-grant', max_files: 8, accept: 'video/*' };
+    const publicAnalysis = { ...awaiting, results: { included_videos: 0, final: false } };
+    const backend = client({
+      mcpTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify(publicAnalysis) }], structuredContent: publicAnalysis, _meta: { analysis: awaiting, upload: renewedGrant } }),
+      getAnalysis: vi.fn().mockResolvedValue(awaiting),
+    });
+    ui.card.callServerTool.mockImplementation(request => executeTool(request.name, request.arguments, backend));
+    try {
+      await ui.submit();
+      expect(ui.card.control('upload-message').textContent).toBe('This upload session expired. Refresh this analysis to continue.');
+      expect(ui.card.control('upload-form').hidden).toBe(false);
+      const uploadedIds = fetch.mock.calls.filter(([url]) => url.endsWith('/files')).map(([, init]) => init.body.get('file_id'));
+      expect(uploadedIds).toHaveLength(2);
+      expect(JSON.parse(fetch.mock.calls.at(-1)![1].body).file_ids).toEqual(uploadedIds);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(backend.getAnalysis).toHaveBeenCalledExactlyOnceWith('anl-current', { detail: 'summary', include_download: false });
+      expect(backend.mcpTool).not.toHaveBeenCalled();
+      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(ui.card.control('upload-form').hidden).toBe(false);
+
+      const renewal = await executeTool('get_analysis', { analysis_id: 'anl-current', wait_seconds: 0 }, backend, { transportMode: 'http', authenticationKind: 'oauth' });
+      expect(renewal.isError).not.toBe(true);
+      expect(renewal._meta?.upload).toEqual(renewedGrant);
+      expect(renewal._meta?.analysis).not.toHaveProperty('upload');
+      expect(JSON.stringify(renewal.content) + JSON.stringify(renewal.structuredContent)).not.toContain(renewedGrant.token);
+      await ui.card.app.ontoolresult(renewal);
+      expect(ui.card.control('selection').textContent).toBe('2 files selected');
+      expect(ui.card.control('files').accept).toBe('video/*');
+
+      const importing = { ...awaiting, stage: 'importing', status: 'importing', next_action: { type: 'continue_polling' } };
+      vi.mocked(backend.getAnalysis).mockResolvedValue(importing);
+      fetch.mockResolvedValue(new Response('{}', { status: 200 }));
+      await ui.submit();
+      expect(fetch).toHaveBeenCalledTimes(4); // Received bytes are retained; only finalization is retried.
+      expect(fetch.mock.calls.at(-1)).toEqual([renewedGrant.complete_url, expect.objectContaining({
+        credentials: 'omit', redirect: 'error', headers: { Authorization: `Bearer ${renewedGrant.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ file_ids: uploadedIds }),
+      })]);
+      expect(ui.card.control('upload-form').hidden).toBe(true);
+      expect(ui.card.control('analysis-stage').textContent).toBe('importing');
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(backend.getAnalysis).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(backend.getAnalysis).mock.calls.every(([, options]) => options?.include_download === false && !('include_upload' in options))).toBe(true);
+      expect(backend.mcpTool).toHaveBeenCalledTimes(1);
+      expect(ui.card.callServerTool.mock.calls.every(([request]) => request.name === 'read_analysis' && request.arguments.analysis_id === 'anl-current')).toBe(true);
+    } finally { await ui.card.app.onteardown(); vi.useRealTimers(); }
+  });
+
   it('settles started uploads, retains successes and completes the same ordered IDs on retry', async () => {
     let fail!: (response: Response) => void;
     let finish!: (response: Response) => void;

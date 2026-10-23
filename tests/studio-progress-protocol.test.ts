@@ -77,11 +77,13 @@ describe('Studio private progress over raw MCP HTTP', () => {
       expect(response.body.result.structuredContent).toBeUndefined();
       expect(response.body.result.content).toEqual([{ type: 'text', text: 'Analysis updated in Studio.' }]);
       expect(response.body.result._meta.analysis).toMatchObject(analysis);
+      expect(response.body.result._meta).not.toHaveProperty('upload');
       if (argumentsValue.detail === 'full') expect(response.body.result._meta.analysis.results.data[0].segments).toHaveLength(1);
       else expect(response.body.result._meta.analysis.results.data).toBeUndefined();
     }
     expect(upstream).toHaveLength(2);
     expect(upstream.map(url => url.searchParams.get('include_download'))).toEqual(['false', 'false']);
+    expect(upstream.every(url => !url.searchParams.has('include_upload'))).toBe(true);
     expect(upstream.map(url => url.searchParams.get('detail'))).toEqual(['summary', 'full']);
     expect(upstream[1]!.searchParams.get('video_id')).toBe('video-fixture');
   });
