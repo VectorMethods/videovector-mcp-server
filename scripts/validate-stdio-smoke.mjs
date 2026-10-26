@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export function validateStdioSmoke(response, contract, appTools = []) {
+export function validateStdioSmoke(response, contract) {
   const messages = response.split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const initialized = messages.find((message) => message.id === 1);
   const listed = messages.find((message) => message.id === 2);
@@ -18,7 +18,6 @@ export function validateStdioSmoke(response, contract, appTools = []) {
     ...contract.tools.filter((tool) =>
       tool.availability.transports.includes('stdio')
     ),
-    ...appTools,
   ].map((tool) => tool.name).sort();
   const actual = listed.result.tools.map((tool) => tool.name).sort();
   assert(expected.length > 0, 'Generated contract has no stdio tools');
@@ -28,6 +27,5 @@ export function validateStdioSmoke(response, contract, appTools = []) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const contract = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-  const { RESULTS_APP_DEFINITIONS } = await import('../dist/tools/workflow-result-contract.js');
-  validateStdioSmoke(fs.readFileSync(0, 'utf8'), contract, RESULTS_APP_DEFINITIONS);
+  validateStdioSmoke(fs.readFileSync(0, 'utf8'), contract);
 }

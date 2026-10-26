@@ -1,14 +1,13 @@
 /** The single model-facing catalog. Native REST client methods are independent. */
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { MAX_ATTACHMENT_FILES } from '../attachments/limits.js';
-import { ANALYSIS_RESULT_SCHEMA, WORKFLOW_RESULT_SCHEMA, RESULTS_CARD_URI, RESULTS_APP_DEFINITIONS, RESULTS_APP_TOOLS } from './workflow-result-contract.js';
+import { ANALYSIS_RESULT_SCHEMA, WORKFLOW_RESULT_SCHEMA } from './workflow-result-contract.js';
 
-export const ATTACHMENT_PICKER_URI = 'ui://videovector/attachment-picker.html';
 export const ATTACHMENT_FILES_SCHEMA = {
   type: 'array', minItems: 1, maxItems: MAX_ATTACHMENT_FILES,
-  description: 'Host-provided attachments; pass descriptors unchanged. At most eight files, each at most 2 GiB.',
+  description: 'Native chat attachments supplied by the host; pass descriptors unchanged. Their temporary authorized HTTPS URLs do not require public publishing. At most eight files, each at most 2 GiB.',
   items: { type: 'object', properties: {
-    download_url: { type: 'string', minLength: 1 }, file_id: { type: 'string', minLength: 1 },
+    download_url: { type: 'string', minLength: 1, format: 'uri', pattern: '^https://', description: 'Host-provided temporary authorized download URL, not a local or sandbox path. Do not invent or publicly publish a URL.' }, file_id: { type: 'string', minLength: 1 },
     mime_type: { type: 'string' }, file_name: { type: 'string' },
   }, required: ['download_url', 'file_id'], additionalProperties: false },
 };
@@ -17,7 +16,7 @@ export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
 export type ToolRequiredScope = 'read' | 'write' | 'search';
 export type ToolTransport = 'stdio' | 'streamable-http';
 export interface ToolAvailability { transports: ToolTransport[]; }
-export interface ToolDefinitionOptions { includeAppTools?: boolean; advertiseOAuth?: boolean; includeLocalUpload?: boolean; }
+export interface ToolDefinitionOptions { advertiseOAuth?: boolean; includeLocalUpload?: boolean; }
 type Schema = Record<string, unknown>;
 const string = { type: 'string', minLength: 1 };
 const ids = { type: 'array', minItems: 1, maxItems: 100, uniqueItems: true, items: string };
@@ -229,7 +228,7 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
   const all: Tool[] = [
     {
       name: TOOL_NAMES.ANALYZE, title: 'Analyze media',
-      description: 'Analyze attached or existing media using instruction or a saved prompt. Root files are native attachments; source selects existing media or a direct import; destination is only for new media. Omit files/source to open the picker. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips directly without OAuth headers; claim a file was saved only after saving succeeds.',
+      description: 'Analyze media using exactly one of instruction or prompt_id and exactly one of files or source. Root files are native chat attachments: use the host-provided descriptors unchanged, including temporary authorized HTTPS URLs; do not ask users to publish videos. source selects existing media, a direct import, or local stdio file_paths within configured upload roots. Hosted tools cannot read local or sandbox paths. If the host has not supplied attachment descriptors, ask the user to attach files through a host that supports forwarding, or select existing VideoVector media. destination is only for new media. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips without OAuth headers; claim a file was saved only after saving succeeds.',
       inputSchema: { ...object({ instruction: string, prompt_id: string, files: ATTACHMENT_FILES_SCHEMA, source, destination, execution: object(EXECUTION_CONFIGURATION_PROPERTIES), ...(oauth ? {} : { webhook }), wait_seconds: wait, idempotency_key: key, detail }),
         ...oneSelector(['instruction', 'prompt_id']), allOf: [
           { not: { required: ['files', 'source'] } },
@@ -260,7 +259,7 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
     },
     {
       name: TOOL_NAMES.IMPORT_MEDIA, title: 'Import media',
-      description: 'Import media without analysis, inspect an existing import, or retry failed files where supported. Provide root files or source for new media; omit both to open the picker. destination selects its library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry with retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.',
+      description: 'Import media without analysis, inspect an existing import, or retry failed files. New imports require exactly one of root files or source. files are native host-provided attachment descriptors with temporary authorized HTTPS URLs, not publicly published videos. Local stdio can use source.file_paths within configured upload roots; hosted tools cannot read local or sandbox paths. If no attachment descriptors are available, ask the user to attach files through a supporting host. destination selects the library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry with retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.',
       inputSchema: { ...object({ ...intakeProperties, import_id: string, retry: { type: 'boolean', const: true }, outputs_cursor: string, failures_cursor: string, page_size: { type: 'integer', minimum: 1, maximum: 100, default: 50 }, wait_seconds: wait, detail }), allOf: [
         { not: { required: ['files', 'source'] } },
         { if: { required: ['title'] }, then: options.includeLocalUpload === false ? excludes('source') : { properties: { source: { required: ['file_paths'] } } } },
@@ -289,16 +288,14 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
   ];
   return all.map(tool => ({ ...tool,
     annotations: getToolAnnotations(tool.name, options),
-    ...(['analyze', 'import_media'].includes(tool.name) ? { _meta: { 'openai/fileParams': ['files'], ui: { resourceUri: RESULTS_CARD_URI }, 'openai/outputTemplate': RESULTS_CARD_URI, 'openai/widgetAccessible': true } } : {}),
-    ...(['get_analysis', 'search'].includes(tool.name) ? { _meta: { ui: { resourceUri: RESULTS_CARD_URI }, 'openai/outputTemplate': RESULTS_CARD_URI, 'openai/widgetAccessible': true } } : {}),
+    ...(['analyze', 'import_media'].includes(tool.name) ? { _meta: { 'openai/fileParams': ['files'] } } : {}),
   }));
 }
-export const TOOL_DEFINITIONS = definitions();
 export function getToolCategory(name: string): string { return name === 'search' ? 'Search' : name === 'save_prompt' ? 'Prompts' : name === 'browse' ? 'Discovery' : 'Media'; }
 export function getToolAvailability(_name: string): ToolAvailability { return { transports: ['stdio', 'streamable-http'] }; }
 export function getToolRequiredScope(name: string, args?: Record<string, unknown>): ToolRequiredScope {
-  if (name === 'search' || (name === 'view_workflow_results' && args?.action === 'search')) return 'search';
-  if (RESULTS_APP_TOOLS.has(name) || name === 'browse' || name === 'get_analysis' || (name === 'import_media' && args?.import_id !== undefined && args.retry !== true)) return 'read';
+  if (name === 'search') return 'search';
+  if (name === 'browse' || name === 'get_analysis' || (name === 'import_media' && args?.import_id !== undefined && args.retry !== true)) return 'read';
   return 'write';
 }
 export function getToolAnnotations(name: string, options: ToolDefinitionOptions = {}): NonNullable<Tool['annotations']> {
@@ -306,9 +303,46 @@ export function getToolAnnotations(name: string, options: ToolDefinitionOptions 
   const callbacks = !options.advertiseOAuth && ['analyze', 'import_media'].includes(name);
   return { readOnlyHint: read, destructiveHint: callbacks || name === 'save_prompt', idempotentHint: read, openWorldHint: callbacks };
 }
-export function getToolDefinitions(options: ToolDefinitionOptions = {}): Tool[] {
-  const selected = [...definitions(options), ...(options.includeAppTools ? RESULTS_APP_DEFINITIONS : [])];
+export function getValidationToolDefinitions(options: ToolDefinitionOptions = {}): Tool[] {
+  const selected = definitions(options);
   if (!options.advertiseOAuth) return selected;
   return selected.map(tool => ({ ...tool, securitySchemes: [{ type: 'oauth2' as const, scopes: [] }], _meta: { ...tool._meta, securitySchemes: [{ type: 'oauth2', scopes: [] }] } }));
 }
-export function getToolDefinition(name: string): Tool | undefined { return TOOL_DEFINITIONS.find(tool => tool.name === name) ?? RESULTS_APP_DEFINITIONS.find(tool => tool.name === name); }
+
+function hasTypedShape(schema: Schema): boolean {
+  return schema.type !== undefined
+    || Object.values((schema.properties ?? {}) as Record<string, Schema>).some(hasTypedShape)
+    || ['oneOf', 'anyOf'].some(keyword => Array.isArray(schema[keyword])
+      && (schema[keyword] as Schema[]).some(hasTypedShape));
+}
+
+function modelInputSchema(schema: Schema): Schema {
+  // Hosts may render required-only combinator branches as generic records and
+  // hide sibling typed fields, including native file parameters. Keep one
+  // property tree for discovery; the unprojected schema validates every call.
+  const result: Schema = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === 'oneOf' || key === 'anyOf') {
+      // Preserve alternatives that declare actual input shapes (cloud provider
+      // configuration and filter values), rather than required-only selectors.
+      if ((value as Schema[]).some(hasTypedShape)) result[key] = (value as Schema[]).map(modelInputSchema);
+      continue;
+    }
+    if (['allOf', 'not', 'if', 'then', 'else'].includes(key)) continue;
+    if (key === 'properties') {
+      result[key] = Object.fromEntries(Object.entries(value as Record<string, Schema>)
+        .map(([name, child]) => [name, modelInputSchema(child)]));
+    } else if (['items', 'additionalProperties'].includes(key) && value && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = modelInputSchema(value as Schema);
+    } else result[key] = value;
+  }
+  return result;
+}
+
+export function getToolDefinitions(options: ToolDefinitionOptions = {}): Tool[] {
+  return getValidationToolDefinitions(options).map(tool => ({ ...tool,
+    inputSchema: modelInputSchema(tool.inputSchema) as Tool['inputSchema'],
+  }));
+}
+export const TOOL_DEFINITIONS = getToolDefinitions();
+export function getToolDefinition(name: string): Tool | undefined { return TOOL_DEFINITIONS.find(tool => tool.name === name); }

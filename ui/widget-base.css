@@ -1,5 +1,0 @@
-:root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
-body { margin: 0; padding: 20px; color: var(--color-text-primary, CanvasText); background: var(--color-background-primary, Canvas); }
-button { border: 0; border-radius: 8px; padding: 10px 16px; font: inherit; font-weight: 600; background: #2563eb; color: white; cursor: pointer; }
-button:disabled { opacity: .55; cursor: wait; }
-[hidden] { display: none !important; }

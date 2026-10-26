@@ -19,8 +19,8 @@ describe('single six-tool facade', () => {
     expect(getToolRequiredScope('import_media',{import_id:'i'})).toBe('read');
     expect(getToolRequiredScope('import_media',{import_id:'i',retry:true})).toBe('write');
   });
-  it.each(['api-key','oauth'] as const)('passes one canonical response and private state unchanged for %s',async authenticationKind=>{
-    const backend=client(); const result=response(data,{analysis:{...data,results:{...data.results,revision:'private-r1'}}}); vi.mocked(backend.mcpTool).mockResolvedValue(result);
+  it.each(['api-key','oauth'] as const)('passes one canonical structured response unchanged for %s',async authenticationKind=>{
+    const backend=client(); const result=response(data); vi.mocked(backend.mcpTool).mockResolvedValue(result);
     const out=await executeTool('analyze',{instruction:'Describe',source:{video_ids:['video-1']},wait_seconds:0},backend,{authenticationKind});
     expect(out).toEqual(result);expect(out.structuredContent!.results).not.toHaveProperty('revision');
     expect(backend.mcpTool).toHaveBeenCalledExactlyOnceWith('analyze',expect.objectContaining({source:{video_ids:['video-1']},wait_seconds:0,idempotency_key:expect.any(String)}),expect.objectContaining({idempotencyKey:expect.any(String),deadline:expect.any(Number)}));
@@ -33,12 +33,12 @@ describe('single six-tool facade', () => {
   });
   it.each(['timeout_error','network_error'] as const)('returns the exact submission key on uncertain %s and never silently submits twice',async code=>{
     const backend=client();vi.mocked(backend.mcpTool).mockRejectedValue(new VideoVectorApiError('private',code,0));
-    const out=await executeTool('analyze',{instruction:'Describe',idempotency_key:'same'},backend);
+    const out=await executeTool('analyze',{instruction:'Describe',source:{video_ids:['video-1']},idempotency_key:'same'},backend);
     expect(parse(out).next_action).toEqual({type:'retry_same_submission',tool:'analyze',idempotency_key:'same',after_seconds:15});expect(backend.mcpTool).toHaveBeenCalledTimes(1);
   });
   it('retains accepted identity after observation timeout without another submission',async()=>{
     const backend=client();vi.mocked(backend.mcpTool).mockResolvedValueOnce(response()).mockRejectedValueOnce(new VideoVectorApiError('private','timeout_error',408));
-    const out=await executeTool('analyze',{instruction:'Describe'},backend);expect(parse(out)).toMatchObject({analysis_id:'analysis-1',next_action:{type:'continue_polling'}});expect(backend.mcpTool).toHaveBeenCalledTimes(2);
+    const out=await executeTool('analyze',{instruction:'Describe',source:{video_ids:['video-1']}},backend);expect(parse(out)).toMatchObject({analysis_id:'analysis-1',next_action:{type:'continue_polling'}});expect(backend.mcpTool).toHaveBeenCalledTimes(2);
   });
   it.each([
     ['get_analysis',{analysis_id:'a',detail:'full',cursor:'page-2'}],
@@ -71,8 +71,8 @@ describe('single six-tool facade', () => {
     expect(parse(out)).toMatchObject({analysis_id:'a',next_action:{type:'review_error'}});expect(backend.mcpTool).toHaveBeenCalledTimes(1);
   });
   it.each([
-    ['analyze',{instruction:'Describe'},'analysis_id','analysis-1','get_analysis'],
-    ['import_media',{},'import_id','import-1','import_media'],
+    ['analyze',{instruction:'Describe',source:{video_ids:['video-1']}},'analysis_id','analysis-1','get_analysis'],
+    ['import_media',{files:[{file_id:'file-1',download_url:'https://files.example/video'}]},'import_id','import-1','import_media'],
   ] as const)('preserves the same-task actionable observation receipt after %s admission',async(name,args,idField,id,readTool)=>{
     const backend=client();const accepted=response({[idField]:id,next_action:{type:'continue_polling'}});
     const unavailable={...response({[idField]:id,code:'observation_unavailable',message:'Read this same task.',next_action:{type:'continue_polling',tool:readTool,after_seconds:15}}),isError:true};
@@ -83,7 +83,7 @@ describe('single six-tool facade', () => {
   });
   it('rejects a different-task observation receipt after admission',async()=>{
     const backend=client();vi.mocked(backend.mcpTool).mockResolvedValueOnce(response()).mockResolvedValueOnce({...response({analysis_id:'different',code:'observation_unavailable',next_action:{type:'continue_polling'}}),isError:true});
-    expect(parse(await executeTool('analyze',{instruction:'Describe'},backend))).toMatchObject({analysis_id:'analysis-1',next_action:{type:'review_error'}});
+    expect(parse(await executeTool('analyze',{instruction:'Describe',source:{video_ids:['video-1']}},backend))).toMatchObject({analysis_id:'analysis-1',next_action:{type:'review_error'}});
     expect(backend.mcpTool).toHaveBeenCalledTimes(2);
   });
   it.each([
@@ -126,6 +126,6 @@ describe('single six-tool facade', () => {
     await vi.advanceTimersByTimeAsync(10000);expect(onProgress).toHaveBeenCalledWith('Waiting for an updated processing state. Durable work continues.',undefined,undefined);
     finish(response());await pending;const count=onProgress.mock.calls.length;await vi.advanceTimersByTimeAsync(30000);expect(onProgress).toHaveBeenCalledTimes(count);expect(backend.mcpTool).toHaveBeenCalledTimes(1);
   });
-  it('does not turn a progress delivery failure into a duplicate or failed submission',async()=>{const backend=client();const out=await executeTool('analyze',{instruction:'x',wait_seconds:0},backend,{onProgress:vi.fn().mockRejectedValue(new Error('host closed'))});expect(out.isError).not.toBe(true);expect(backend.mcpTool).toHaveBeenCalledTimes(1);});
+  it('does not turn a progress delivery failure into a duplicate or failed submission',async()=>{const backend=client();const out=await executeTool('analyze',{instruction:'x',source:{video_ids:['video-1']},wait_seconds:0},backend,{onProgress:vi.fn().mockRejectedValue(new Error('host closed'))});expect(out.isError).not.toBe(true);expect(backend.mcpTool).toHaveBeenCalledTimes(1);});
   it('validates every advertised example in each transport and authentication schema',()=>{const validator=new AjvJsonSchemaValidator();for(const includeLocalUpload of [true,false])for(const advertiseOAuth of [true,false])for(const tool of getToolDefinitions({includeLocalUpload,advertiseOAuth})){const validate=validator.getValidator(tool.inputSchema);for(const example of tool.inputSchema.examples as unknown[])expect(validate(example).valid,tool.name).toBe(true);}});
 });

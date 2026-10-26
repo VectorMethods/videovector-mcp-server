@@ -7,7 +7,7 @@ import type { VideoVectorClient } from '../client/index.js';
 import type { McpToolResponse, WorkflowUploadGrant } from '../types/index.js';
 import { VideoVectorApiError } from '../types/index.js';
 import { formatError, ToolInputError } from '../utils/helpers.js';
-import { getToolDefinitions, TOOL_NAMES, type ToolName } from './definitions.js';
+import { getValidationToolDefinitions, TOOL_NAMES, type ToolName } from './definitions.js';
 import { uploadAttachmentBatch } from '../attachments/upload-batch.js';
 
 export interface WorkflowToolContext {
@@ -95,13 +95,21 @@ export async function authorizeUploadFile(
 
 
 const validator = new AjvJsonSchemaValidator();
-const catalogs = new Map<string, ReturnType<typeof getToolDefinitions>>();
+const catalogs = new Map<string, ReturnType<typeof getValidationToolDefinitions>>();
 function validateArguments(name: string, args: Record<string, unknown>, context: WorkflowToolContext): void {
+  if ((name === 'analyze' || (name === 'import_media' && args.import_id === undefined))
+      && args.files === undefined && args.source === undefined) {
+    throw new ToolInputError('Provide native host attachments in files'
+      + (name === 'analyze' ? ', or select existing media with source. ' : ' to start an import. ')
+      + 'Native descriptors contain file_id and a temporary authorized HTTPS download_url; videos do not need public publishing. '
+      + (context.transportMode === 'stdio' ? 'For local files, use source.file_paths within configured upload roots.'
+        : 'Hosted tools cannot read local or sandbox paths. Ask the user to attach files through a host that forwards them.'));
+  }
   const local = context.transportMode === 'stdio';
   const oauth = context.authenticationKind === 'oauth';
   const variant = `${local}:${oauth}`;
   let catalog = catalogs.get(variant);
-  if (!catalog) { catalog = getToolDefinitions({ includeLocalUpload: local, advertiseOAuth: oauth }); catalogs.set(variant, catalog); }
+  if (!catalog) { catalog = getValidationToolDefinitions({ includeLocalUpload: local, advertiseOAuth: oauth }); catalogs.set(variant, catalog); }
   const tool = catalog.find(item => item.name === name);
   if (!tool) throw new ToolInputError(`Unknown tool: ${name}`);
   const checked = validator.getValidator(tool.inputSchema)(args);
@@ -175,7 +183,7 @@ async function intake(name: 'analyze' | 'import_media', args: Record<string, unk
   const authorized = await Promise.all((paths ?? []).map(path => authorizeUploadFile(path, context.uploadRoots ?? [])));
   const idempotencyKey = args.idempotency_key as string | undefined ?? `${name}:${randomUUID()}`;
   const request: Record<string, unknown> = { ...args, idempotency_key: idempotencyKey, wait_seconds: 0 };
-  if (paths) delete request.source; // Omitted source creates the durable picker intake.
+  if (paths) delete request.source; // Authorized local uploads use the internal source-less grant admission.
   const waitSeconds = args.wait_seconds as number | undefined ?? 30;
   await notifyProgress(context, 'Receiving media', 0);
   let result: McpToolResponse;
@@ -227,7 +235,7 @@ async function intake(name: 'analyze' | 'import_media', args: Record<string, unk
     result = updateResult(result, {
       message: uploaded
         ? `Work was accepted. ${typeof message === 'string' ? message : 'This observation ended before a newer status was available.'} Read the same ${idField}; do not restart work.`
-        : `Work was accepted but local upload is incomplete. Retry identical arguments using the same idempotency_key or finish the picker.`,
+        : `Work was accepted but local upload is incomplete. Retry identical arguments using the same idempotency_key.`,
       next_action: !uploaded ? { type: 'retry_same_submission', tool: name, idempotency_key: idempotencyKey, after_seconds: 15 }
         : attention ? { type: 'review_error' } : { type: 'continue_polling', after_seconds: 15 },
     });

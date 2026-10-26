@@ -25,6 +25,27 @@ describe('shared attachment intake', () => {
       expect((local.inputSchema.properties?.source as any).properties.file_paths.maxItems).toBe(8);
     }
   });
+  it.each(['analyze', 'import_media'])('rejects missing media before hosted %s creates a job', async name => {
+    for (const authenticationKind of ['oauth', 'api-key'] as const) {
+      const client = new VideoVectorClient({ apiKey: 'test', baseUrl });
+      const submit = vi.spyOn(client, 'mcpTool');
+      const out = await executeTool(name, name === 'analyze' ? { instruction: 'Describe' } : { title: 'Attached video' }, client, { transportMode: 'http', authenticationKind });
+      expect(out.isError).toBe(true);
+      const error = JSON.parse(out.content[0].text);
+      expect(error.next_action.type).toBe('correct_arguments');
+      expect(error.message).toContain('temporary authorized HTTPS');
+      expect(error.message).toContain('do not need public publishing');
+      expect(submit).not.toHaveBeenCalled();
+    }
+  });
+  it.each(['sandbox:/mnt/data/video.mp4', 'file:///tmp/video.mp4', 'http://files.example/video.mp4'])('rejects non-HTTPS native descriptor %s before admission', async download_url => {
+    const client = new VideoVectorClient({ apiKey: 'test', baseUrl });
+    const submit = vi.spyOn(client, 'mcpTool');
+    const out = await executeTool('analyze', { instruction: 'Describe', files: [{ file_id: 'host-file', download_url }] }, client, { transportMode: 'http', authenticationKind: 'oauth' });
+    expect(out.isError).toBe(true);
+    expect(JSON.parse(out.content[0].text).next_action.type).toBe('correct_arguments');
+    expect(submit).not.toHaveBeenCalled();
+  });
   it.each(['analyze','import_media'])('rejects a ninth file before %s admission',async name=>{
     const client=new VideoVectorClient({apiKey:'test',baseUrl});const submit=vi.spyOn(client,'mcpTool');
     const files=Array.from({length:9},(_,i)=>({file_id:String(i),download_url:`https://files.example/${i}`}));
@@ -32,8 +53,7 @@ describe('shared attachment intake', () => {
   });
   it.each([
     {title:'Fallback title',files:[{file_id:'a',download_url:'https://files.example/a'},{file_id:'b',download_url:'https://files.example/b'}]},
-    {title:'Fallback title'},
-  ])('retains title for attachment batches and picker imports',async args=>{
+  ])('retains title for native attachment batches',async args=>{
     const client=new VideoVectorClient({apiKey:'test',baseUrl});
     const submit=vi.spyOn(client,'mcpTool').mockResolvedValue(response({import_id:'job_1',status:'awaiting_upload',next_action:{type:'request_input'}},{upload:grant}));
     const out=await executeTool('import_media',args,client,{transportMode:'http',authenticationKind:'oauth'});
@@ -62,7 +82,7 @@ describe('shared attachment intake', () => {
   });
   it('forwards host descriptors unchanged while keeping upload capabilities private',async()=>{
     const client=new VideoVectorClient({apiKey:'test',baseUrl});const submit=vi.spyOn(client,'mcpTool').mockResolvedValue(response({...analysis,status:'awaiting_upload',next_action:{type:'request_input'}},{upload:grant}));
-    const files=[{file_id:'host-1',download_url:'https://host.example/file?cap=private',file_name:'clip.mp4'}];const out=await executeTool('analyze',{instruction:'Describe',files,idempotency_key:'same'},client,{transportMode:'http',authenticationKind:'oauth'});
+    const files=[{file_id:'host-1',download_url:'https://host.example/file?cap=private',file_name:'clip.mp4',mime_type:'video/mp4'}];const out=await executeTool('analyze',{instruction:'Describe',files,idempotency_key:'same'},client,{transportMode:'http',authenticationKind:'oauth'});
     expect(submit).toHaveBeenCalledWith('analyze',expect.objectContaining({files}),expect.any(Object));expect(out._meta?.upload).toEqual(grant);expect(JSON.stringify(out.content)+JSON.stringify(out.structuredContent)).not.toContain(grant.token);
   });
   it('rejects local paths outside authorized roots before creating work',async()=>{

@@ -1,6 +1,6 @@
 # MCP tool contract
 
-One catalog is used everywhere: `analyze`, `get_analysis`, `search`, `import_media`, `save_prompt`, and `browse`. There is no profile setting, retired-name dispatcher, export tool, or cancellation tool. Native REST and SDK contracts remain independent. The generated JSON Schema is authoritative: [tool-contract.json](../artifacts/tool-contract.json). Every tool schema includes conditional validation and examples.
+One catalog is used everywhere: `analyze`, `get_analysis`, `search`, `import_media`, `save_prompt`, and `browse`. There is no profile setting, retired-name dispatcher, export tool, or cancellation tool. Native REST and SDK contracts remain independent. The generated JSON Schema is authoritative: [tool-contract.json](../artifacts/tool-contract.json). Published tool schemas expose straightforward typed properties and examples. Canonical server validation enforces conditional and mutually exclusive input rules before execution.
 
 ## Inputs
 
@@ -9,7 +9,7 @@ One catalog is used everywhere: `analyze`, `get_analysis`, `search`, `import_med
 ```text
 analyze
   instruction XOR prompt_id
-  files? XOR source?                    omit both for the upload picker
+  files XOR source                     required for new media
   source: choose one
     video_ids | index_id | index_name | playground:true | import_id
     file_paths                         local stdio only
@@ -37,7 +37,7 @@ search
   OR search_id + page_size?/cursor?/detail?  read a saved snapshot; no new query/scope
 
 import_media
-  files? XOR source?                    omit both for the upload picker
+  files XOR source                     required for new media
   source: file_paths OR connector_id OR connector
     prefix?, pattern?, recursive?       cloud sources only
   destination?: index_id XOR index_name
@@ -77,7 +77,7 @@ Examples:
 {"resource":"analyses","index_name":"Research","status":"completed"}
 ```
 
-For attachments, local paths, and picker uploads, `import_media.title` is an optional display title applied to each file lacking its own title. It does not limit the batch to one file. Cloud imports do not accept this option.
+For attachments and local paths, `import_media.title` is an optional display title applied to each file lacking its own title. It does not limit the batch to one file. Cloud imports do not accept this option.
 
 For direct cloud intake, `connector` is `{provider,name?,config}`. Config is exactly GCS `{bucket,gcp_project_id,credentials_json}` (credentials JSON object), S3 `{bucket,region,aws_access_key_id,aws_secret_access_key}`, or Azure `{storage_account,container,tenant_id,client_id,client_secret}`. Secrets are write-only inputs and never response content. OAuth schemas omit all cloud source and webhook options; these options are also rejected at execution. The six tool names remain identical.
 
@@ -98,7 +98,7 @@ Analysis admission is bounded separately from file transfer. Local streaming use
 
 Every error has a typed `next_action`: `request_input` for authentication/account action, `correct_arguments` for invalid requests, or `review_error` when automatic retry is unsafe. An uncertain submission returns `retry_same_submission` with the same idempotency key; repeat identical arguments with that key. Never replace it with new work. Once an ID is known, observation failures retain that ID. A network or timeout interruption may return `continue_polling`; repeat the same read with its original IDs and cursors within the host execution budget, without creating a new submission. Raw upload grants remain in private `_meta.upload`; model results contain only safe progress and stable identifiers.
 
-## Downloads, search, and the Studio
+## Downloads and search
 
 `results.download_url` is an included, one-hour, narrowly scoped result capability. It pins the current accepted per-video bundles, requires no OAuth header, and does not create a billed export. Analysis includes up to six direct clips in `results.segment_downloads`; every available segment in the full JSON includes `download_url` and `download_expires_at`. Generic clients follow the first-party redirect without forwarding MCP credentials. Renew analysis grants with `get_analysis`; renew search grants by reading the same `search_id`. Treat capability URLs as credentials and keep them out of public logs.
 
@@ -106,4 +106,4 @@ Save complete JSON when the host supports files, record its absolute path and st
 
 Search combines text, images, and metadata. Filters apply before ranking; every new search requires an explicit scope. Library/video/Playground scopes use each video's latest complete analysis; `scope.analysis_ids` selects history. `max_results` caps ranked matches; `page_size` caps this response. Filter-only snapshots include all matches within the 10,000-row/64-MiB bound, failing with narrow-scope guidance above it. Saved snapshots last 24 hours. Continue with search_id and an optional cursor without a new query charge; a cursor alone is not accepted. Missing saved vectors are reported explicitly; metadata and JSON retrieval do not require vectors.
 
-Analysis, import, and search share the Studio card. Six app-only helpers support upload, native observation, paging, playback, and downloads. A visible Studio owns one host-mediated native watch at a time, waiting up to 25 seconds with an opaque after-version. It pauses while hidden, closes at canonical enrichment settlement, and exposes explicit reconnect after transport failure. Metadata reads are limited to the selected video when its revision changes; existing playback remains mounted. Pending originals remain in the rail while search resolves completed executions independently. No OAuth credentials enter the iframe. Private protocol revision fields are not model-facing controls. Host support for native files, persistent files, and UI rendering varies. Standard MCP Apps hosts work without window.openai; optional ChatGPT widget-state persistence is used only where available. No fixed call-count or background-wake guarantee is made.
+All MCP interaction is conversational. No embedded UI resources or app-only tools are published. Host-generated native attachment descriptors and authorized stdio paths are the supported upload inputs. Never put local or sandbox paths in download_url. Missing media inputs are rejected before task admission; a host attachment handoff problem must not be turned into an empty upload session.

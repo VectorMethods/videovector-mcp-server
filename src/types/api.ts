@@ -166,25 +166,7 @@ export interface WorkflowProcessRequest extends Partial<PromptExecutionConfig> {
   index_name?: string;
 }
 
-export interface WorkflowRunResultsRequest {
-  result_level?: WorkflowResultLevel;
-  video_id?: string;
-  view?: 'both' | 'filtered' | 'unfiltered';
-  limit?: number;
-  filtered_cursor?: string;
-  unfiltered_cursor?: string;
-}
 
-export interface WorkflowRunResultsResponse {
-  destination?: { type: 'playground' | 'index'; index_id?: string };
-  run_id: string;
-  status: PromptRunStatus;
-  result_level: WorkflowResultLevel;
-  selection_filter: PromptSelectionFilter | null;
-  selection_summary: PromptRunSelectionSummary;
-  filtered: PaginatedResponse<Record<string, unknown>> | null;
-  unfiltered: PaginatedResponse<Record<string, unknown>> | null;
-}
 
 export interface WorkflowProcessResponse {
   run_id: string;
@@ -202,46 +184,8 @@ export interface WorkflowFilterCondition {
   value?: unknown;
 }
 
-export interface WorkflowSearchRequest {
-  image_data?: string;
-  text_weight?: number;
-  image_weight?: number;
-  result_limit?: number;
-  analysis_id?: string;
-  prompt_run_id?: string;
-  latest_only?: boolean;
-  container_index_id?: string;
-  artifact_delivery?: 'automatic' | 'none';
-  query?: string;
-  filters?: WorkflowFilterCondition[];
-  result_level?: WorkflowResultLevel;
-  video_ids?: string[];
-  prompt_run_ids?: string[];
-  index_id?: string;
-  index_name?: string;
-  limit?: number;
-}
 
-export interface WorkflowSearchScopeRequest {
-  latest_only?: boolean;
-  container_index_id?: string;
-  video_ids?: string[];
-  prompt_run_ids?: string[];
-  index_id?: string;
-  index_name?: string;
-  result_level?: WorkflowResultLevel;
-}
 
-export interface WorkflowSearchScopeResponse {
-  scope: Record<string, unknown>;
-  coverage: Record<string, unknown>;
-  warnings: string[];
-  runs: Array<{ run_id: string; prompt_id: string; prompt_name: string; executed_at: string; status: string; video_ids: string[] }>;
-  browse_targets: Array<{ run_id: string; video_id: string }>;
-  fields: Array<{ name: string; type: string; itemType?: string; description?: string; run_ids: string[] }>;
-  conflicting_fields: string[];
-  missing_schema_run_ids: string[];
-}
 
 export interface WorkflowSearchPagination {
   limit: number;
@@ -271,29 +215,8 @@ export interface WorkflowDeliveryResponse {
   artifacts: Array<Record<string, unknown>>;
 }
 
-export interface WorkflowMediaGrant {
-  url: string;
-  expires_at: string;
-  mime_type: string;
-  start_time?: number;
-  end_time?: number;
-  filename?: string | null;
-}
 
-export type PreviewGrantIdentity =
-  | { kind: 'video'; video_id: string }
-  | { kind: 'segment'; video_id: string; segment_id: string };
 
-export interface PreviewGrantItem {
-  kind: 'video' | 'segment';
-  video_id: string;
-  segment_id?: string | null;
-  thumbnail_uri?: string | null;
-  thumbnail_available?: boolean;
-  gif_uri?: string | null;
-  gif_available?: boolean;
-  grant_expires_at?: string | null;
-}
 
 // ============================================================================
 // Index Types
@@ -778,50 +701,6 @@ export interface SegmentRunResult {
   metadata_markers: Record<string, MarkerInfo>;
 }
 
-export interface PromptRunVideoResult {
-  result_type: 'video';
-  result_id: string;
-  run_id: string;
-  prompt_id: string;
-  prompt_run_id: string;
-  video_id: string;
-  video_name?: string | null;
-  source_index_id?: string | null;
-  executed_at: string;
-  status: string;
-  metadata: Record<string, unknown>;
-  metadata_text: string;
-  raw_llm_response: string | null;
-  processing_warning: string | null;
-  schema_used: string | null;
-  successful_segment_count: number;
-  failed_segment_count: number;
-  source_fingerprint: string | null;
-  attempt_id: string | null;
-  error_message: string | null;
-  started_at: string | null;
-  completed_at: string | null;
-  segment_uri?: string | null;
-  gcs_uri?: string | null;
-  playback_source_uri?: string | null;
-  playback_start_time?: number | null;
-  playback_end_time?: number | null;
-  thumbnail_gcs_uri?: string | null;
-  gif_gcs_uri?: string | null;
-  thumbnail_uri?: string | null;
-  gif_uri?: string | null;
-  thumbnail_available?: boolean;
-  gif_available?: boolean;
-  preview_segment_id?: string | null;
-  preview_start_time?: number | null;
-  preview_end_time?: number | null;
-  preview_segment_uri?: string | null;
-  preview_thumbnail_uri?: string | null;
-  preview_gif_uri?: string | null;
-  marker?: MarkerInfo | null;
-  embedding_status?: string | null;
-  embedding_error?: string | null;
-}
 
 export interface PromptRunFailureOperationCounts {
   field_extraction: number;
@@ -1105,15 +984,6 @@ export interface ExportJob {
   destination_uri: string | null;
   gcs_uri: string | null;
   export_params: Record<string, unknown> | null;
-}
-
-export interface ExportDownloadUrlResponse {
-  export_id: string;
-  status: ExportStatus;
-  destination_type: ExportDestinationType;
-  destination_connector_id: string | null;
-  /** Short-lived bounded bearer URL, or null when direct download is unavailable. */
-  download_url: string | null;
 }
 
 // ============================================================================

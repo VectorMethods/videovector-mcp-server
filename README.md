@@ -52,6 +52,10 @@ use a scoped API key.
 See [hosted OAuth setup and troubleshooting](docs/hosted-oauth.md) for discovery,
 custom clients, token refresh, and the available tool surface.
 
+## Native attachments and local files
+
+ChatGPT attachments use the top-level `files` input with host-provided file IDs and temporary authorized download URLs. They do not need public hosting or a second upload through a widget. Local stdio clients use `source.file_paths` within the allowed upload roots. All interaction is conversational: there is no embedded Studio, picker, or app-only tool catalog.
+
 ## Install for local stdio
 
 Use `npx` from your MCP client:
@@ -81,8 +85,7 @@ Environment variables:
 | `VIDEOVECTOR_TIMEOUT` | No | `90000` | Request timeout in milliseconds. |
 | `VIDEOVECTOR_MAX_RETRIES` | No | `3` | Retry count for retryable API failures. |
 | `VIDEOVECTOR_UPLOAD_ROOTS` | No | current directory | Comma-separated directories from which local stdio `analyze` or `import_media` may read. |
-| `MCP_UPLOAD_API_BASE_URL` | No | API base URL | Public upload API base including `/api/v2`; must match the backend upload URL configuration and picker CSP. |
-| `MCP_APP_BASE_URL` | No | `https://app.vectormethods.com` | HTTPS app origin for authenticated playback, JSON, and export links. |
+| `MCP_UPLOAD_API_BASE_URL` | No | API base URL | Public upload API base including `/api/v2`; must match the backend upload URL configuration. |
 | `MCP_TRANSPORT_MODE` | No | `stdio` | `stdio` or `http`. |
 
 ## Client Examples
@@ -212,7 +215,7 @@ Local attachments upload directly to storage in resumable chunks of at most 8 Mi
 
 Accepted analysis parts appear incrementally in metadata and included one-hour JSON download grants. Main extraction, media assets, and image search have independent readiness. The response and JSON also contain direct segment downloads. Fetch these capabilities without OAuth headers; refresh through the same result tool without rerunning or creating an export. Save JSON where the host supports files and retain its path for context recovery. Hosts without filesystem tools can use bounded full-detail pages.
 
-Every new search requires an explicit scope. Search filters candidates before ranking; library/video/Playground scopes use latest complete results per video. `scope.analysis_ids` selects history. Use `search_id` with an optional cursor to resume the same saved snapshot without rerunning. The shared Studio supports native upload, live processing state, playback, and JSON inspection through private app-only helpers. Native REST APIs remain available independently.
+Every new search requires an explicit scope. Search filters candidates before ranking; library/video/Playground scopes use latest complete results per video. `scope.analysis_ids` selects history. Use `search_id` with an optional cursor to resume the same saved snapshot without rerunning. Native REST APIs remain available independently.
 
 ## Development
 
@@ -249,24 +252,9 @@ See [SECURITY.md](SECURITY.md) for supported versions, disclosure instructions, 
 
 Read `import_media` with the original `import_id` for safe per-file errors and progress. All supported hosts can retry failed intake with `retry:true` and an explicit idempotency key. If host attachment URLs expired, supply fresh native `files` descriptors with the original file IDs. Only failed, unstaged files can be replaced; source, destination, title, and webhook settings remain unchanged. For failed analysis intake, pass its `analysis_id` as `import_id`; the response directs subsequent reads back to `get_analysis` without creating another execution. Never invent attachment descriptors or restart successful work because a read timed out.
 
-## Studio observation and host lifecycle
+## Conversational progress
 
-ChatGPT and standard MCP Apps hosts, including Claude, use the same host-mediated
-private tool calls. A visible Studio owns one bounded native-watch request at a
-time (up to 25 seconds), passing the last opaque version to the next request.
-It reads metadata only for the selected video when its accepted metadata revision
-changes. Native video progress keeps pending originals in the rail; search still
-uses its canonical completed execution scope. New metadata does not reload the
-player or replace its source grant.
-
-Observation pauses when the view is hidden, stops on teardown or canonical
-extraction/enrichment settlement, and exposes a reconnect action on transport
-failure. The iframe receives no OAuth credentials. The host controls whether an
-app remains mounted or visible; this view cannot guarantee updates while the host
-suspends it. Optional ChatGPT widget-state persistence restores selection/search
-state where available. Standard MCP Apps hosts work without that extension and
-retain state for the mounted view. Text-only hosts use `get_analysis` and its
-bounded observation contract instead of the private app observer.
+All hosts use `get_analysis` with the same analysis_id. Each observation is bounded to 30 seconds; follow the typed next_action without starting duplicate analysis. Show accepted part metadata immediately, and report media/image readiness separately. There is no iframe, private polling loop, or embedded result player. Download links remain part of the tool response.
 
 ## One original and internal analysis parts
 
