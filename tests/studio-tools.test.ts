@@ -43,7 +43,7 @@ describe('Studio consumer tools', () => {
     expect(client.getPlaygroundVideos).toHaveBeenLastCalledWith({ limit: 100, cursor: 'next' });
   });
 
-  it('resolves each library page to processed videos with latest completed scope', async () => {
+  it('keeps all library media while independently resolving completed search targets', async () => {
     const client = {
       workflowSearchScope: vi.fn().mockResolvedValue({ runs: [], browse_targets: [{ video_id: 'v1', run_id: 'r1' }], fields: [] }),
       getPlaygroundVideos: vi.fn().mockResolvedValueOnce({ data: [{ video_id: 'v1' }, { video_id: 'v2' }], pagination: { has_more: false, next_cursor: null } })
@@ -67,26 +67,44 @@ describe('Studio consumer tools', () => {
   });
 
   it('keeps index library reads and selected-video scope inside the same index', async () => {
-    const client = { getVideosInIndex: vi.fn().mockResolvedValue({ data: [{ video_id: 'done', title: 'Done' }, { video_id: 'pending', title: 'Pending' }], pagination: {} }),
+    const processing = [{ run_id: 'active', status: 'processing', total_parts: 2, completed_parts: 1, failed_parts: 0,
+      activity: { phase: 'extracting' }, readiness: { metadata_available: true, assets_ready: false } }];
+    const client = { getVideosInIndex: vi.fn().mockResolvedValue({ data: [{ video_id: 'done', title: 'Done' }, { video_id: 'pending', title: 'Pending', processing_status: processing }], pagination: {} }),
       getPlaygroundVideos: vi.fn(), workflowSearchScope: vi.fn().mockResolvedValue({ runs: [], browse_targets: [{ run_id: 'latest', video_id: 'done' }], fields: [] }),
     } as unknown as VideoVectorClient;
     const result = await executeTool('list_studio_scope', { index_id: 'index-a' }, client);
     expect(client.getVideosInIndex).toHaveBeenCalledWith('index-a', 100, undefined);
     expect(client.getPlaygroundVideos).not.toHaveBeenCalled();
     expect(client.workflowSearchScope).toHaveBeenCalledWith({ video_ids: ['done', 'pending'], latest_only: true, container_index_id: 'index-a' });
-    expect(result._meta).toMatchObject({ catalog: { container: { type: 'index', index_id: 'index-a' }, videos: [{ video_id: 'done' }] } });
-    expect((result._meta?.catalog as any).videos).toHaveLength(1);
+    expect(result._meta).toMatchObject({ catalog: { container: { type: 'index', index_id: 'index-a' }, videos: [{ video_id: 'done' }, { video_id: 'pending' }] } });
+    expect((result._meta?.catalog as any).videos).toHaveLength(2);
+    expect((result._meta?.catalog as any).videos[1].processing_status).toEqual(processing);
   });
 
   it('refreshes progress privately without minting grants, renewing one only on download intent', async () => {
     const client = { getAnalysis: vi.fn().mockResolvedValue({ analysis_id: 'a1', stage: 'processing', results: { revision: 'r1', included_videos: 1 } }) } as unknown as VideoVectorClient;
     const result = await executeTool('read_analysis', { analysis_id: 'a1' }, client);
-    expect(client.getAnalysis).toHaveBeenCalledWith('a1', { detail: 'summary', include_download: false });
+    expect(client.getAnalysis).toHaveBeenCalledWith('a1', { detail: 'summary', include_download: false }, undefined, undefined);
     expect(result.structuredContent).toBeUndefined(); expect(JSON.stringify(result.content)).not.toContain('r1');
     await executeTool('read_analysis', { analysis_id: 'a1', video_id: 'v1', intent: 'download' }, client);
-    expect(client.getAnalysis).toHaveBeenLastCalledWith('a1', { detail: 'summary', include_download: true, video_id: 'v1' });
+    expect(client.getAnalysis).toHaveBeenLastCalledWith('a1', { detail: 'summary', include_download: true, video_id: 'v1' }, undefined, undefined);
   });
 
+
+  it('passes native observation through the original cancellation and deadline without metadata reads', async () => {
+    const progress = { analysis_id: 'a1', run_id: 'a1', import_id: null, version: 'v2', idle: false, scope: { type: 'videos', video_ids: ['v1'] }, records: [] };
+    const client = { observeAnalysis: vi.fn().mockResolvedValue(progress), getAnalysis: vi.fn() } as unknown as VideoVectorClient;
+    const controller = new AbortController();
+    const result = await executeTool('read_analysis', { analysis_id: 'a1', observe: true, after_version: 'v1', wait_seconds: 25 }, client, { signal: controller.signal, deadline: 123 });
+    expect(client.observeAnalysis).toHaveBeenCalledExactlyOnceWith('a1', { after_version: 'v1', wait_seconds: 25 }, controller.signal, 123);
+    expect(result._meta?.progress).toEqual(progress);
+    expect(result.structuredContent).toBeUndefined();
+    expect(client.getAnalysis).not.toHaveBeenCalled();
+    for (const args of [ { analysis_id: 'a1', observe: true, detail: 'full' }, { analysis_id: 'a1', after_version: 'v1' }, { analysis_id: 'a1', observe: true, wait_seconds: 26 } ]) {
+      expect((await executeTool('read_analysis', args, client)).isError).toBe(true);
+    }
+    expect(client.observeAnalysis).toHaveBeenCalledTimes(1);
+  });
   it('submits combined search with the selected index constraint through the existing view adapter', async () => {
     const client = { workflowSearchMedia: vi.fn().mockResolvedValue({ snapshot_id: 'snap', data: [], pagination: {} }) } as unknown as VideoVectorClient;
     const result = await executeTool('view_workflow_results', { action: 'search', container_index_id: 'idx', video_ids: ['v1'], query: 'blue car', filters: [{ field: 'colour', operator: 'equals', value: 'blue' }], idempotency_key: 'retry-key' }, client);

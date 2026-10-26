@@ -7,6 +7,7 @@ import { VideoVectorClient } from '../src/client/index.js';
 import { executeTool } from '../src/tools/index.js';
 
 const baseUrl = 'https://example.com/api/v2';
+const storageUrl = 'https://storage.googleapis.com/upload/private-session';
 const grant = {
   url: `${baseUrl}/workflow/attachments/analysis-1/files`,
   complete_url: `${baseUrl}/workflow/attachments/analysis-1/complete`,
@@ -67,7 +68,9 @@ describe('stdio analysis upload budgets', () => {
     let receivedBytes = 0;
     const fetch = vi.fn(async (url: string, init: RequestInit) => {
       if (url === `${baseUrl}/workflow/mcp/analyze`) return json(response(admitted));
-      if (url === grant.url) {
+      if (url === grant.url) return json({ job: { job_id: 'analysis-1' }, upload: { transport: 'resumable', url: storageUrl, offset: 0, total_bytes: bytes.length, chunk_size: 8 * 1024 * 1024 } });
+      if (url === `${grant.url}/complete`) return json({ job_id: 'analysis-1', status: 'awaiting_upload' });
+      if (url === storageUrl) {
         uploadSignal = init.signal!;
         const slowTransfer = delay(45000, uploadSignal);
         uploadStarted.resolve();
@@ -97,10 +100,10 @@ describe('stdio analysis upload budgets', () => {
       await uploadStarted.promise;
       await vi.advanceTimersByTimeAsync(31000);
       expect(uploadSignal.aborted).toBe(false);
-      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenCalledTimes(3);
       await vi.advanceTimersByTimeAsync(14000);
-      await completionStarted.promise;
-      expect(receivedBytes).toBeGreaterThan(bytes.length);
+      await Promise.race([completionStarted.promise, pending.then(result => { throw new Error(JSON.stringify(result)); })]);
+      expect(receivedBytes).toBe(bytes.length);
       await vi.advanceTimersByTimeAsync(20000);
       await observationStarted.promise;
       expect(read).toHaveBeenLastCalledWith('get_analysis', {analysis_id:'analysis-1',wait_seconds:30},{signal:undefined,deadline:startedAt+95000});
@@ -108,7 +111,7 @@ describe('stdio analysis upload budgets', () => {
       const result = await pending;
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toMatchObject({ analysis_id: 'analysis-1', status: 'completed' });
-      expect(fetch).toHaveBeenCalledTimes(4);
+      expect(fetch).toHaveBeenCalledTimes(6);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -125,7 +128,8 @@ describe('stdio analysis upload budgets', () => {
     let uploadSignal!: AbortSignal;
     const fetch = vi.fn(async (url: string, init: RequestInit) => {
       if (url === `${baseUrl}/workflow/mcp/analyze`) return json(response(admitted));
-      expect(url).toBe(grant.url);
+      if (url === grant.url) return json({ job: { job_id: 'analysis-1' }, upload: { transport: 'resumable', url: storageUrl, offset: 0, total_bytes: 5, chunk_size: 8 * 1024 * 1024 } });
+      expect(url).toBe(storageUrl);
       uploadSignal = init.signal!;
       const unfinishedTransfer = delay(90000, uploadSignal);
       uploadStarted.resolve();
@@ -150,7 +154,7 @@ describe('stdio analysis upload budgets', () => {
       expect(result.structuredContent).toMatchObject({
         analysis_id: 'analysis-1', next_action: { type: 'retry_same_submission', idempotency_key: 'same-upload' },
       });
-      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenCalledTimes(3);
       expect(complete).not.toHaveBeenCalled();
       expect(read.mock.calls.map(c=>c[0])).toEqual(['analyze']);
     } finally {

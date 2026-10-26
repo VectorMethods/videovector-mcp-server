@@ -22,13 +22,40 @@ const analysis = {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('Studio private progress over raw MCP HTTP', () => {
-  it('reads import progress through the dedicated no-grant GET adapter', async () => {
+  it('observes canonical compact records through host authentication without publishing credentials or metadata', async () => {
+    const progress = { analysis_id: 'a1', import_id: null, run_id: 'a1', version: 'native-2', idle: false,
+      scope: { type: 'videos', video_ids: ['v1'] }, records: [{ kind: 'video', id: 'v1', version: 'native-2', state: {
+        video_id: 'v1', processing_status: [{ run_id: 'a1', total_parts: 2, completed_parts: 1, failed_parts: 0,
+          activity: { phase: 'extracting' }, result_revisions: { metadata: 'accepted-1' }, readiness: { metadata_available: true, assets_available: false } }],
+      } }] };
+    const upstream: URL[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith('/progress')) return new Response(null, { status: 204 });
+      upstream.push(url);
+      expect(init?.method).toBe('GET');
+      return Response.json(progress);
+    }));
+    const { app } = createHttpApp(config);
+    const result = await request(app as any).post('/mcp').set('X-API-Key', apiKey).set('Accept', 'application/json, text/event-stream')
+      .send({ jsonrpc: '2.0', id: 'native-read', method: 'tools/call', params: { name: 'read_analysis', arguments: {
+        analysis_id: 'a1', observe: true, after_version: 'native-1', wait_seconds: 25,
+      } } });
+    expect(result.body.result._meta.progress).toEqual(progress);
+    expect(result.body.result.structuredContent).toBeUndefined();
+    expect(JSON.stringify(result.body)).not.toContain(apiKey);
+    expect(upstream).toHaveLength(1);
+    expect(upstream[0].pathname).toBe('/api/v2/workflow/analyses/a1/progress');
+    expect(upstream[0].searchParams.get('after_version')).toBe('native-1');
+    expect(upstream[0].searchParams.get('wait_seconds')).toBe('25');
+  });
+  it('observes import progress through the same native no-grant adapter', async () => {
     const upstream: URL[] = [];
     const imported = { import_id: 'imp-fixture', status: 'importing', stage: 'importing', scope: { type: 'index', index_id: 'index-fixture' },
       progress: { imported: 1, parts_completed: 1 }, results: { final: false }, files: { items: [{ file_name: 'Fixture.mp4', status: 'importing' }] } };
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      if (url.pathname.includes('/workflow/mcp/imports/')) {
+      if (url.pathname === '/api/v2/workflow/analyses/imp-fixture/progress') {
         upstream.push(url);
         expect(init?.method).toBe('GET');
         return Response.json(imported);
@@ -37,10 +64,14 @@ describe('Studio private progress over raw MCP HTTP', () => {
     }));
     const { app } = createHttpApp(config);
     const result = await request(app as any).post('/mcp').set('X-API-Key', apiKey).set('Accept', 'application/json, text/event-stream')
-      .send({ jsonrpc: '2.0', id: 'import-read', method: 'tools/call', params: { name: 'read_analysis', arguments: { import_id: 'imp-fixture' } } });
-    expect(result.body.result).toEqual({ content: [{ type: 'text', text: 'Import updated in Studio.' }], _meta: { import: imported } });
-    expect(upstream.map(url => url.pathname)).toEqual(['/api/v2/workflow/mcp/imports/imp-fixture']);
-    expect(upstream[0].search).toBe('');
+      .send({ jsonrpc: '2.0', id: 'import-read', method: 'tools/call', params: { name: 'read_analysis', arguments: { import_id: 'imp-fixture', observe: true, wait_seconds: 0 } } });
+    expect(result.body.result).toEqual({ content: [{ type: 'text', text: 'Processing state updated in Studio.' }], _meta: { progress: imported } });
+    expect(upstream.map(url => url.pathname)).toEqual(['/api/v2/workflow/analyses/imp-fixture/progress']);
+    expect(upstream[0].searchParams.get('wait_seconds')).toBe('0');
+    const obsolete = await request(app as any).post('/mcp').set('X-API-Key', apiKey).set('Accept', 'application/json, text/event-stream')
+      .send({ jsonrpc: '2.0', id: 'obsolete-import-read', method: 'tools/call', params: { name: 'read_analysis', arguments: { import_id: 'imp-fixture' } } });
+    expect(obsolete.body.result.isError).toBe(true);
+    expect(upstream).toHaveLength(1);
   });
   it('reads summary and full selected-video pages with no grant or session, while exposing only six model tools', async () => {
     const upstream: URL[] = [];

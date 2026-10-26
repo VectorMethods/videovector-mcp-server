@@ -3,7 +3,7 @@ import { SEARCH_TILE_SIZE_DEFAULT, SEARCH_TILE_SIZE_MIN, SEARCH_TILE_SIZE_MAX } 
 import type { FilterCondition, SearchResult, Video } from '../../services/api';
 import type { FieldDefinition } from '../../utils/filterUtils';
 
-export type StudioVideo = Pick<Video, 'video_id' | 'title' | 'thumbnail_gcs_uri' | 'gif_gcs_uri'> & Partial<Video>;
+export type StudioVideo = Pick<Video, 'video_id' | 'title' | 'thumbnail_gcs_uri' | 'gif_gcs_uri'> & Partial<Video> & { assets_revision?: string };
 export interface StudioRun {
   run_id: string;
   prompt_id?: string;
@@ -26,6 +26,7 @@ export interface StudioSearchCatalog {
 export interface StudioSearchPage { results: SearchResult[]; snapshotId: string; nextCursor?: string | null; truncated?: boolean; warnings?: string[] }
 export interface StudioBrowsePage { video_id: string; run_id: string; results: SearchResult[]; nextCursor?: string | null }
 export interface StudioSearchTransport {
+  updateProgress?: (videos: StudioVideo[]) => boolean;
   invalidateCatalog?: () => void;
   catalog(options: { videoIds?: string[]; cursor?: string; signal?: AbortSignal }): Promise<StudioSearchCatalog>;
   browse(options: { targets: StudioBrowseTarget[]; signal?: AbortSignal }): Promise<StudioBrowsePage[]>;

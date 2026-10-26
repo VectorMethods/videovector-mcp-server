@@ -18,6 +18,7 @@ import { PACKAGE_VERSION } from '../version.js';
 import {
   type AnalysisReadOptions,
   type AnalysisResponse,
+  type AnalysisProgressSnapshot,
   type Index,
   type Video,
   type Segment,
@@ -35,8 +36,6 @@ import {
   type PromptRun,
   type PromptRunCostEstimate,
   type PromptRunFailedSegmentsManifest,
-  type PromptRunSegmentRetry,
-  type PromptRunSegmentRetryStatus,
   type PromptRunVideoResult,
   type ExecutePromptRequest,
   type PaginatedResponse,
@@ -84,6 +83,8 @@ import {
   type WorkflowFindRequest,
   type WorkflowIntakeResponse,
   type WorkflowUploadGrant,
+  type AttachmentUploadDescriptor,
+  type AttachmentUploadSession,
   type WorkflowDeliveryResponse,
   type WorkflowMediaGrant,
   type PreviewGrantIdentity,
@@ -1035,13 +1036,15 @@ export class VideoVectorClient {
     return result;
   }
 
-  async mcpImportProgress(importId: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    return this.request('GET', `/workflow/mcp/imports/${encodeURIComponent(importId)}`, { signal, deadline: Date.now() + 30000 });
-  }
-
   async getAnalysis(analysisId: string, options: AnalysisReadOptions = {}, signal?: AbortSignal, deadline = Date.now() + 30000): Promise<AnalysisResponse> {
     return this.request('GET', `/workflow/analyses/${encodeURIComponent(analysisId)}`, {
       query: { ...options }, signal, deadline,
+    });
+  }
+
+  async observeAnalysis(analysisId: string, options: { after_version?: string; wait_seconds: number }, signal?: AbortSignal, deadline = Date.now() + 30000): Promise<AnalysisProgressSnapshot> {
+    return this.request('GET', `/workflow/analyses/${encodeURIComponent(analysisId)}/progress`, {
+      query: options, signal, deadline,
     });
   }
 
@@ -1066,7 +1069,100 @@ export class VideoVectorClient {
     signal?: AbortSignal,
   ): Promise<WorkflowIntakeResponse> {
     this.validateUploadGrant(jobId, grant);
-    return this.requestWorkflowUpload({ file_path: filePath }, `attachment:${jobId}:${fileId}`, expectedIdentity, { grant, fileId }, signal);
+    const file = await fs.open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const checkIdentity = async () => {
+      if (signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
+      const value = await file.stat();
+      if (!value.isFile() || value.dev !== expectedIdentity.device || value.ino !== expectedIdentity.inode
+        || value.size !== expectedIdentity.size || value.mtimeMs !== expectedIdentity.modifiedMs) {
+        throw new VideoVectorApiError('Upload source changed after it was authorized', 'upload_source_error', 400);
+      }
+    };
+    try {
+      await checkIdentity();
+      const sampleSize = 64 * 1024;
+      const last = Math.max(0, expectedIdentity.size - sampleSize);
+      const digest = createHash('sha256');
+      for (const position of new Set([0, Math.floor(last / 2), last])) {
+        const buffer = Buffer.alloc(Math.min(sampleSize, expectedIdentity.size - position));
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, position);
+        if (bytesRead !== buffer.length) throw new VideoVectorApiError('Upload source changed while reading', 'upload_source_error', 400);
+        digest.update(buffer);
+      }
+      const descriptor: AttachmentUploadDescriptor = { file_id: fileId, file_name: basename(filePath), content_type: workflowUploadContentType(filePath),
+        size_bytes: expectedIdentity.size, last_modified: Math.trunc(expectedIdentity.modifiedMs), sample_sha256: digest.digest('hex') };
+      for (let attempt = 0; ; attempt++) {
+        await checkIdentity();
+        const staged = await this.request<AttachmentUploadSession>('POST', '', { body: descriptor, signal,
+          headers: { 'Idempotency-Key': `attachment-session:${jobId}:${fileId}` },
+          capability: { url: grant.url, token: grant.token } });
+        const session = staged.upload;
+        if (session !== null) {
+          const url = new URL(session.url);
+          if (session.transport !== 'resumable' || url.protocol !== 'https:' || url.username || url.password || url.port || url.hash
+            || !(url.hostname === 'storage.googleapis.com' || url.hostname.endsWith('.storage.googleapis.com'))
+            || session.total_bytes !== expectedIdentity.size || !Number.isSafeInteger(session.offset)
+            || session.offset < 0 || session.offset > expectedIdentity.size
+            || !Number.isSafeInteger(session.chunk_size) || session.chunk_size <= 0) {
+            throw new VideoVectorApiError('Invalid storage upload session', 'invalid_upload_session', 502);
+          }
+          let offset = session.offset;
+          try {
+            while (offset < expectedIdentity.size) {
+              await checkIdentity();
+              const end = Math.min(expectedIdentity.size, offset + Math.min(session.chunk_size, 8 * 1024 * 1024));
+              const start = offset;
+              const body = Readable.from((async function* () {
+                for (let position = start; position < end;) {
+                  const buffer = Buffer.alloc(Math.min(64 * 1024, end - position));
+                  const { bytesRead } = await file.read(buffer, 0, buffer.length, position);
+                  if (!bytesRead) throw new Error('Upload source ended before the expected size');
+                  position += bytesRead;
+                  yield buffer.subarray(0, bytesRead);
+                }
+              })());
+              const controller = new AbortController();
+              const abort = () => controller.abort();
+              signal?.addEventListener('abort', abort, { once: true });
+              const timeoutId = setTimeout(abort, this.timeout);
+              try {
+                const init: RequestInit & { duplex: 'half' } = { method: 'PUT',
+                  headers: { 'Content-Length': String(end - offset), 'Content-Range': `bytes ${offset}-${end - 1}/${expectedIdentity.size}` },
+                  body: body as unknown as RequestInit['body'], duplex: 'half', signal: controller.signal, redirect: 'error' };
+                const response = await fetch(session.url, init);
+                if (![200, 201, 308].includes(response.status)) {
+                  await response.body?.cancel();
+                  throw new VideoVectorApiError('Storage upload interrupted; retry the same submission to resume',
+                    response.status === 404 || response.status === 410 ? 'upload_session_expired' : 'storage_upload_failed', response.status);
+                }
+                const match = response.headers.get('Range')?.match(/^bytes=0-(\d+)$/);
+                const confirmed = response.status === 308 ? (match ? Number(match[1]) + 1 : 0) : expectedIdentity.size;
+                await response.body?.cancel();
+                if (confirmed <= offset || confirmed > end) {
+                  throw new VideoVectorApiError('Storage did not confirm the uploaded bytes', 'storage_upload_failed', 502);
+                }
+                offset = confirmed;
+              } catch (error) {
+                if (signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
+                if (controller.signal.aborted) throw new VideoVectorApiError('Upload timed out; retry the same submission to resume', 'timeout_error', 408);
+                if (error instanceof VideoVectorApiError) throw error;
+                throw new VideoVectorApiError('Storage connection interrupted; retry the same submission to resume', 'storage_upload_failed', 503);
+              } finally {
+                clearTimeout(timeoutId); signal?.removeEventListener('abort', abort); body.destroy();
+              }
+            }
+          } catch (error) {
+            if (attempt < this.maxRetries && error instanceof VideoVectorApiError
+              && ['storage_upload_failed', 'timeout_error'].includes(error.code)) continue;
+            throw error;
+          }
+        }
+        await checkIdentity();
+        return await this.request<WorkflowIntakeResponse>('POST', '', { body: { file_id: fileId }, signal,
+          headers: { 'Idempotency-Key': `attachment-file-complete:${jobId}:${fileId}` },
+          capability: { url: `${grant.url}/complete`, token: grant.token } });
+      }
+    } finally { await file.close(); }
   }
 
   async workflowCompleteAttachments(
@@ -1358,18 +1454,6 @@ export class VideoVectorClient {
     );
   }
 
-  async cancelPromptRun(runId: string, idempotencyKey?: string): Promise<PromptRun> {
-    return this.request<PromptRun>(
-      'POST',
-      `/prompt-runs/${encodeURIComponent(runId)}/cancel`,
-      {
-        headers: {
-          'Idempotency-Key': createIdempotencyKey('prompt-run-cancel', idempotencyKey),
-        },
-      }
-    );
-  }
-
   async getPromptRunResults(
     runId: string,
     options: {
@@ -1411,35 +1495,6 @@ export class VideoVectorClient {
     return this.request<PromptRunFailedSegmentsManifest>(
       'GET',
       `/prompt-runs/${encodeURIComponent(runId)}/failed-segments`
-    );
-  }
-
-  async retryPromptRunSegment(
-    runId: string,
-    videoId: string,
-    segmentId: string,
-    idempotencyKey?: string
-  ): Promise<PromptRunSegmentRetry> {
-    return this.request<PromptRunSegmentRetry>(
-      'POST',
-      `/prompt-runs/${encodeURIComponent(runId)}/videos/${encodeURIComponent(videoId)}/segments/${encodeURIComponent(segmentId)}/retry`,
-      {
-        headers: {
-          'Idempotency-Key': createIdempotencyKey('prompt-run-segment-retry', idempotencyKey),
-        },
-      }
-    );
-  }
-
-  async getPromptRunSegmentRetryStatus(
-    runId: string,
-    videoId: string,
-    segmentId: string,
-    retryId: string
-  ): Promise<PromptRunSegmentRetryStatus> {
-    return this.request<PromptRunSegmentRetryStatus>(
-      'GET',
-      `/prompt-runs/${encodeURIComponent(runId)}/videos/${encodeURIComponent(videoId)}/segments/${encodeURIComponent(segmentId)}/retries/${encodeURIComponent(retryId)}`
     );
   }
 
@@ -1884,12 +1939,10 @@ export class VideoVectorClient {
     request: WorkflowUploadRequest,
     idempotencyKey: string,
     expectedIdentity?: WorkflowUploadFileIdentity,
-    attachment?: { grant: WorkflowUploadGrant; fileId: string },
     signal?: AbortSignal,
   ): Promise<T> {
     const boundary = `videovector-${randomUUID()}`;
     const fields: Buffer[] = [];
-    if (attachment) fields.push(workflowMultipartField('file_id', attachment.fileId, boundary));
     // Send the file part first so Starlette can spool the large payload before
     // retaining any subsequent scalar multipart fields.
     if (request.title !== undefined) {
@@ -1908,7 +1961,7 @@ export class VideoVectorClient {
       workflowUploadContentType(request.file_path)
     );
     const fileFooter = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-    const url = new URL(attachment?.grant.url ?? `${this.baseUrl}/workflow/upload`);
+    const url = new URL(`${this.baseUrl}/workflow/upload`);
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
       if (signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
@@ -1980,9 +2033,7 @@ export class VideoVectorClient {
             'Idempotency-Key': idempotencyKey,
             'Content-Type': `multipart/form-data; boundary=${boundary}`,
             'Content-Length': String(contentLength),
-            ...(attachment
-              ? { Authorization: `Bearer ${attachment.grant.token}` }
-              : this.authenticationHeaders()),
+            ...this.authenticationHeaders(),
           },
           body: body as unknown as RequestInit['body'],
           signal: controller.signal,

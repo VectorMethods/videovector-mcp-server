@@ -47,8 +47,9 @@ export default function StudioVideoRail<T extends StudioVideo>({
             <div className="studio-video-rail__video"><ScopeSelectionCard title={video.title || 'Untitled video'}
               selected={!searchActive && selectedVideoId === video.video_id}
               onSelect={() => onSelectVideo(video)}
-              projection={video.thumbnail_gcs_uri || video.gif_gcs_uri ? {
+              projection={video.thumbnail_gcs_uri || video.gif_gcs_uri || video.assets_revision ? {
                 identity: { kind: 'video', video_id: video.video_id },
+                assetsRevision: video.assets_revision,
                 thumbnailGcsUri: video.thumbnail_gcs_uri || null,
                 gifGcsUri: video.gif_gcs_uri || null,
               } : null} />

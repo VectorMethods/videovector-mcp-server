@@ -204,13 +204,15 @@ One six-tool catalog is shared by stdio, API-key HTTP, and OAuth:
 | `save_prompt` | Generate/save a prompt from instruction or an explicit definition. |
 | `browse` | Discover indexes, videos, analyses, imports, or prompts with resource-specific filters. |
 
-There are no Simple/Full profiles or retired-name aliases. OAuth omits cloud source credentials, cloud import, import retry, and webhook arguments while keeping the same six names. Direct integrations can supply terminal-only task callbacks. Local paths are nested under `source.file_paths` and appear only on stdio. All schemas include conditional rules and examples; see the [hierarchical contract](docs/tool-contract.md) and [generated JSON Schema](artifacts/tool-contract.json).
+There are no Simple/Full profiles or retired-name aliases. OAuth omits cloud source credentials, cloud import, and webhook arguments while keeping the same six names. Direct integrations can supply terminal-only task callbacks. Local paths are nested under `source.file_paths` and appear only on stdio. All schemas include conditional rules and examples; see the [hierarchical contract](docs/tool-contract.md) and [generated JSON Schema](artifacts/tool-contract.json).
 
 Analysis retains one durable ID across upload and processing. Observations wait at most 30 seconds; local transfers use the configured request timeout. Typed `next_action` distinguishes required input, progress, results, and errors. Continue observing within host/user controls, preserving the ID and retry identity. Pending does not mean stuck.
 
-Complete-video JSON appears incrementally through included one-hour download grants. The response and JSON also contain direct segment downloads. Fetch these capabilities without OAuth headers; refresh through the same result tool without rerunning or creating an export. Save JSON where the host supports files and retain its path for context recovery. Hosts without filesystem tools can use bounded full-detail pages.
+Local attachments upload directly to storage in resumable chunks of at most 8 MiB. The job-scoped grant authorizes JSON session and completion requests; it is never sent to storage. A retry asks the backend for the storage-confirmed byte offset and sends only the remaining bytes. The client verifies the authorized local file identity before each chunk and finalizes the exact attachment batch after every file is durable.
 
-Every new search requires an explicit scope. Search filters candidates before ranking; library/video/Playground scopes use latest complete results per video. `scope.analysis_ids` selects history. Use `search_id` with an optional cursor to resume the same saved snapshot without rerunning. The shared Studio supports native upload, visible progress polling, playback, and JSON inspection through private app-only helpers. Native REST APIs remain available independently.
+Accepted analysis parts appear incrementally in metadata and included one-hour JSON download grants. Main extraction, media assets, and image search have independent readiness. The response and JSON also contain direct segment downloads. Fetch these capabilities without OAuth headers; refresh through the same result tool without rerunning or creating an export. Save JSON where the host supports files and retain its path for context recovery. Hosts without filesystem tools can use bounded full-detail pages.
+
+Every new search requires an explicit scope. Search filters candidates before ranking; library/video/Playground scopes use latest complete results per video. `scope.analysis_ids` selects history. Use `search_id` with an optional cursor to resume the same saved snapshot without rerunning. The shared Studio supports native upload, live processing state, playback, and JSON inspection through private app-only helpers. Native REST APIs remain available independently.
 
 ## Development
 
@@ -245,19 +247,40 @@ See [SECURITY.md](SECURITY.md) for supported versions, disclosure instructions, 
 
 ### Failed imports
 
-Read `import_media` with the original `import_id` for safe per-file errors and progress. Direct integrations can retry failed work with `retry:true` and an explicit idempotency key. OAuth users review failures in the app. Never invent fresh attachment descriptors or restart successful work because a read timed out.
+Read `import_media` with the original `import_id` for safe per-file errors and progress. All supported hosts can retry failed intake with `retry:true` and an explicit idempotency key. If host attachment URLs expired, supply fresh native `files` descriptors with the original file IDs. Only failed, unstaged files can be replaced; source, destination, title, and webhook settings remain unchanged. For failed analysis intake, pass its `analysis_id` as `import_id`; the response directs subsequent reads back to `get_analysis` without creating another execution. Never invent attachment descriptors or restart successful work because a read timed out.
 
-## Standalone parts and grounded extraction
+## Studio observation and host lifecycle
 
-Uploads return durable import jobs. Long videos become the minimum number of
-balanced standalone parts, each at most 40 minutes. Each part has its own media
-ID, local timestamps, segments and optional whole-media output. Job phase and
-source-file counters are separate from `parts_total`, `parts_completed`, and
-`parts_failed`. Read every ordered outputs page (`next_cursor` until null).
-`video_ids` includes only the current page. Use `analyze` with `source.import_id`
-to select the complete completed import; it is exclusive with other source selectors.
+ChatGPT and standard MCP Apps hosts, including Claude, use the same host-mediated
+private tool calls. A visible Studio owns one bounded native-watch request at a
+time (up to 25 seconds), passing the last opaque version to the next request.
+It reads metadata only for the selected video when its accepted metadata revision
+changes. Native video progress keeps pending originals in the rail; search still
+uses its canonical completed execution scope. New metadata does not reload the
+player or replace its source grant.
 
-The optional `video_level` configuration contains only `instructions_text` and
-`json_schema`. It requires content-aware segmentation. Segment and whole-media
-fields are returned in the same media call, grounded directly in the supplied
-part; there is no later segment-text synthesis or cross-part summary.
+Observation pauses when the view is hidden, stops on teardown or canonical
+extraction/enrichment settlement, and exposes a reconnect action on transport
+failure. The iframe receives no OAuth credentials. The host controls whether an
+app remains mounted or visible; this view cannot guarantee updates while the host
+suspends it. Optional ChatGPT widget-state persistence restores selection/search
+state where available. Standard MCP Apps hosts work without that extension and
+retain state for the mounted view. Text-only hosts use `get_analysis` and its
+bounded observation contract instead of the private app observer.
+
+## One original and internal analysis parts
+
+Uploads return durable import jobs and retain one original public video per file.
+Long videos have internal optimal-cut analysis windows, each at most 40 minutes;
+accepted parts publish progressively against that same video. Segment timestamps
+use the full original playback timeline. Intake source-file counters are separate
+from processing `total_parts`, `completed_parts`, and `failed_parts`. Read every
+ordered import outputs page (`next_cursor` until null). `video_ids` includes only
+the current page. Use `analyze` with `source.import_id` to select the completed
+import; it is exclusive with other source selectors.
+
+The optional `video_level` configuration contains `instructions_text` and
+`json_schema` and requires content-aware segmentation. Segment metadata can be
+available while whole-video synthesis and media/image enrichment continue. Use
+the reported phase and independent readiness rather than treating the first
+metadata page or main completion as completion of every artifact.

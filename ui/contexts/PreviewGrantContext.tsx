@@ -3,6 +3,8 @@ import type { PreviewGrantItem, PreviewGrantRequestItem } from '../services/api'
 
 export interface PreviewGrantProjection {
   identity: PreviewGrantRequestItem;
+  /** Native asset revision invalidates identity-only analysis previews. */
+  assetsRevision?: string;
   thumbnailGcsUri: string | null;
   gifGcsUri: string | null;
 }
@@ -56,12 +58,13 @@ export const getPreviewGrantIdentityKey = (identity: PreviewGrantRequestItem): s
 export const getPreviewGrantProjectionKey = (projection: PreviewGrantProjection): string => (
   [
     getPreviewGrantIdentityKey(projection.identity),
+    projection.assetsRevision || '',
     normalizeDurablePreviewUri(projection.thumbnailGcsUri) || '',
     normalizeDurablePreviewUri(projection.gifGcsUri) || '',
   ].join('\u0000')
 );
 
-const previewGrantMatchesProjection = (
+export const previewGrantMatchesProjection = (
   grant: PreviewGrantItem,
   projection: PreviewGrantProjection,
 ): boolean => (
@@ -69,10 +72,10 @@ const previewGrantMatchesProjection = (
     ? { kind: 'video', video_id: grant.video_id }
     : { kind: 'segment', video_id: grant.video_id, segment_id: grant.segment_id || '' })
     === getPreviewGrantIdentityKey(projection.identity)
-  && normalizeDurablePreviewUri(grant.thumbnail_gcs_uri)
+  && (Boolean(projection.assetsRevision) || (normalizeDurablePreviewUri(grant.thumbnail_gcs_uri)
     === normalizeDurablePreviewUri(projection.thumbnailGcsUri)
   && normalizeDurablePreviewUri(grant.gif_gcs_uri)
-    === normalizeDurablePreviewUri(projection.gifGcsUri)
+    === normalizeDurablePreviewUri(projection.gifGcsUri)))
 );
 
 const parsePreviewGrantExpiry = (value: string | null): number | null => {

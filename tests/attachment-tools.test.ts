@@ -141,16 +141,18 @@ describe('shared attachment intake', () => {
       if (typeof init.body === 'string') chunks.push(Buffer.from(init.body));
       else for await (const chunk of init.body as any) chunks.push(Buffer.from(chunk));
       requests.push({ url, headers: init.headers as Record<string, string>, body: Buffer.concat(chunks).toString() });
-      return new Response(JSON.stringify(queued), { headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify(url === grant.url ? { job: queued, upload: { transport: 'resumable', url: 'https://storage.googleapis.com/upload/session', offset: 0, total_bytes: 11, chunk_size: 8 * 1024 * 1024 } } : queued), { headers: { 'content-type': 'application/json' } });
     }));
     const client = new VideoVectorClient({ apiKey: 'account-key', baseUrl });
     try {
       await client.workflowUploadAttachment('job_1', grant, path, 'file-1', { device: stat.dev, inode: stat.ino, size: stat.size, modifiedMs: stat.mtimeMs });
       await client.workflowCompleteAttachments('job_1', grant, ['file-1']);
-      expect(requests[0]?.body).toContain('video-bytes');
-      expect(requests[0]?.body).toContain('name="file_id"\r\n\r\nfile-1');
-      expect(JSON.parse(requests[1]!.body)).toEqual({ file_ids: ['file-1'] });
-      for (const request of requests) {
+      expect(JSON.parse(requests[0]!.body)).toMatchObject({ file_id: 'file-1', size_bytes: 11 });
+      expect(requests[1]?.body).toBe('video-bytes');
+      expect(requests[1]?.headers).not.toHaveProperty('Authorization');
+      expect(JSON.parse(requests[2]!.body)).toEqual({ file_id: 'file-1' });
+      expect(JSON.parse(requests[3]!.body)).toEqual({ file_ids: ['file-1'] });
+      for (const request of requests.filter(row => row.url.startsWith(baseUrl))) {
         expect(request.headers.Authorization).toBe(`Bearer ${grant.token}`);
         expect(request.headers).not.toHaveProperty('X-API-Key');
       }

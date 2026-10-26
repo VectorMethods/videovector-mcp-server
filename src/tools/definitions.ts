@@ -147,7 +147,6 @@ const EXECUTION_CONFIGURATION_PROPERTIES = {
   video_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300 },
   audio_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300 },
   processing_model: { type: ['string', 'null'], minLength: 1, description: 'Model ID published by the billing pricing API.' },
-  enable_transcription: { type: 'boolean' },
   enable_image_embedding: { type: 'boolean' },
 };
 
@@ -207,7 +206,7 @@ const browseFields: Record<string, string[]> = {
 const browseSelectors = ['ids', 'name', 'index_id', 'index_name', 'video_ids', 'status', 'include_defaults', 'active_only'];
 const nextAction = { type: 'object', properties: { type: string }, required: ['type'], additionalProperties: true };
 const importResultSchema: NonNullable<Tool['outputSchema']> = {
-  ...object({ import_id: string, status: string, stage: string, message: string, scope: {type:'object'}, progress:{type:'object'},
+  ...object({ import_id: string, analysis_id: string, status: string, stage: string, message: string, scope: {type:'object'}, progress:{type:'object'},
     results:{type:'object'},files:{type:'object'},failures:{type:'object'},errors:{type:'array',items:{type:'object'}},next_action:nextAction,
   }, ['import_id','status','stage','progress','results','next_action']),
 };
@@ -230,7 +229,7 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
   const all: Tool[] = [
     {
       name: TOOL_NAMES.ANALYZE, title: 'Analyze media',
-      description: 'Analyze attached or existing media using instruction or a saved prompt. Root files are native attachments; source selects existing media or a direct import; destination is only for new media. Omit files/source to open the picker. Returns analysis_id, progress, complete-video JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips directly without OAuth headers; claim a file was saved only after saving succeeds.',
+      description: 'Analyze attached or existing media using instruction or a saved prompt. Root files are native attachments; source selects existing media or a direct import; destination is only for new media. Omit files/source to open the picker. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips directly without OAuth headers; claim a file was saved only after saving succeeds.',
       inputSchema: { ...object({ instruction: string, prompt_id: string, files: ATTACHMENT_FILES_SCHEMA, source, destination, execution: object(EXECUTION_CONFIGURATION_PROPERTIES), ...(oauth ? {} : { webhook }), wait_seconds: wait, idempotency_key: key, detail }),
         ...oneSelector(['instruction', 'prompt_id']), allOf: [
           { not: { required: ['files', 'source'] } },
@@ -240,7 +239,7 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
     },
     {
       name: TOOL_NAMES.GET_ANALYSIS, title: 'Get analysis',
-      description: 'Read progress or results without rerunning analysis. Use analysis_id, or video_id for its latest complete analysis. Wait at most 30 seconds for progress; no revision argument is needed. Follow next_action using the same ID. Partial JSON includes complete videos only. Refresh expired JSON/clip grants here, or use full detail with page_size/cursor when files are unavailable.',
+      description: 'Read progress or results without rerunning analysis. Use analysis_id, or video_id for its latest complete analysis. Wait at most 30 seconds for progress; no revision argument is needed. Follow next_action using the same ID. Accepted parts are available while other parts continue; media and image indexing may finish after extraction. Refresh expired JSON/clip grants here, or use full detail with page_size/cursor when files are unavailable.',
       inputSchema: { ...object({ analysis_id: string, video_id: string, wait_seconds: wait, detail, page_size: { type: 'integer', minimum: 1, maximum: 20, default: 1 }, cursor: string }), anyOf: [{ required: ['analysis_id'] }, { required: ['video_id'] }],
         allOf: [{ if: { anyOf: [{ required: ['cursor'] }, { required: ['page_size'] }] }, then: { required: ['detail'], properties: { detail: { const: 'full' } } } }],
         examples: [{ analysis_id: 'analysis_123' }, { video_id: 'video_123', detail: 'full', page_size: 1, wait_seconds: 0 }],
@@ -261,12 +260,15 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
     },
     {
       name: TOOL_NAMES.IMPORT_MEDIA, title: 'Import media',
-      description: 'Import media without analysis, inspect an existing import, or retry failed files where supported. Provide root files or source for new media; omit both to open the picker. destination selects its library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Direct integrations may retry with retry=true and an idempotency_key or request a terminal webhook. Keep the returned import_id; analysis can later use source.import_id.',
-      inputSchema: { ...object({ ...intakeProperties, import_id: string, ...(oauth ? {} : { retry: { type: 'boolean', const: true } }), outputs_cursor: string, failures_cursor: string, page_size: { type: 'integer', minimum: 1, maximum: 100, default: 50 }, wait_seconds: wait, detail }), allOf: [
+      description: 'Import media without analysis, inspect an existing import, or retry failed files where supported. Provide root files or source for new media; omit both to open the picker. destination selects its library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry with retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.',
+      inputSchema: { ...object({ ...intakeProperties, import_id: string, retry: { type: 'boolean', const: true }, outputs_cursor: string, failures_cursor: string, page_size: { type: 'integer', minimum: 1, maximum: 100, default: 50 }, wait_seconds: wait, detail }), allOf: [
         { not: { required: ['files', 'source'] } },
         { if: { required: ['title'] }, then: options.includeLocalUpload === false ? excludes('source') : { properties: { source: { required: ['file_paths'] } } } },
-        { if: { required: ['import_id'] }, then: excludes('files', 'source', 'destination', 'title', ...(oauth ? [] : ['webhook'])), else: excludes(...(oauth ? [] : ['retry']), 'outputs_cursor', 'failures_cursor', 'page_size') },
-        ...(oauth ? [] : [{ if: { required: ['retry'] }, then: { required: ['import_id', 'idempotency_key'], ...excludes('outputs_cursor', 'failures_cursor') } }]),
+        { if: { required: ['import_id'] }, then: { allOf: [
+          excludes('source', 'destination', 'title', ...(oauth ? [] : ['webhook'])),
+          { if: { required: ['files'] }, then: { required: ['retry'] } },
+        ] }, else: excludes('retry', 'outputs_cursor', 'failures_cursor', 'page_size') },
+        { if: { required: ['retry'] }, then: { required: ['import_id', 'idempotency_key'], ...excludes('outputs_cursor', 'failures_cursor') } },
       ], examples: [{ files: [{ file_id: 'file_123', download_url: 'https://files.example/clip.mp4' }], destination: { index_name: 'Research' } }, { import_id: 'import_123' }],
       } as Tool['inputSchema'], outputSchema: importResultSchema,
     },

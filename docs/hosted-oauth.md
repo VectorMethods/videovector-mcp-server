@@ -65,7 +65,7 @@ authorize executing them.
 OAuth exposes the same six tools as direct integrations: `analyze`, `get_analysis`,
 `search`, `import_media`, `save_prompt`, and `browse`. Six additional Studio
 helpers are app-only. There is no profile setting. OAuth schemas omit cloud
-sources and credentials, import retry, and webhook arguments, and execution
+sources and credentials and webhook arguments, and execution
 rejects those options. API-key/stdio integrations can use those direct options.
 Authorized analysis and search results include one-hour JSON download grants
 and direct segment links. These narrowly scoped result capabilities remain

@@ -19,7 +19,7 @@ export const DEFAULT_PROMPT_EXECUTION_CONFIG: PromptExecutionConfig = {
   video_segment_duration: null,
   audio_segment_duration: null,
   processing_model: null,
-  enable_transcription: true,
+
   enable_image_embedding: true,
 };
 
@@ -57,9 +57,6 @@ export const normalizePromptExecutionConfig = (
     processing_model: typeof config.processing_model === 'string' && config.processing_model.trim()
       ? config.processing_model.trim()
       : null,
-    enable_transcription: typeof config.enable_transcription === 'boolean'
-      ? config.enable_transcription
-      : DEFAULT_PROMPT_EXECUTION_CONFIG.enable_transcription,
     enable_image_embedding: typeof config.enable_image_embedding === 'boolean'
       ? config.enable_image_embedding
       : DEFAULT_PROMPT_EXECUTION_CONFIG.enable_image_embedding,

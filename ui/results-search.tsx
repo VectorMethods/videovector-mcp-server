@@ -29,6 +29,8 @@ export function createStudioTransport(callTool: (name: string, args: any, signal
   let library: any = null;
   let libraryRequest: Promise<any> | null = null;
   let catalogGeneration = 0;
+  let observedVideos: any[] = [];
+  let observedCatalogKey = '';
   const searchAttempts = new Map<string, string>();
   const catalogPage = async (args: any, signal?: AbortSignal) => {
     const response = await callTool('list_studio_scope', { ...args, ...(indexId ? { index_id: indexId } : {}) }, signal);
@@ -41,7 +43,15 @@ export function createStudioTransport(callTool: (name: string, args: any, signal
     return { results: view.data.map(normalizeStudioResult), snapshotId: view.snapshot_id ?? view.source_id, nextCursor: view.pagination?.next_cursor || null, truncated: Boolean(view.pagination?.truncated), warnings: view.warnings ?? [] };
   };
   return {
-    invalidateCatalog() { library = null; libraryRequest = null; ++catalogGeneration; },
+    updateProgress(videos: any[]) {
+      observedVideos = videos;
+      const key = JSON.stringify(videos.map(video => [video.video_id, ...(video.processing_status ?? []).map((entry: any) =>
+        [entry.run_id, entry.status, entry.readiness?.metadata_available, entry.readiness?.text_search_ready, entry.readiness?.image_search_ready])]));
+      const changed = key !== observedCatalogKey;
+      if (changed) { observedCatalogKey = key; library = null; libraryRequest = null; ++catalogGeneration; }
+      return changed;
+    },
+    invalidateCatalog() { if (library) { library = null; libraryRequest = null; ++catalogGeneration; } },
     async catalog({ videoIds, cursor, signal }) {
       if (cursor) {
         const generation = catalogGeneration;
@@ -70,6 +80,10 @@ export function createStudioTransport(callTool: (name: string, args: any, signal
         activeLibrary = await libraryRequest;
         if (signal?.aborted) throw new DOMException('The request was aborted.', 'AbortError');
       }
+      activeLibrary = { ...activeLibrary, videos: Array.from(new Map([
+        ...(activeLibrary.videos ?? []).map((video: any) => [video.video_id, video]),
+        ...observedVideos.map(video => [video.video_id, { ...(activeLibrary.videos ?? []).find((row: any) => row.video_id === video.video_id), ...video }]),
+      ]).values()) };
       const scoped = videoIds === undefined ? activeLibrary : videoIds.length
         ? await catalogPage({ video_ids: videoIds }, signal)
         : { browse_targets: [], fields: [], warnings: [] };
@@ -116,14 +130,14 @@ export function createStudioTransport(callTool: (name: string, args: any, signal
 }
 
 type HostProps = {
-  sessionKey: string; refreshKey: number; mode: 'studio' | 'results' | 'result'; searchMounted: boolean;
+  sessionKey: string; refreshKey: number; railRefreshKey: string | number; mode: 'studio' | 'results' | 'result'; searchMounted: boolean;
   transport: StudioSearchTransport; callTool: (name: string, args: any, signal?: AbortSignal) => Promise<any>;
   state: any; onStateChange: (state: any) => void; onResultsChange: (results: any[]) => void;
   onSelectVideo: (video: any) => Promise<void>; onSearch: () => void;
   onSelectResult: (result: any, results: any[]) => void; onExit: () => void;
   searchResults: any[]; segmentProps: React.ComponentProps<typeof ResultSegments>;
 };
-function StudioMediaNavigation({ transport, onSelectVideo, onSearch, mode, refreshKey, segmentProps }: Pick<HostProps, 'transport' | 'onSelectVideo' | 'onSearch' | 'mode' | 'refreshKey' | 'segmentProps'>) {
+function StudioMediaNavigation({ transport, onSelectVideo, onSearch, mode, refreshKey, segmentProps }: Pick<HostProps, 'transport' | 'onSelectVideo' | 'onSearch' | 'mode' | 'segmentProps'> & { refreshKey: string | number }) {
   const [catalog, setCatalog] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -161,7 +175,7 @@ function StudioSearchHost(props: HostProps) {
   }, [props.callTool]);
   const requestPreviewGrant = usePreviewGrantClient(props.sessionKey, loadGrants);
   return <PreviewGrantProvider requestPreviewGrant={requestPreviewGrant}>
-    {createPortal(<StudioMediaNavigation {...props} />, document.getElementById('studio-video-rail')!)}
+    {createPortal(<StudioMediaNavigation {...props} refreshKey={props.railRefreshKey} />, document.getElementById('studio-video-rail')!)}
     {props.searchMounted && <TabActivityProvider isActive={props.mode === 'results'}>
       <div hidden={props.mode !== 'results'}><StudioSearchWorkspace transport={props.transport} state={props.state}
         onStateChange={props.onStateChange} onResultsChange={props.onResultsChange} onSelectResult={props.onSelectResult}

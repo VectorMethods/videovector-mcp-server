@@ -74,8 +74,8 @@ const ROW_FIELDS = [
 // transport capabilities never become model-visible, even in explicit full mode.
 const FULL_ROW_FIELDS = [...ROW_FIELDS,
   'prompt_id', 'executed_at', 'content', 'text_content', 'content_preview', 'metadata_text',
-  'raw_llm_response', 'processing_warning', 'schema_used', 'transcription_succeeded',
-  'image_embedding_succeeded', 'field_extraction_error', 'transcription_error',
+  'raw_llm_response', 'processing_warning', 'schema_used',
+  'image_embedding_status', 'field_extraction_error',
   'image_embedding_error', 'successful_segment_count', 'failed_segment_count',
   'failure_stage', 'failure_message',
   'error_message', 'started_at', 'completed_at',
@@ -100,7 +100,7 @@ function rowProjection(value: unknown, detail: ResultDetail, runId: unknown, sco
   requireIdentity(raw.video_id);
   requireIdentity(raw.run_id ?? raw.prompt_run_id ?? raw.source_run_id ?? runId);
   const row = fields(raw, ROW_FIELDS);
-  if (typeof raw.embedding_error === 'string' && raw.embedding_error.trim()) row.embedding_error = 'Search indexing failed. Retry indexing using a canonical segment after the run finishes.';
+  if (typeof raw.embedding_error === 'string' && raw.embedding_error.trim()) row.embedding_error = 'Search indexing is unavailable for this result.';
   const metadata = raw.metadata ?? raw.extracted_metadata;
   if (detail === 'full') {
     for (const key of FULL_ROW_FIELDS) if (raw[key] !== undefined) row[key] = raw[key];

@@ -14,6 +14,9 @@ export interface PreviewMediaFields {
 export interface SegmentMediaFields extends PreviewMediaFields {
   segment_uri?: string | null;
   gcs_uri?: string | null;
+  playback_source_uri?: string | null;
+  playback_start_time?: number | null;
+  playback_end_time?: number | null;
 }
 
 const normalizeUri = (value?: string | null): string | null => {
@@ -377,7 +380,7 @@ export const getPreviewMediaCandidates = (
 };
 
 export const getSegmentPlaybackSource = (media: SegmentMediaFields): string | null => (
-  pickMediaUri(media.segment_uri, media.gcs_uri)
+  pickMediaUri(media.segment_uri, media.gcs_uri, media.playback_source_uri)
 );
 
 export const hasRenderableThumbnailSource = (media: PreviewMediaFields): boolean => {

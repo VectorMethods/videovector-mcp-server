@@ -93,6 +93,6 @@ HTTP mode has optional host and origin allowlists:
 
 Direct API-key/stdio integrations may supply cloud source configuration or a task callback signing secret to `analyze`/`import_media`. The MCP server forwards these only to the configured first-party API and does not persist or log them. Callbacks are terminal-only and scoped to the submitted task. Use least-privilege credentials and protect the caller's signing secret.
 
-OAuth exposes the same six names while omitting cloud source, import retry, and webhook arguments. Runtime schema validation rejects excluded options before backend dispatch. Analysis/search downloads remain authorized one-hour result capabilities. They are scoped to a captured snapshot and separate from private account credentials and upload grants. Generic download clients fetch them without forwarding OAuth headers. Export administration remains outside MCP.
+OAuth exposes the same six names while omitting cloud source and webhook arguments. Runtime schema validation rejects excluded options before backend dispatch. Analysis/search downloads remain authorized one-hour result capabilities. They are scoped to a captured snapshot and separate from private account credentials and upload grants. Generic download clients fetch them without forwarding OAuth headers. Export administration remains outside MCP.
 
 See [hosted OAuth](hosted-oauth.md#available-tools-and-existing-api-key-clients).

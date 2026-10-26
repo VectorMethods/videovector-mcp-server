@@ -3,8 +3,9 @@ import { getSearchResultKey } from './utils/searchResultIdentity';
 import { App } from '@modelcontextprotocol/ext-apps';
 import { renderMetadata, renderTimeline, renderToolbar, renderDownloads, createResultState, filterResultRows, resultVideoKey, buildSegmentMetadataExport, buildStudioRunMetadata, buildStudioMetadataExport, sanitizeDownloadFilenamePart } from './results-view';
 import './results-card.css';
-import { createAnalysisProgressController, analysisResultView, readCompletedAnalysisVideo } from './analysis-progress';
+import { createAnalysisProgressController, analysisResultView, readAnalysisVideo, processingView, metadataRevision } from './analysis-progress';
 import { uploadAttachmentBatch } from '../src/attachments/upload-batch.js';
+import { describeAttachmentFile, transferAttachmentFile } from '../src/attachments/resumable-file.js';
 
 const app = new App({ name: 'VideoVector results', version: '2.0.0' });
 const byId = id => document.getElementById(id);
@@ -23,7 +24,7 @@ const mediaRetries = new Set();
 const downloads = new Map();
 let catalogRevision = 0, restoringPlayer = false;
 let sessionKey = '', studioMode = 'studio', searchMounted = false, searchState, searchResults = [], originalPlayer, pendingRestoreSelected;
-let activeImportId, activeAnalysisId, completedRevision, uploadGrant, uploadFiles = [], disposed = false, analysisLoadController;
+let activeImportId, activeAnalysisId, progressSnapshot, uploadGrant, uploadFiles = [], disposed = false, analysisLoadController, uploadController;
 const uploadedFiles = new Set();
 const callStudioTool = async (name, args, signal) => {
   const result = await app.callServerTool({ name, arguments: args }, signal ? { signal } : undefined);
@@ -37,14 +38,19 @@ const callStudioTool = async (name, args, signal) => {
 let studioTransport = createStudioTransport(callStudioTool);
 const studioHost = createStudioSearchHost(byId('studio-search'));
 const analysisProgress = createAnalysisProgressController({
-  read: async (analysisId, signal) => {
-    const response = await callStudioTool('read_analysis', activeImportId ? { import_id: analysisId } : { analysis_id: analysisId }, signal);
-    const snapshot = response._meta?.analysis ?? response._meta?.import;
-    if (!snapshot) throw new Error('Progress is unavailable.');
-    return snapshot;
+  read: async (identity, version, signal) => {
+    const response = await callStudioTool('read_analysis', {
+      ...(activeAnalysisId ? { analysis_id: identity } : { import_id: identity }),
+      observe: true, wait_seconds: 25, ...(version ? { after_version: version } : {}),
+    }, signal);
+    if (!response._meta?.progress) throw new Error('Progress is unavailable.');
+    return response._meta.progress;
   },
-  apply: applyAnalysisSnapshot,
-  unavailable: () => { byId('analysis-updated').textContent = 'Live updates are temporarily unavailable. Retrying…'; },
+  apply: applyProcessingSnapshot,
+  unavailable: () => {
+    byId('analysis-updated').textContent = 'Live updates are unavailable. Processing continues.';
+    byId('analysis-reconnect').hidden = false;
+  },
 });
 function showAnalysisProgress(value) {
   byId('result-workspace').hidden = !source;
@@ -64,38 +70,84 @@ function showAnalysisProgress(value) {
   byId('analysis-newer').textContent = 'A newer analysis is processing. You are viewing the completed analysis shown here.';
   byId('analysis-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
 }
-async function applyAnalysisSnapshot(value, signal) {
-  if (value.import_id) {
-    if (!disposed && value.import_id === activeImportId) showAnalysisProgress(value);
-    return;
-  }
-  if (disposed || value.analysis_id !== activeAnalysisId) return;
-  showAnalysisProgress(value);
-  const revision = value.results?.revision;
-  if (revision !== completedRevision) {
-    completedRevision = revision;
-    ++catalogRevision; studioTransport.invalidateCatalog?.();
-  }
-  // Progress updates refresh discovery, retaining an explicit execution and player.
-  if (source) { render(); return; }
-  if (!value.results?.included_videos) return;
-  const videoId = value.results.videos?.[0]?.video_id ?? value.results.data?.[0]?.video_id;
-  if (!videoId) return;
-  const complete = await readCompletedAnalysisVideo(callStudioTool, value.analysis_id, videoId, signal);
-  if (disposed || signal?.aborted || value.analysis_id !== activeAnalysisId || selected) return;
-  const view = analysisResultView(complete);
+function initializeAnalysisWorkspace(value) {
+  if (source || !activeAnalysisId) return;
   source = { kind: 'prompt_run', id: activeAnalysisId }; sessionKey = `analysis:${activeAnalysisId}`;
-  studioTransport = createStudioTransport(callStudioTool, complete.scope);
+  studioTransport = createStudioTransport(callStudioTool, value.scope);
   const restored = readStudioState(sessionKey);
   searchState = restored?.search ?? { videoIds: null, query: '', filters: [], selectedResultKey: null, scrollTop: 0 };
   studioMode = restored?.mode ?? 'studio'; searchMounted = studioMode !== 'studio' || Boolean(searchState.snapshotId); viewRequest = {};
   if (restored?.mode === 'result') { pendingRestoreSelected = restored.selected; studioMode = 'results'; }
+  else if (restored?.mode === 'studio') pendingRestoreSelected = restored.selected;
   filterState = createResultState(null, activeAnalysisId); resultMode = 'all';
-  data = view; initialRows = analysisInitialRows(view); initialMatches = view.filtered?.data ?? [];
-  cacheCompleteViews(complete, view);
-  status(''); render();
-  if (restored?.mode === 'studio' && restored.selected) { await restoreStudioSelection(restored.selected); return; }
-  if (studioMode === 'studio' && initialRows[0]) await choose(initialRows[0]);
+  data = { run_id: activeAnalysisId, result_level: 'segment', unfiltered: { data: [], pagination: { has_more: false } }, filtered: null };
+  initialRows = []; initialMatches = [];
+}
+async function refreshAnalysisVideo(videoId, revision, signal) {
+  const requestSource = source;
+  if (!videoId || requestSource?.kind !== 'prompt_run' || requestSource.id !== activeAnalysisId) return;
+  const key = viewKey(videoId, activeAnalysisId);
+  if (revision && videoViews.get(key)?.metadataRevision === revision) return;
+  const analysis = await readAnalysisVideo(callStudioTool, activeAnalysisId, videoId, signal);
+  if (disposed || signal?.aborted || source !== requestSource || selected && selected.video_id !== videoId) return;
+  const view = analysisResultView(analysis);
+  cacheAnalysisViews(analysis, view, revision);
+  data = { ...data, status: analysis.status, links: analysis.links, selection_summary: view.selection_summary };
+  initialRows = analysisInitialRows(view); initialMatches = view.filtered?.data ?? [];
+  const refreshed = [...view.unfiltered.data].find(row => identity(row) === identity(selected));
+  if (refreshed) selected = refreshed;
+  render();
+  if (!selected && studioMode === 'studio' && initialRows[0]) await choose(initialRows[0]);
+}
+async function applyAnalysisSnapshot(value, signal) {
+  if (disposed || value.analysis_id !== activeAnalysisId) return;
+  initializeAnalysisWorkspace(value);
+  showAnalysisProgress(value); render();
+  // The observer selects a canonical metadata revision before loading its body.
+}
+async function applyProcessingSnapshot(value, signal) {
+  if (disposed || value.analysis_id !== (activeAnalysisId ?? activeImportId)) return;
+  progressSnapshot = value;
+  const state = processingView(value);
+  byId('analysis-progress').hidden = false;
+  byId('analysis-stage').textContent = String(state.stage).replaceAll('_', ' ');
+  byId('analysis-message').textContent = state.message;
+  byId('analysis-counts').textContent = state.counts;
+  byId('analysis-files').textContent = state.entries.map(({ video, entry }) => {
+    const phase = entry?.activity?.phase ?? entry?.status ?? video.status;
+    const parts = entry?.total_parts ? ` (${(entry.completed_parts ?? 0) + (entry.failed_parts ?? 0)}/${entry.total_parts} parts)` : '';
+    const images = entry?.enrichment?.image;
+    return `${video.title ?? 'Media'}: ${String(phase ?? 'received').replaceAll('_', ' ')}${parts}${images?.total ? ` · images ${images.completed ?? 0}/${images.total}` : ''}`;
+  }).join(' · ');
+  byId('analysis-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  byId('analysis-reconnect').hidden = true;
+  if (!activeAnalysisId) return;
+  initializeAnalysisWorkspace(value);
+  if (studioTransport.updateProgress?.(state.entries.map(({ video, entry }) => ({ ...video, assets_revision: entry?.result_revisions?.assets })))) ++catalogRevision;
+  render();
+  const restore = studioMode === 'studio' && pendingRestoreSelected?.run_id === value.run_id ? pendingRestoreSelected : undefined;
+  const chosen = state.entries.find(({ video }) => video.video_id === (restore?.video_id ?? selected?.video_id))
+    ?? (!selected ? state.entries[0] : undefined);
+  if (!chosen || source?.id !== activeAnalysisId) return;
+  if (restore && chosen.entry?.readiness?.metadata_available) {
+    pendingRestoreSelected = undefined;
+    await restoreStudioSelection(restore);
+  } else if (chosen.entry?.readiness?.metadata_available) {
+    await refreshAnalysisVideo(chosen.video.video_id, metadataRevision(chosen.entry), signal);
+  } else if (!selected && value.run_id) {
+    await choose({ result_id: `media:${chosen.video.video_id}`, result_type: 'video', video_id: chosen.video.video_id,
+      video_name: chosen.video.title, media_type: chosen.video.media_type, run_id: value.run_id });
+  }
+  applyAssetRevision(chosen.video.video_id, chosen.entry?.result_revisions?.assets);
+}
+function applyAssetRevision(videoId, revision) {
+  const view = videoViews.get(viewKey(videoId, activeAnalysisId));
+  if (!view || !revision || view.assetsRevision === revision) return;
+  view.assetsRevision = revision;
+  for (const level of ['segment', 'video']) for (const scope of ['unfiltered', 'filtered']) {
+    for (const row of view[level]?.[scope]?.data ?? []) row.assets_revision = revision;
+  }
+  render();
 }
 function beginAnalysisRead() {
   analysisLoadController?.abort(); analysisLoadController = new AbortController();
@@ -105,11 +157,14 @@ function analysisInitialRows(view) {
   const segmented = new Set(view.unfiltered.data.filter(row => row.result_type === 'segment').map(row => row.video_id));
   return view.unfiltered.data.filter(row => row.result_type === 'segment' || !segmented.has(row.video_id));
 }
-function cacheCompleteViews(analysis, view = analysisResultView(analysis)) {
+function cacheAnalysisViews(analysis, view = analysisResultView(analysis), revision) {
   const page = rows => ({ data: rows, pagination: { has_more: false, next_cursor: null } });
   for (const video of view.videos) {
     const matching = new Set(video.selection?.matched_segment_ids ?? []);
-    videoViews.set(viewKey(video.video_id, analysis.analysis_id), { runId: analysis.analysis_id, videoId: video.video_id, loading: false,
+    const native = progressSnapshot?.records.find(row => row.kind === 'video' && row.id === video.video_id)?.state;
+    const assetsRevision = native?.processing_status?.find(row => row.run_id === analysis.analysis_id)?.result_revisions?.assets;
+    if (assetsRevision) for (const row of [...video.rows, ...video.videoRows]) row.assets_revision = assetsRevision;
+    videoViews.set(viewKey(video.video_id, analysis.analysis_id), { runId: analysis.analysis_id, videoId: video.video_id, loading: false, metadataRevision: revision, assetsRevision, links: analysis.links,
       context: { run: { run_id: analysis.analysis_id, status: analysis.status }, video: { video_id: video.video_id, title: video.name, media_type: video.media_type }, video_level_output: video.videoRows[0] ?? null },
       segment: { unfiltered: page(video.rows), filtered: page(video.rows.filter(row => matching.has(row.segment_id))) },
       video: { unfiltered: page(video.videoRows), filtered: page(video.selection?.video_matched ? video.videoRows : []) },
@@ -152,24 +207,34 @@ async function selectStudioVideo(video) {
   status('Loading video…');
   try {
     const signal = beginAnalysisRead();
-    const catalog = await studioTransport.catalog({ videoIds: [video.video_id], signal });
-    if (catalog.scopeError) throw new Error(catalog.scopeError);
-    const target = catalog.browse_targets.find(item => item.video_id === video.video_id);
-    const analysis = target && activeAnalysisId ? await readCompletedAnalysisVideo(callStudioTool, target.run_id, video.video_id, signal) : null;
+    const observed = progressSnapshot?.records.find(row => row.kind === 'video' && row.id === video.video_id)?.state;
+    const entry = observed?.processing_status?.find(row => row.run_id === progressSnapshot.run_id);
+    const pinned = activeAnalysisId && progressSnapshot?.run_id && progressSnapshot.scope.video_ids.includes(video.video_id);
+    const catalog = pinned ? null : await studioTransport.catalog({ videoIds: [video.video_id], signal });
+    if (catalog?.scopeError) throw new Error(catalog.scopeError);
+    const target = pinned ? { run_id: progressSnapshot.run_id, video_id: video.video_id }
+      : catalog.browse_targets.find(item => item.video_id === video.video_id);
+    const existing = pinned ? videoViews.get(viewKey(video.video_id, target.run_id)) : undefined;
+    const revision = pinned ? metadataRevision(entry) : undefined;
+    const cached = revision && existing?.metadataRevision === revision && viewComplete(existing) ? existing : undefined;
+    const analysis = !cached && target && activeAnalysisId && (!pinned || entry?.readiness?.metadata_available)
+      ? await readAnalysisVideo(callStudioTool, target.run_id, video.video_id, signal) : null;
     const completeView = analysis ? analysisResultView(analysis) : null;
-    const page = completeView ? { results: analysisInitialRows(completeView), nextCursor: null }
-      : target ? (await studioTransport.browse({ targets: [{ ...target, limit: 50 }] }))[0] : null;
+    const page = cached ? { results: analysisInitialRows({ unfiltered: { data: [...cached.segment.unfiltered.data, ...cached.video.unfiltered.data] } }), nextCursor: null }
+      : completeView ? { results: analysisInitialRows(completeView), nextCursor: null }
+      : target && !pinned ? (await studioTransport.browse({ targets: [{ ...target, limit: 50 }] }))[0] : null;
     if (requestSelection !== selectionSequence) return;
     studioMode = 'studio'; originalPlayer = undefined; initialContext = undefined;
     initialMatches = []; resultMode = 'all';
     source = target ? { kind: 'prompt_run', id: target.run_id } : { kind: 'media', id: video.video_id };
     initialRows = page?.results ?? [];
-    if (completeView) cacheCompleteViews(analysis, completeView);
+    if (completeView) cacheAnalysisViews(analysis, completeView, pinned ? metadataRevision(entry) : undefined);
     viewRequest = { video_id: video.video_id, result_level: 'segment', view: 'unfiltered' };
-    data = { run_id: target?.run_id, ...(completeView ? { links: completeView.links } : {}), filtered: null, unfiltered: page ? { data: initialRows, pagination: { has_more: Boolean(page.nextCursor), next_cursor: page.nextCursor } } : null };
+    data = { run_id: target?.run_id, ...((completeView || cached) ? { links: (completeView ?? cached).links } : {}), filtered: null, unfiltered: page ? { data: initialRows, pagination: { has_more: Boolean(page.nextCursor), next_cursor: page.nextCursor } } : null };
     filterState = createResultState(video.video_id, target?.run_id ?? null);
+    if (cached) applyAssetRevision(video.video_id, entry?.result_revisions?.assets);
     status('');
-    await choose(initialRows[0] ?? { result_id: `media:${video.video_id}`, result_type: 'video', video_id: video.video_id, video_name: video.title, media_type: video.media_type });
+    await choose(initialRows[0] ?? { result_id: `media:${video.video_id}`, result_type: 'video', video_id: video.video_id, video_name: video.title, media_type: video.media_type, run_id: target?.run_id });
   } catch (error) { if (requestSelection === selectionSequence) status(error.message, true); }
 }
 async function restoreStudioSelection(saved) {
@@ -302,7 +367,7 @@ function render() {
   byId('studio-search').hidden = studioMode !== 'results';
   byId('search-carousel').hidden = studioMode !== 'result';
   byId('back-results').hidden = studioMode !== 'result';
-  studioHost.update({ sessionKey, refreshKey: catalogRevision, mode: studioMode, searchMounted, transport: studioTransport, callTool: callStudioTool,
+  studioHost.update({ sessionKey, refreshKey: catalogRevision, railRefreshKey: progressSnapshot?.version ?? catalogRevision, mode: studioMode, searchMounted, transport: studioTransport, callTool: callStudioTool,
     state: searchState, onStateChange: state => { searchState = state; persistStudio(); }, onResultsChange: receiveSearchResults,
     onSelectResult: selectSearchResult, onSelectVideo: selectStudioVideo, onSearch: showSearch, onExit: showStudio, searchResults,
     segmentProps: { rows: visibleRows, selected, onSelect: choose, label, range, downloadMedia, downloadMetadata: downloadSegmentMetadata },
@@ -374,10 +439,13 @@ async function preload(videoId, complete = false) {
   if (view.promise) { await view.promise; if (!complete || viewComplete(view)) return; }
   if (viewComplete(view)) return;
   if (activeAnalysisId) {
+    const native = progressSnapshot?.records.find(row => row.kind === 'video' && row.id === videoId)?.state;
+    const entry = native?.processing_status?.find(row => row.run_id === requestSource.id);
+    if (requestSource.id === activeAnalysisId && !entry?.readiness?.metadata_available) return;
     const signal = beginAnalysisRead();
-    const analysis = await readCompletedAnalysisVideo(callStudioTool, requestSource.id, videoId, signal);
+    const analysis = await readAnalysisVideo(callStudioTool, requestSource.id, videoId, signal);
     if (source !== requestSource || signal.aborted) return;
-    cacheCompleteViews(analysis); render(); return;
+    cacheAnalysisViews(analysis, undefined, metadataRevision(entry)); render(); return;
   }
   if (view.error && !complete) return;
   view.loading = true; view.error = null;
@@ -617,7 +685,8 @@ app.ontoolresult = async result => {
   const value = result._meta?.analysis ?? result._meta?.import ?? result.structuredContent;
   if (!result.isError && (value?.analysis_id || value?.import_id)) {
     if (activeAnalysisId !== value.analysis_id || activeImportId !== value.import_id) {
-      activeImportId = value.import_id; activeAnalysisId = value.analysis_id; completedRevision = undefined; originalPlayer = undefined; searchResults = []; pendingRestoreSelected = undefined;
+      uploadController?.abort(); byId('submit').disabled = false; byId('files').disabled = false;
+      activeImportId = value.import_id; activeAnalysisId = value.analysis_id; progressSnapshot = undefined; originalPlayer = undefined; searchResults = []; pendingRestoreSelected = undefined;
       uploadGrant = undefined; uploadFiles = []; uploadedFiles.clear(); byId('files').value = ''; byId('selection').textContent = ''; byId('upload-message').textContent = '';
       clearSelection(); videoViews.clear(); source = undefined; data = undefined;
       initialRows = []; initialMatches = []; visibleRows = [];
@@ -631,7 +700,7 @@ app.ontoolresult = async result => {
     analysisProgress.start(value);
     return;
   }
-  analysisProgress.reset(); analysisLoadController?.abort(); activeAnalysisId = undefined; activeImportId = undefined;
+  uploadController?.abort(); analysisProgress.reset(); analysisLoadController?.abort(); activeAnalysisId = undefined; activeImportId = undefined;
   byId('analysis-progress').hidden = true; byId('upload-form').hidden = true;
   await receiveResult(result);
 };
@@ -644,13 +713,15 @@ byId('upload-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (!uploadGrant || !uploadFiles.length) return;
   const grant = uploadGrant, taskId = activeAnalysisId ?? activeImportId;
-  if (uploadFiles.length > grant.max_files) { byId('upload-message').textContent = `Choose no more than ${grant.max_files} files.`; return; }
+  if (uploadController && !uploadController.signal.aborted) return;
+  const controller = new AbortController(); uploadController = controller;
+  if (uploadFiles.length > grant.max_files) { uploadController = undefined; byId('upload-message').textContent = `Choose no more than ${grant.max_files} files.`; return; }
   const send = async (url, body) => {
     const target = new URL(url), origin = new URL(grant.url);
     if (target.protocol !== 'https:' || target.origin !== origin.origin || target.username || target.password) throw new Error('The upload destination is unavailable.');
     const response = await fetch(target.href, { method: 'POST', credentials: 'omit', redirect: 'error',
-      headers: { Authorization: `Bearer ${grant.token}`, ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) },
-      body: body instanceof FormData ? body : JSON.stringify(body) });
+      signal: controller.signal, headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
     if (!response.ok) throw new Error(response.status === 401 || response.status === 403
       ? 'This upload session expired. Refresh this analysis to continue.' : 'Upload did not finish. Try again to resume the selected files.');
     return response.json();
@@ -659,17 +730,22 @@ byId('upload-form').addEventListener('submit', async event => {
   try {
     await uploadAttachmentBatch(uploadFiles.filter(entry => !uploadedFiles.has(entry.file_id)), async entry => {
       byId('upload-message').textContent = `Uploading: ${entry.file.name} (${uploadedFiles.size} of ${uploadFiles.length} received)`;
-      const body = new FormData(); body.append('file', entry.file); body.append('file_id', entry.file_id);
-      await send(grant.url, body); uploadedFiles.add(entry.file_id);
+      const descriptor = await describeAttachmentFile(entry.file);
+      const initialized = await send(grant.url, { file_id: entry.file_id, ...descriptor, restart_expired: false });
+      if (initialized.upload) await transferAttachmentFile(entry.file, initialized.upload, controller.signal, confirmed => {
+        if (!disposed && (activeAnalysisId ?? activeImportId) === taskId) byId('upload-message').textContent = `Uploading: ${entry.file.name} (${Math.floor(100 * confirmed / entry.file.size)}% received)`;
+      });
+      await send(`${grant.url}/complete`, { file_id: entry.file_id });
+      uploadedFiles.add(entry.file_id);
       byId('upload-message').textContent = `${uploadedFiles.size} of ${uploadFiles.length} files received`;
     });
     await send(grant.complete_url, { file_ids: uploadFiles.map(entry => entry.file_id) });
     if ((activeAnalysisId ?? activeImportId) !== taskId || disposed) return;
     uploadGrant = undefined; byId('upload-form').hidden = true;
     byId('analysis-message').textContent = activeImportId ? 'Files received. Importing media…' : 'Files received. Preparing the analysis…';
-    await analysisProgress.refresh();
+    void analysisProgress.refresh();
   } catch (error) { if (!disposed && (activeAnalysisId ?? activeImportId) === taskId) byId('upload-message').textContent = error.message; }
-  finally { byId('submit').disabled = false; byId('files').disabled = false; }
+  finally { if (uploadController === controller) uploadController = undefined; if (!disposed && (activeAnalysisId ?? activeImportId) === taskId) { byId('submit').disabled = false; byId('files').disabled = false; } }
 });
 byId('next').addEventListener('click', async () => {
   const requestSource = source;
@@ -690,6 +766,7 @@ byId('next').addEventListener('click', async () => {
     } else await preload(selected?.video_id ?? viewRequest.video_id, true);
   } catch (error) { if (source === requestSource) status(error.message, true); }
 });
+byId('analysis-reconnect').addEventListener('click', () => { byId('analysis-reconnect').hidden = true; void analysisProgress.refresh(); });
 byId('back-results').addEventListener('click', showSearch);
 byId('open-app').addEventListener('click', () => open(selected?.links?.play ?? data?.links?.open_in_app));
 player.addEventListener('loadedmetadata', seekSelected);
@@ -708,5 +785,5 @@ player.addEventListener('error', () => { if (!player.hidden && player.getAttribu
 imagePreview.addEventListener('error', () => { if (!imagePreview.hidden && imagePreview.getAttribute('src')) recoverMedia('Image'); });
 const pauseAnalysisReads = () => { if (document.visibilityState === 'hidden') analysisLoadController?.abort(); };
 document.addEventListener?.('visibilitychange', pauseAnalysisReads);
-app.onteardown = async () => { disposed = true; analysisLoadController?.abort(); document.removeEventListener?.('visibilitychange', pauseAnalysisReads); analysisProgress.stop(); persistStudio(); studioHost.unmount(); source = undefined; clearSelection(); videoViews.clear(); mediaGrants.clear(); return {}; };
+app.onteardown = async () => { disposed = true; uploadController?.abort(); analysisLoadController?.abort(); document.removeEventListener?.('visibilitychange', pauseAnalysisReads); analysisProgress.stop(); persistStudio(); studioHost.unmount(); source = undefined; clearSelection(); videoViews.clear(); mediaGrants.clear(); return {}; };
 await app.connect();

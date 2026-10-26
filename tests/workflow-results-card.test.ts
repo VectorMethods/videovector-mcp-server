@@ -6,10 +6,11 @@ import { executeTool, getToolDefinitions, getToolRequiredScope } from '../src/to
 import { artifactLink, appOrigin, projectWorkflowPayload, resultLink } from '../src/tools/workflow-result-projection.js';
 import { WORKFLOW_RESULT_TOOLS, WORKFLOW_DETAIL_TOOLS, RESULTS_CARD_URI } from '../src/tools/workflow-result-contract.js';
 import * as resultView from '../ui/results-view';
-import { createAnalysisProgressController, analysisResultView, readCompletedAnalysisVideo } from '../ui/analysis-progress';
-import { createStudioTransport, normalizeStudioResult } from '../ui/results-search';
+import { createAnalysisProgressController, analysisResultView, readAnalysisVideo, processingView, metadataRevision } from '../ui/analysis-progress';
+import { createStudioTransport, normalizeStudioResult, readStudioState as readHostState, saveStudioState as saveHostState } from '../ui/results-search';
 import { getSearchResultKey } from '../ui/utils/searchResultIdentity';
 import { uploadAttachmentBatch } from '../src/attachments/upload-batch.js';
+import { describeAttachmentFile, transferAttachmentFile } from '../src/attachments/resumable-file.js';
 
 const secret = 'https://storage.googleapis.com/private/clip.mp4?X-Goog-Signature=private-capability';
 const row = { result_id: 'segment:seg-1:run-1', result_type: 'segment', run_id: 'run-1', video_id: 'video-1', segment_id: 'seg-1', video_name: 'Launch', start_time: 4, end_time: 9, metadata: { scene: 'x'.repeat(200000), gcs_uri: 'customer field' }, video_uri: secret, segment_uri: secret, raw_llm_response: 'private raw output', source_index_id: 'index-1' };
@@ -178,12 +179,18 @@ async function cardHarness(restored: any = null) {
       : { _meta: { view: cardPage } };
   const callServerTool = vi.fn(defaultResponse);
   let studioProps: any;
-  const views = { ...resultView, uploadAttachmentBatch, createAnalysisProgressController: (options: any) => createAnalysisProgressController({ ...options, visibility: document }), analysisResultView, readCompletedAnalysisVideo, createStudioTransport, normalizeStudioResult, getSearchResultKey, readStudioState: () => restored, saveStudioState: vi.fn(), createStudioSearchHost: () => ({ update: (props: any) => {
+  const views = { ...resultView, uploadAttachmentBatch, describeAttachmentFile, transferAttachmentFile, createAnalysisProgressController: (options: any) => createAnalysisProgressController({ ...options, visibility: document }), analysisResultView, readAnalysisVideo, processingView, metadataRevision, createStudioTransport, normalizeStudioResult, getSearchResultKey, readStudioState: () => restored, saveStudioState: vi.fn(), createStudioSearchHost: () => ({ update: (props: any) => {
     studioProps = props; const p = props.segmentProps;
     views.renderSegments(document.getElementById('rows'), p.rows, p.selected, p.onSelect, p.label, p.range, p.downloadMedia, p.downloadMetadata);
   }, unmount: vi.fn() }), renderMetadata: vi.fn(), renderSegments: vi.fn(), renderTimeline: vi.fn(), renderToolbar: vi.fn(), renderDownloads: vi.fn() };
+  const pendingObservations: Array<{ resolve: (value: any) => void; signal?: AbortSignal }> = [];
+  const observeCalls = vi.fn((_request: any, options: any) => new Promise((resolve, reject) => {
+    const signal = options?.signal;
+    const pending = { resolve, signal }; pendingObservations.push(pending);
+    signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+  }));
   class App {
-    callServerTool = callServerTool;
+    callServerTool = (...args: any[]) => args[0].arguments?.observe ? observeCalls(args[0], args[1]) : callServerTool(...args);
     connect = vi.fn().mockResolvedValue(undefined);
     openLink = vi.fn().mockResolvedValue({});
     getHostCapabilities = vi.fn().mockReturnValue({ downloadFile: {} });
@@ -193,7 +200,15 @@ async function cardHarness(restored: any = null) {
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const app = await new AsyncFunction('App', 'document', ...Object.keys(views), `${source}\nreturn app;`)(App, document, ...Object.values(views));
   const receive = (value: any = cardPage, request: any = { video_id: 'video-1', view: 'both' }) => app.ontoolresult({ structuredContent: { ...value, source_kind: 'prompt_run', source_id: 'run-1' }, _meta: { view: value, viewRequest: request } });
-  return { app, receive, callServerTool, defaultResponse, ...views, studio: () => studioProps, control: document.getElementById,
+  return { app, receive, callServerTool, observeCalls,
+    emitProgress: async (value: any) => {
+      const pending = pendingObservations.find(item => !item.signal?.aborted);
+      if (!pending) throw new Error('No native observation is pending');
+      pendingObservations.splice(pendingObservations.indexOf(pending), 1);
+      pending.resolve({ _meta: { progress: value } });
+      for (let i = 0; i < 80; i++) await Promise.resolve();
+    },
+    defaultResponse, ...views, studio: () => studioProps, control: document.getElementById,
     setVisibility: (value: string) => { document.visibilityState = value; document.dispatchEvent(new Event('visibilitychange')); },
     mediaCalls: () => callServerTool.mock.calls.filter(([request]) => request.name === 'play_workflow_media'),
     viewCalls: () => callServerTool.mock.calls.filter(([request]) => request.name === 'view_workflow_results'),
@@ -432,6 +447,33 @@ describe('results card Studio behavior', () => {
     expect(call).toHaveBeenCalledExactlyOnceWith('list_studio_scope', { limit: 100 }, undefined);
   });
 
+  it('keeps one catalog read through rail/search invalidation and ignores image-only progress', async () => {
+    let complete!: (value: any) => void;
+    const call = vi.fn().mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+    const transport = createStudioTransport(call);
+    const videos = [{ video_id: 'v1', processing_status: [{ run_id: 'r1', status: 'processing',
+      readiness: { metadata_available: true, image_search_ready: false }, enrichment: { image: { completed: 0 } } }] }];
+    expect(transport.updateProgress?.(videos as any)).toBe(true);
+    const rail = transport.catalog({});
+    transport.invalidateCatalog?.();
+    const search = transport.catalog({});
+    complete({ _meta: { catalog: { videos: [], runs: [], fields: [], browse_targets: [] } } });
+    await Promise.all([rail, search]);
+    expect(call).toHaveBeenCalledTimes(1);
+    const images = structuredClone(videos);
+    images[0].processing_status[0].enrichment.image.completed = 1;
+    expect(transport.updateProgress?.(images as any)).toBe(false);
+    expect(transport.updateProgress?.(images as any)).toBe(false);
+    await transport.catalog({});
+    expect(call).toHaveBeenCalledTimes(1);
+    images[0].processing_status[0].readiness.image_search_ready = true;
+    expect(transport.updateProgress?.(images as any)).toBe(true);
+    const ready = transport.catalog({});
+    complete({ _meta: { catalog: { videos: [], runs: [], fields: [], browse_targets: [] } } });
+    await ready;
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
   it('reuses an uncertain semantic attempt key, then assigns a new key after success', async () => {
     const call = vi.fn().mockRejectedValueOnce(new Error('disconnected')).mockResolvedValue({ _meta: { view: { snapshot_id: 'snapshot-1', data: [], pagination: {} } } });
     const transport = createStudioTransport(call);
@@ -505,122 +547,190 @@ const liveAnalysis = (revision: string, options: any = {}) => ({
   }] }, ...options,
 });
 
-it('keeps an import-only task in the same progress widget and never requests an analysis bundle', async () => {
-  vi.useFakeTimers();
+const nativeProgress = (version: string, options: any = {}) => ({
+  analysis_id: 'anl-current', import_id: null, run_id: 'anl-current', version, idle: false,
+  scope: { type: 'index', index_id: 'index-1', video_ids: ['video-1'] },
+  records: [
+    { kind: 'run', id: 'anl-current', version, state: { run_id: 'anl-current', status: 'processing' } },
+    { kind: 'video', id: 'video-1', version, state: { video_id: 'video-1', title: 'Launch', media_type: 'video',
+      processing_status: [{ run_id: 'anl-current', status: 'processing', activity: { phase: 'extracting' },
+        total_parts: 2, completed_parts: 1, failed_parts: 0,
+        result_revisions: { metadata: version, segments: version },
+        readiness: { metadata_available: true, assets_available: false, text_search_ready: false, image_search_ready: false },
+        enrichment: { image: { status: 'pending', completed: 0, total: 2, failed: 0 } }, segments: [],
+      }] } },
+  ], ...options,
+});
+
+it('observes import-only work through the native adapter without requesting analysis metadata', async () => {
   const card = await cardHarness();
   try {
-    const importing = { import_id: 'imp-current', status: 'importing', stage: 'importing', scope: { type: 'index', index_id: 'index-1' },
-      progress: { imported: 1, parts_completed: 1 }, files: { items: [{ file_name: 'clip.mp4', status: 'importing' }] }, results: { final: false } };
-    const completed = { ...importing, status: 'completed', stage: 'completed', results: { final: true }, progress: { imported: 2, parts_completed: 2 } };
-    card.callServerTool.mockResolvedValue({ _meta: { import: completed } });
-    await card.app.ontoolresult({ _meta: { import: { ...importing, status: 'awaiting_upload', stage: 'uploading' },
-      upload: { url: 'https://api.example/uploads', complete_url: 'https://api.example/complete', token: 'test-grant', accept: 'video/*', max_files: 8 } } });
-    expect(card.control('upload-form').hidden).toBe(false);
-    await card.app.ontoolresult({ structuredContent: importing, _meta: { import: importing } });
-    expect(card.control('upload-form').hidden).toBe(true);
-    expect(card.control('analysis-stage').textContent).toBe('importing');
-    expect(card.control('analysis-files').textContent).toContain('clip.mp4');
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(card.callServerTool).toHaveBeenCalledExactlyOnceWith({ name: 'read_analysis', arguments: { import_id: 'imp-current' } }, expect.any(Object));
+    const importing = { import_id: 'imp-current', status: 'importing', stage: 'importing', progress: { imported: 0 } };
+    await card.app.ontoolresult({ _meta: { import: importing } });
+    expect(card.observeCalls).toHaveBeenCalledWith({ name: 'read_analysis', arguments: { import_id: 'imp-current', observe: true, wait_seconds: 25 } }, expect.any(Object));
+    await card.emitProgress({ analysis_id: 'imp-current', import_id: 'imp-current', run_id: null, version: '1', idle: true, scope: { type: 'playground', video_ids: [] },
+      records: [{ kind: 'import_job', id: 'imp-current', version: '1', state: { phase: 'completed', status: 'completed', progress: { imported: 2, total_files: 2 } } }] });
     expect(card.control('analysis-stage').textContent).toBe('completed');
-    expect(card.control('analysis-counts').textContent).toContain('2 complete');
-    await vi.advanceTimersByTimeAsync(20000);
-    expect(card.callServerTool).toHaveBeenCalledTimes(1);
-    expect(card.viewCalls()).toHaveLength(0);
-    expect(card.mediaCalls()).toHaveLength(0);
-  } finally { await card.app.onteardown(); vi.useRealTimers(); }
+    expect(card.control('analysis-counts').textContent).toBe('2 of 2 received');
+    expect(card.callServerTool).not.toHaveBeenCalled();
+    expect(card.observeCalls).toHaveBeenCalledTimes(1);
+  } finally { await card.app.onteardown(); }
 });
-describe('analysis widget lifecycle', () => {
-  it('runs import through terminal through the private adapter, pausing hidden reads without changing index or playback', async () => {
-    vi.useFakeTimers();
-    const card = await cardHarness();
-    const empty = { revision: 'intake', included_videos: 0, final: false, videos: [], data: [] };
-    let current = liveAnalysis('intake', { status: 'importing', stage: 'importing', message: 'Receiving three videos.',
-      progress: { total: 3, imported: 1, completed: 0, processing: 0 }, results: empty });
-    const client = {
-      getAnalysis: vi.fn(async (_identity, options) => {
-        const value = structuredClone(current);
-        if (options.detail !== 'full') delete value.results.data;
-        return value;
-      }),
-      getVideosInIndex: vi.fn().mockResolvedValue({ data: [{ video_id: 'video-1', title: 'Launch' }], pagination: {} }),
-      getPlaygroundVideos: vi.fn(),
-      workflowSearchScope: vi.fn().mockResolvedValue({ runs: [], browse_targets: [{ run_id: 'anl-current', video_id: 'video-1' }], fields: [] }),
-    } as unknown as VideoVectorClient;
-    card.callServerTool.mockImplementation(async request => ['read_analysis', 'list_studio_scope'].includes(request.name)
-      ? executeTool(request.name, request.arguments, client) : card.defaultResponse(request));
+describe('analysis widget native lifecycle', () => {
+  it('adds later accepted parts and summary without resetting playback, then keeps observing independent enrichment', async () => {
+    const card = await cardHarness(); let current = liveAnalysis('partial');
+    card.callServerTool.mockImplementation(async request => request.name === 'read_analysis' ? { _meta: { analysis: current } } : card.defaultResponse(request));
     try {
-      await card.app.ontoolresult({ structuredContent: current, _meta: { analysis: current } });
-      expect(card.control('analysis-stage').textContent).toBe('importing');
-      await vi.advanceTimersByTimeAsync(4999);
-      expect(client.getAnalysis).not.toHaveBeenCalled();
-      current = liveAnalysis('queued', { status: 'processing', stage: 'processing', message: 'All videos received; analysis is running.',
-        progress: { total: 3, imported: 3, completed: 0, processing: 3 }, results: { ...empty, revision: 'queued' } });
-      await vi.advanceTimersByTimeAsync(1);
-      expect(card.control('analysis-stage').textContent).toBe('processing');
-      expect(card.control('analysis-counts').textContent).toBe('3 received · 0 complete · 3 processing');
-
-      current = liveAnalysis('partial');
-      current.results.videos = [{ video_id: 'video-1', name: 'Launch' }];
-      current.results.data[0].segments.push({ segment_id: 'seg-2', start_time: 9, end_time: 14, metadata: { scene: 'Second scene' } });
-      await vi.advanceTimersByTimeAsync(5000);
-      expect(card.control('analysis-counts').textContent).toContain('1 complete');
-      expect(card.tiles()).toHaveLength(2);
-      await card.studio().segmentProps.onSelect(card.tiles()[1]);
-      card.control('player').currentTime = 12;
-      const selectedKey = card.studio().segmentProps.selected.result_id;
+      await card.app.ontoolresult({ _meta: { analysis: current } });
+      await card.emitProgress(nativeProgress('part-1'));
+      expect(card.tiles()).toHaveLength(1);
+      expect(card.control('analysis-files').textContent).toContain('1/2 parts');
+      card.control('player').currentTime = 7;
+      const selected = card.studio().segmentProps.selected.result_id;
       const mediaCalls = card.mediaCalls().length;
-      await card.studio().transport.catalog({});
-      expect(client.getVideosInIndex).toHaveBeenCalledWith('index-1', 100, undefined);
-      expect(client.getPlaygroundVideos).not.toHaveBeenCalled();
-      expect(client.workflowSearchScope).toHaveBeenCalledWith({ video_ids: ['video-1'], latest_only: true, container_index_id: 'index-1' });
-
-      card.setVisibility('hidden');
-      const readsBeforeHidden = vi.mocked(client.getAnalysis).mock.calls.length;
-      await vi.advanceTimersByTimeAsync(30000);
-      expect(client.getAnalysis).toHaveBeenCalledTimes(readsBeforeHidden);
-      current = liveAnalysis('final', { status: 'completed', stage: 'completed', message: 'All three videos are complete.',
-        progress: { total: 3, imported: 3, completed: 3, processing: 0 },
-        results: { ...current.results, revision: 'final', final: true, included_videos: 3 }, next_action: { type: 'download_and_answer' } });
-      card.setVisibility('visible');
-      await vi.advanceTimersByTimeAsync(0);
-      expect(card.control('analysis-stage').textContent).toBe('completed');
-      expect(card.control('analysis-counts').textContent).toBe('3 received · 3 complete');
-      expect(card.studio().segmentProps.selected.result_id).toBe(selectedKey);
-      expect(card.studio().segmentProps.selected.source_index_id).toBe('index-1');
-      expect(card.control('player').currentTime).toBe(12);
+      current = liveAnalysis('complete');
+      current.results.data[0].segments.push({ segment_id: 'seg-2', start_time: 9, end_time: 14, metadata: { scene: 'Later part' } });
+      current.results.data[0].video_level.metadata = { summary: 'Final summary' };
+      const finishing = nativeProgress('part-2'); finishing.records[0].state.status = 'completed';
+      finishing.records[1].state.processing_status[0].completed_parts = 2;
+      await card.emitProgress(finishing);
+      expect(card.tiles()).toHaveLength(2);
+      expect(card.control('player').currentTime).toBe(7);
+      expect(card.studio().segmentProps.selected.result_id).toBe(selected);
       expect(card.mediaCalls()).toHaveLength(mediaCalls);
-      await vi.advanceTimersByTimeAsync(30000);
-      expect(client.getAnalysis).toHaveBeenCalledTimes(readsBeforeHidden + 1);
-      expect(vi.mocked(client.getAnalysis).mock.calls.every(([, options]) => options?.include_download === false)).toBe(true);
-      expect(card.callServerTool.mock.calls.every(([request]) => request.arguments.intent !== 'download')).toBe(true);
-      expect(card.viewCalls()).toHaveLength(0);
-    } finally { await card.app.onteardown(); vi.useRealTimers(); }
+      expect(card.renderMetadata.mock.calls.some(call => call[3] === 'Video analysis' && call[1].summary === 'Final summary')).toBe(true);
+      expect(card.control('analysis-message').textContent).toContain('Media and search updates are continuing');
+      const reads = card.callServerTool.mock.calls.filter(([request]) => request.name === 'read_analysis').length;
+      const assets = structuredClone(finishing); assets.version = 'assets';
+      assets.records[1].state.processing_status[0].readiness.assets_available = true;
+      assets.records[1].state.processing_status[0].result_revisions.assets = 'poster-1';
+      assets.records[1].state.processing_status[0].enrichment.image.completed = 1;
+      await card.emitProgress(assets);
+      expect(card.control('analysis-files').textContent).toContain('images 1/2');
+      expect(card.tiles().every(row => row.assets_revision === 'poster-1')).toBe(true);
+      expect(card.callServerTool.mock.calls.filter(([request]) => request.name === 'read_analysis')).toHaveLength(reads);
+      const final = structuredClone(assets); final.version = 'settled'; final.idle = true;
+      final.records[1].state.processing_status[0].enrichment.image.completed = 2;
+      await card.emitProgress(final);
+      const observations = card.observeCalls.mock.calls.length;
+      card.setVisibility('hidden'); card.setVisibility('visible');
+      expect(card.observeCalls).toHaveBeenCalledTimes(observations);
+      expect(card.control('analysis-message').textContent).toBe('Processing updates complete.');
+    } finally { await card.app.onteardown(); }
   });
 
-  it('opens a complete video while its siblings process, refreshes progress, and preserves playback', async () => {
-    vi.useFakeTimers();
+  it('repaints native progress without invalidating Search on timeouts, heartbeats or asset/image changes', async () => {
+    const card = await cardHarness();
+    card.callServerTool.mockImplementation(async request => request.name === 'read_analysis'
+      ? { _meta: { analysis: liveAnalysis('accepted') } } : card.defaultResponse(request));
+    try {
+      await card.app.ontoolresult({ _meta: { analysis: liveAnalysis('accepted') } });
+      const first = nativeProgress('accepted');
+      await card.emitProgress(first);
+      const key = card.studio().refreshKey;
+      await card.emitProgress(structuredClone(first));
+      expect(card.studio().refreshKey).toBe(key);
+      const heartbeat = structuredClone(first); heartbeat.version = 'heartbeat';
+      await card.emitProgress(heartbeat);
+      expect(card.studio().refreshKey).toBe(key);
+      expect(card.studio().railRefreshKey).toBe('heartbeat');
+      const image = structuredClone(heartbeat); image.version = 'image';
+      image.records[1].state.processing_status[0].result_revisions.assets = 'poster';
+      image.records[1].state.processing_status[0].enrichment.image.completed = 1;
+      await card.emitProgress(image);
+      expect(card.studio().refreshKey).toBe(key);
+      expect(card.callServerTool.mock.calls.filter(([request]) => request.name === 'read_analysis')).toHaveLength(1);
+      const ready = structuredClone(image); ready.version = 'search-ready';
+      ready.records[1].state.processing_status[0].readiness.image_search_ready = true;
+      await card.emitProgress(ready);
+      expect(card.studio().refreshKey).toBe(key + 1);
+    } finally { await card.app.onteardown(); }
+  });
+
+  it('reuses exact-revision complete metadata on A to B to A, but refreshes changed metadata and isolates runs', async () => {
+    const card = await cardHarness();
+    card.callServerTool.mockImplementation(async request => request.name === 'read_analysis'
+      ? { _meta: { analysis: { ...liveAnalysis('body'), analysis_id: request.arguments.analysis_id,
+        results: { ...liveAnalysis('body').results, data: [{ ...liveAnalysis('body').results.data[0], video_id: request.arguments.video_id }] } } } }
+      : card.defaultResponse(request));
+    const reads = () => card.callServerTool.mock.calls.filter(([request]) => request.name === 'read_analysis');
+    try {
+      await card.app.ontoolresult({ _meta: { analysis: liveAnalysis('accepted') } });
+      const first = nativeProgress('accepted'); first.scope.video_ids.push('video-2');
+      const second = structuredClone(first.records[1]); second.id = 'video-2'; second.state.video_id = 'video-2'; first.records.push(second);
+      await card.emitProgress(first);
+      await card.studio().onSelectVideo({ video_id: 'video-2', title: 'B' });
+      const assets = structuredClone(first); assets.version = 'assets';
+      assets.records[1].state.processing_status[0].result_revisions.assets = 'poster-ready';
+      await card.emitProgress(assets);
+      await card.studio().onSelectVideo({ video_id: 'video-1', title: 'A' });
+      expect(reads()).toHaveLength(2);
+      expect(card.tiles().find(row => row.video_id === 'video-1').assets_revision).toBe('poster-ready');
+      await card.studio().onSelectVideo({ video_id: 'video-2', title: 'B' });
+      const newer = structuredClone(first); newer.version = 'later';
+      newer.records[1].state.processing_status[0].result_revisions.metadata = 'accepted-later';
+      await card.emitProgress(newer);
+      expect(reads()).toHaveLength(2);
+      await card.studio().onSelectVideo({ video_id: 'video-1', title: 'A' });
+      expect(reads()).toHaveLength(3);
+      const old = { ...cardRow, run_id: 'run-old', result_id: 'segment:seg-1:run-old' };
+      await card.studio().onSelectResult(old, [old]);
+      expect(reads()).toHaveLength(4);
+      expect(reads().at(-1)![0].arguments.analysis_id).toBe('run-old');
+      await card.studio().onSelectVideo({ video_id: 'video-1', title: 'A' });
+      expect(reads()).toHaveLength(4);
+      expect(card.studio().segmentProps.selected.run_id).toBe('anl-current');
+    } finally { await card.app.onteardown(); }
+  });
+
+  it('hydrates the known asset revision when selecting another video after native observation is idle', async () => {
+    const card = await cardHarness();
+    card.callServerTool.mockImplementation(async request => request.name === 'read_analysis'
+      ? { _meta: { analysis: { ...liveAnalysis('settled'), results: { ...liveAnalysis('settled').results,
+        data: [{ ...liveAnalysis('settled').results.data[0], video_id: request.arguments.video_id, segments: [{ segment_id: `${request.arguments.video_id}-segment`, start_time: 0, end_time: 5, metadata: { scene: 'Scene' } }] }] } } } }
+      : card.defaultResponse(request));
+    try {
+      await card.app.ontoolresult({ _meta: { analysis: liveAnalysis('settled') } });
+      const final = nativeProgress('settled', { idle: true });
+      final.scope.video_ids.push('video-2');
+      final.records[1].state.processing_status[0].result_revisions.assets = 'assets-ready';
+      const second = structuredClone(final.records[1]); second.id = 'video-2'; second.state.video_id = 'video-2'; final.records.push(second);
+      await card.emitProgress(final);
+      expect(card.observeCalls).toHaveBeenCalledTimes(1);
+      await card.studio().onSelectVideo({ video_id: 'video-2', title: 'Second' });
+      expect(card.studio().segmentProps.selected.video_id).toBe('video-2');
+      expect(card.tiles().find(row => row.video_id === 'video-2').assets_revision).toBe('assets-ready');
+      expect(card.observeCalls).toHaveBeenCalledTimes(1);
+    } finally { await card.app.onteardown(); }
+  });
+
+  it('restores the same accepted segment in a mounted analysis view without relying on a host-specific API', async () => {
+    const restored = { mode: 'studio', selected: { video_id: 'video-1', run_id: 'anl-current', segment_id: 'seg-2', result_id: 'segment:seg-2:anl-current' }, search: { videoIds: null, query: '', filters: [] } };
+    const card = await cardHarness(restored);
+    const current = liveAnalysis('ready');
+    current.results.data[0].segments.push({ segment_id: 'seg-2', start_time: 9, end_time: 14, metadata: { scene: 'Selected later part' } });
+    card.callServerTool.mockImplementation(async request => request.name === 'read_analysis' ? { _meta: { analysis: current } } : card.defaultResponse(request));
+    try {
+      await card.app.ontoolresult({ _meta: { analysis: current } });
+      await card.emitProgress(nativeProgress('ready'));
+      expect(card.studio().segmentProps.selected).toMatchObject({ segment_id: 'seg-2', run_id: 'anl-current' });
+      expect(card.callServerTool.mock.calls.filter(([request]) => request.name === 'read_analysis')).toHaveLength(1);
+    } finally { await card.app.onteardown(); }
+  });
+
+  it('opens the original before metadata and pins an active video instead of selecting an older completed run', async () => {
     const card = await cardHarness();
     try {
-      const value = liveAnalysis('rev-1');
-      card.callServerTool.mockImplementation(async request => request.name === 'read_analysis' ? { _meta: { analysis: value } } : card.defaultResponse(request));
-      await card.app.ontoolresult({ structuredContent: value, _meta: { analysis: value } });
-      expect(card.tiles()).toEqual([expect.objectContaining({ metadata: { scene: 'Ready segment' }, run_id: 'anl-current' })]);
-      expect(card.viewCalls()).toHaveLength(0);
-      expect(card.control('analysis-counts').textContent).toContain('3 received');
-      expect(card.control('analysis-files').textContent).toContain('Launch: completed');
-      card.control('player').currentTime = 7;
-      const mediaCalls = card.mediaCalls().length;
-      card.callServerTool.mockImplementation(async request => request.name === 'read_analysis'
-        ? { _meta: { analysis: liveAnalysis('rev-2', { progress: { total: 3, imported: 3, completed: 2, processing: 1 } }) } }
-        : card.defaultResponse(request));
-      await vi.advanceTimersByTimeAsync(5000);
-      expect(card.callServerTool).toHaveBeenCalledWith({ name: 'read_analysis', arguments: { analysis_id: 'anl-current' } }, expect.any(Object));
-      expect(card.control('analysis-counts').textContent).toContain('2 complete');
-      expect(card.control('player').currentTime).toBe(7);
-      expect(card.mediaCalls()).toHaveLength(mediaCalls);
-      expect(card.viewCalls()).toHaveLength(0);
-    } finally { await card.app.onteardown(); vi.useRealTimers(); }
+      await card.app.ontoolresult({ _meta: { analysis: liveAnalysis('empty', { results: { included_videos: 0 } }) } });
+      const active = nativeProgress('preparing'); active.records[1].state.processing_status[0].readiness.metadata_available = false;
+      await card.emitProgress(active);
+      expect(card.mediaCalls()).toHaveLength(1);
+      expect(card.callServerTool.mock.calls.some(([request]) => request.name === 'read_analysis')).toBe(false);
+      expect(card.studio().segmentProps.selected.run_id).toBe('anl-current');
+      await card.studio().onSelectVideo({ video_id: 'video-1', title: 'Launch' });
+      expect(card.callServerTool.mock.calls.some(([request]) => request.name === 'list_studio_scope')).toBe(false);
+      expect(card.studio().segmentProps.selected.run_id).toBe('anl-current');
+    } finally { await card.app.onteardown(); }
   });
 
   it('renews the included JSON download only when the user clicks download', async () => {
@@ -629,6 +739,7 @@ describe('analysis widget lifecycle', () => {
     try {
       card.callServerTool.mockImplementation(async request => request.name === 'read_analysis' ? { _meta: { analysis: value } } : card.defaultResponse(request));
       await card.app.ontoolresult({ structuredContent: value, _meta: { analysis: value } });
+      await card.emitProgress(nativeProgress('ready'));
       expect(card.callServerTool.mock.calls.some(([request]) => request.arguments.intent === 'download')).toBe(false);
       card.callServerTool.mockImplementation(async request => request.name === 'read_analysis'
         ? { _meta: { analysis: { results: { download_url: 'https://api.example/analyses/anl-current/results.json?token=grant' } } } }
@@ -660,7 +771,10 @@ describe('analysis widget lifecycle', () => {
 it('keeps native upload and import-to-processing updates in the same analysis widget', async () => {
   vi.useFakeTimers();
   const card = await cardHarness();
-  const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+  const fetch = vi.fn().mockImplementation(async (url: string, init: RequestInit) => {
+    if (url === 'https://api.example/upload') { const body=JSON.parse(String(init.body)); return Response.json({job:{job_id:'batch'},upload:{transport:'resumable',url:'https://storage.googleapis.com/upload/one',offset:0,total_bytes:body.size_bytes,chunk_size:8388608}}); }
+    return Response.json({});
+  });
   vi.stubGlobal('fetch', fetch);
   try {
     const initial = liveAnalysis('empty', { stage: 'awaiting_upload', status: 'awaiting_upload', results: { revision: 'empty', included_videos: 0, final: false }, next_action: { type: 'request_input' } });
@@ -670,15 +784,18 @@ it('keeps native upload and import-to-processing updates in the same analysis wi
     card.control('files').files = [new File(['video'], 'launch.mp4', { type: 'video/mp4' })];
     await card.control('files').fire('change');
     await card.control('upload-form').fire('submit');
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    const storageRequest=fetch.mock.calls.find(([url]) => url.startsWith('https://storage.googleapis.com/'))![1];
+    expect(storageRequest.headers).toEqual({'Content-Range':'bytes 0-4/5'});
+    expect(storageRequest.credentials).toBe('omit');
+    expect(await (storageRequest.body as Blob).text()).toBe('video');
     expect(card.control('upload-form').hidden).toBe(true);
+    await card.emitProgress({ ...nativeProgress('importing'), run_id: null, records: [{ kind: 'import_job', id: 'anl-current', version: 'importing', state: { status: 'importing', phase: 'importing', progress: { imported: 1, total_files: 1 } } }] });
     expect(card.control('analysis-stage').textContent).toBe('importing');
-    expect(card.callServerTool).toHaveBeenLastCalledWith({ name: 'read_analysis', arguments: { analysis_id: 'anl-current' } }, expect.any(Object));
-    card.callServerTool.mockResolvedValue({ _meta: { analysis: { ...importing, stage: 'processing', status: 'processing', message: 'Video analysis is running.' } } });
-    await vi.advanceTimersByTimeAsync(5000);
+    const processing = nativeProgress('processing'); processing.records[1].state.processing_status[0].readiness.metadata_available = false;
+    await card.emitProgress(processing);
     expect(card.control('analysis-stage').textContent).toBe('processing');
-    expect(card.control('analysis-message').textContent).toBe('Video analysis is running.');
-    expect(card.callServerTool.mock.calls.every(([request]) => request.name === 'read_analysis')).toBe(true);
+    expect(card.observeCalls).toHaveBeenLastCalledWith({ name: 'read_analysis', arguments: { analysis_id: 'anl-current', observe: true, wait_seconds: 25, after_version: 'processing' } }, expect.any(Object));
   } finally { await card.app.onteardown(); vi.unstubAllGlobals(); vi.useRealTimers(); }
 });
 
@@ -690,10 +807,11 @@ it('preserves an explicit older execution when the active analysis progresses', 
     const older = { ...liveAnalysis('older'), analysis_id: 'run-old', status: 'completed' };
     card.callServerTool.mockImplementation(async request => request.name === 'read_analysis' ? { _meta: { analysis: request.arguments.analysis_id === 'run-old' ? older : current } } : card.defaultResponse(request));
     await card.app.ontoolresult({ structuredContent: current, _meta: { analysis: current } });
+    await card.emitProgress(nativeProgress('current'));
     const hit = { ...cardRow, run_id: 'run-old', result_id: 'segment:seg-1:run-old' };
     await card.studio().onSelectResult(hit, [hit]);
     card.control('player').currentTime = 6;
-    await vi.advanceTimersByTimeAsync(5000);
+    await card.emitProgress(nativeProgress('later'));
     expect(card.studio().segmentProps.selected.run_id).toBe('run-old');
     expect(card.control('player').currentTime).toBe(6);
     expect(card.studio().mode).toBe('result');
@@ -702,13 +820,13 @@ it('preserves an explicit older execution when the active analysis progresses', 
 
 describe('unified picker batch recovery', () => {
   const active: any[] = [];
-  afterEach(async () => { for (const card of active.splice(0)) await card.app.onteardown(); vi.unstubAllGlobals(); });
+  afterEach(async () => { for (const card of active.splice(0)) await card.app.onteardown(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   async function unifiedPicker(count: number) {
     const card = await cardHarness(); active.push(card);
     const initial = liveAnalysis('empty', { stage: 'awaiting_upload', status: 'awaiting_upload', results: { revision: 'empty', included_videos: 0, final: false }, next_action: { type: 'request_input' } });
     card.callServerTool.mockResolvedValue({ _meta: { analysis: { ...initial, stage: 'importing', next_action: { type: 'continue_polling' } } } });
     await card.app.ontoolresult({ _meta: { analysis: initial, upload: { url: 'https://api.example/files', complete_url: 'https://api.example/complete', token: 'grant', max_files: 8 } } });
-    card.control('files').files = Array.from({ length: count }, (_, index) => new File(['video'], `${index}.mp4`));
+    card.control('files').files = Array.from({ length: count }, (_, index) => new File([`video-${index}`], `${index}.mp4`));
     await card.control('files').fire('change');
     return { card, submit: () => card.control('upload-form').fire('submit') };
   }
@@ -723,7 +841,7 @@ describe('unified picker batch recovery', () => {
 
   it('resumes expired finalization with a public get_analysis grant and keeps private refresh grant-free', async () => {
     vi.useFakeTimers();
-    const fetch = vi.fn().mockImplementation(async (url: string) => new Response('{}', { status: url.endsWith('/complete') ? 401 : 200 }));
+    const fetch = vi.fn().mockImplementation(async (url: string) => Response.json(url.endsWith('/files') ? {job:{job_id:'batch'},upload:null} : {}, {status:url === 'https://api.example/complete' ? 401 : 200}));
     vi.stubGlobal('fetch', fetch);
     const ui = await unifiedPicker(2);
     const awaiting = liveAnalysis('empty', { stage: 'awaiting_upload', status: 'awaiting_upload', results: { revision: 'empty', included_videos: 0, final: false }, next_action: { type: 'request_input' } });
@@ -738,14 +856,17 @@ describe('unified picker batch recovery', () => {
       await ui.submit();
       expect(ui.card.control('upload-message').textContent).toBe('This upload session expired. Refresh this analysis to continue.');
       expect(ui.card.control('upload-form').hidden).toBe(false);
-      const uploadedIds = fetch.mock.calls.filter(([url]) => url.endsWith('/files')).map(([, init]) => init.body.get('file_id'));
+      const initializedFiles = new Map(fetch.mock.calls.filter(([url]) => url.endsWith('/files')).map(([, init]) => {
+        const descriptor = JSON.parse(init.body); return [descriptor.file_name, descriptor.file_id];
+      }));
+      const uploadedIds = ['0.mp4', '1.mp4'].map(name => initializedFiles.get(name));
       expect(uploadedIds).toHaveLength(2);
       expect(JSON.parse(fetch.mock.calls.at(-1)![1].body).file_ids).toEqual(uploadedIds);
 
-      await vi.advanceTimersByTimeAsync(5000);
-      expect(backend.getAnalysis).toHaveBeenCalledExactlyOnceWith('anl-current', { detail: 'summary', include_download: false });
+      expect(backend.getAnalysis).not.toHaveBeenCalled();
+      expect(ui.card.observeCalls).toHaveBeenCalledTimes(1);
       expect(backend.mcpTool).not.toHaveBeenCalled();
-      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(fetch).toHaveBeenCalledTimes(5);
       expect(ui.card.control('upload-form').hidden).toBe(false);
 
       const renewal = await executeTool('get_analysis', { analysis_id: 'anl-current', wait_seconds: 0 }, backend, { transportMode: 'http', authenticationKind: 'oauth' });
@@ -761,51 +882,146 @@ describe('unified picker batch recovery', () => {
       vi.mocked(backend.getAnalysis).mockResolvedValue(importing);
       fetch.mockResolvedValue(new Response('{}', { status: 200 }));
       await ui.submit();
-      expect(fetch).toHaveBeenCalledTimes(4); // Received bytes are retained; only finalization is retried.
+      expect(fetch).toHaveBeenCalledTimes(6); // Received bytes are retained; only batch finalization is retried.
       expect(fetch.mock.calls.at(-1)).toEqual([renewedGrant.complete_url, expect.objectContaining({
         credentials: 'omit', redirect: 'error', headers: { Authorization: `Bearer ${renewedGrant.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ file_ids: uploadedIds }),
       })]);
       expect(ui.card.control('upload-form').hidden).toBe(true);
+      await ui.card.emitProgress({ ...nativeProgress('importing'), run_id: null, records: [{ kind: 'import_job', id: 'anl-current', version: 'importing', state: { status: 'importing', phase: 'importing' } }] });
       expect(ui.card.control('analysis-stage').textContent).toBe('importing');
-      await vi.advanceTimersByTimeAsync(5000);
-      expect(backend.getAnalysis).toHaveBeenCalledTimes(3);
+      expect(backend.getAnalysis).not.toHaveBeenCalled();
       expect(vi.mocked(backend.getAnalysis).mock.calls.every(([, options]) => options?.include_download === false && !('include_upload' in options))).toBe(true);
       expect(backend.mcpTool).toHaveBeenCalledTimes(1);
       expect(ui.card.callServerTool.mock.calls.every(([request]) => request.name === 'read_analysis' && request.arguments.analysis_id === 'anl-current')).toBe(true);
     } finally { await ui.card.app.onteardown(); vi.useRealTimers(); }
   });
 
-  it('settles started uploads, retains successes and completes the same ordered IDs on retry', async () => {
+  it.each([false, true])('settles started uploads and completes selection-ordered IDs on retry (reversed hashes: %s)', async reverseHashes => {
     let fail!: (response: Response) => void;
     let finish!: (response: Response) => void;
     const first = new Promise<Response>(resolve => { fail = resolve; });
     const second = new Promise<Response>(resolve => { finish = resolve; });
-    const fetch = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const fetch = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second).mockImplementation(async () => Response.json({job:{job_id:'batch'},upload:null}));
     vi.stubGlobal('fetch', fetch);
     const ui = await unifiedPicker(8);
+    let releaseFirstHash!: () => void;
+    if (reverseHashes) {
+      const gate = new Promise<void>(resolve => { releaseFirstHash = resolve; });
+      const nativeDigest = crypto.subtle.digest.bind(crypto.subtle);
+      vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (algorithm, data) => {
+        if (new TextDecoder().decode(data) === 'video-0') await gate;
+        return nativeDigest(algorithm, data);
+      });
+    }
     const pending = ui.submit();
-    expect(fetch).toHaveBeenCalledTimes(2);
-    const ids = fetch.mock.calls.map(([, init]) => init.body.get('file_id'));
+    if (reverseHashes) {
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      expect(JSON.parse(fetch.mock.calls[0]![1].body).file_name).toBe('1.mp4');
+      releaseFirstHash();
+    }
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    const ids = fetch.mock.calls.map(([, init]) => JSON.parse(init.body).file_id);
     fail(new Response('{}', { status: 500 }));
     await Promise.resolve();
     await Promise.resolve();
     expect(ui.card.control('submit').disabled).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(2);
-    finish(new Response('{}', { status: 200 }));
+    finish(Response.json({job:{job_id:'batch'},upload:null}));
     await pending;
     expect(ui.card.control('submit').disabled).toBe(false);
     expect(ui.card.callServerTool).not.toHaveBeenCalled();
     fetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
-      url.endsWith('/complete') ? { job_id: 'batch', status: 'pending' } : {}
+      url.endsWith('/complete') ? { job_id: 'batch', status: 'pending' } : {job:{job_id:'batch'},upload:null}
     ), { status: 200 }));
     await ui.submit();
-    const retried = fetch.mock.calls.slice(2).filter(([url]) => url.endsWith('/files')).map(([, init]) => init.body.get('file_id'));
+    const retried = fetch.mock.calls.slice(2).filter(([url]) => url.endsWith('/files')).map(([, init]) => JSON.parse(init.body).file_id);
     expect(retried).toHaveLength(7);
-    expect(retried[0]).toBe(ids[0]);
+    expect(retried).toContain(ids[0]);
     expect(retried).not.toContain(ids[1]);
-    const completion = fetch.mock.calls.filter(([url]) => url.endsWith('/complete'));
+    const completion = fetch.mock.calls.filter(([url]) => url === 'https://api.example/complete');
     expect(completion).toHaveLength(1);
-    expect(JSON.parse(completion[0]![1].body).file_ids).toEqual([ids[0], ids[1], ...retried.slice(1)]);
-    expect(ui.card.callServerTool).toHaveBeenCalledExactlyOnceWith({ name: 'read_analysis', arguments: { analysis_id: 'anl-current' } }, expect.any(Object));
+    const selectedIds = new Map<string, string>();
+    for (const [, init] of fetch.mock.calls.filter(([url]) => url.endsWith('/files'))) {
+      const descriptor = JSON.parse(init.body);
+      if (selectedIds.has(descriptor.file_name)) expect(descriptor.file_id).toBe(selectedIds.get(descriptor.file_name));
+      selectedIds.set(descriptor.file_name, descriptor.file_id);
+    }
+    expect(selectedIds.size).toBe(8);
+    expect(JSON.parse(completion[0]![1].body).file_ids).toEqual(
+      Array.from({length:8}, (_, index) => selectedIds.get(`${index}.mp4`)),
+    );
+    expect(ui.card.observeCalls).toHaveBeenCalledExactlyOnceWith({ name: 'read_analysis', arguments: { analysis_id: 'anl-current', observe: true, wait_seconds: 25 } }, expect.any(Object));
+    expect(ui.card.callServerTool).not.toHaveBeenCalled();
   });
+});
+
+describe('hosted picker native storage acknowledgments', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('uses partial confirmed Range, bounds request size, and never sends the control bearer to storage', async () => {
+    const size = 10 * 1024 * 1024;
+    const file = new File([new Uint8Array(size)], 'lecture.mp4', {type:'video/mp4'});
+    const progress: number[] = [];
+    const fetch = vi.fn().mockResolvedValueOnce(new Response('', {status:308,headers:{Range:'bytes=0-4194303'}}))
+      .mockResolvedValueOnce(new Response('', {status:200}));
+    vi.stubGlobal('fetch',fetch);
+    await transferAttachmentFile(file,{transport:'resumable',url:'https://storage.googleapis.com/upload/session',offset:0,total_bytes:size,chunk_size:32*1024*1024},new AbortController().signal,value=>progress.push(value));
+    expect(progress).toEqual([0,4194304,size]);
+    expect(fetch.mock.calls.map(([,request])=>request.headers)).toEqual([
+      {'Content-Range':`bytes 0-8388607/${size}`},{'Content-Range':`bytes 4194304-${size-1}/${size}`},
+    ]);
+    expect(fetch.mock.calls.map(([,request])=>request.body.size)).toEqual([8388608,6291456]);
+    for(const [,request] of fetch.mock.calls) expect(request).toMatchObject({method:'PUT',credentials:'omit',redirect:'error'});
+  });
+
+  it.each([new Response('',{status:308}),new Response('',{status:200})])('does not assume unconfirmed or early-final bytes persisted',async response=>{
+    const file=new File([new Uint8Array(9*1024*1024)],'lecture.mp4');
+    const fetch=vi.fn().mockResolvedValue(response);vi.stubGlobal('fetch',fetch);
+    await expect(transferAttachmentFile(file,{transport:'resumable',url:'https://storage.googleapis.com/upload/session',offset:0,total_bytes:file.size,chunk_size:8388608},new AbortController().signal,()=>{})).rejects.toThrow('did not confirm');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('identifies reselected files with a bounded middle sample as well as ends',async()=>{
+    const content=new Uint8Array(5*65536);content.fill(7);
+    const original=await describeAttachmentFile(new File([content],'lecture.mp4',{lastModified:1}));
+    content[2*65536]=8;
+    const changed=await describeAttachmentFile(new File([content],'lecture.mp4',{lastModified:1}));
+    expect(changed.sample_sha256).not.toBe(original.sample_sha256);
+    expect(original).toMatchObject({file_name:'lecture.mp4',size_bytes:5*65536,last_modified:1});
+  });
+
+  it('reopens the same file control session after interruption and resumes only server-confirmed bytes',async()=>{
+    const card=await cardHarness();
+    const initial=liveAnalysis('empty',{stage:'awaiting_upload',status:'awaiting_upload',results:{revision:'empty',included_videos:0,final:false},next_action:{type:'request_input'}});
+    const grant={url:'https://api.example/files',complete_url:'https://api.example/complete',token:'private-control-token',max_files:8};
+    await card.app.ontoolresult({_meta:{analysis:initial,upload:grant}});
+    card.callServerTool.mockResolvedValue({_meta:{analysis:{...initial,stage:'importing',status:'importing',next_action:{type:'continue_polling'}}}});
+    const file=new File([new Uint8Array(10*1024*1024)],'lecture.mp4',{type:'video/mp4'});
+    card.control('files').files=[file];await card.control('files').fire('change');
+    let initializations=0,puts=0;
+    const fetch=vi.fn().mockImplementation(async(url:string, _request: RequestInit)=>{
+      if(url===grant.url) return Response.json({job:{job_id:'batch'},upload:{transport:'resumable',url:'https://storage.googleapis.com/upload/session',offset:initializations++ ? 4194304:0,total_bytes:file.size,chunk_size:8388608}});
+      if(url.startsWith('https://storage.googleapis.com/')) { puts++;return puts===1 ? new Response('',{status:308,headers:{Range:'bytes=0-4194303'}}) : new Response('',{status:puts===2 ? 503:200}); }
+      return Response.json({});
+    });vi.stubGlobal('fetch',fetch);
+    try {
+      await card.control('upload-form').fire('submit');
+      expect(card.control('upload-message').textContent).toContain('Try again to resume');
+      await card.control('upload-form').fire('submit');
+      const controls=fetch.mock.calls.filter(([url])=>url===grant.url).map(([,request])=>JSON.parse(String(request.body)));
+      expect(controls).toHaveLength(2);expect(controls[1]).toEqual(controls[0]);expect(controls[0].restart_expired).toBe(false);
+      const storage=fetch.mock.calls.filter(([url])=>url.startsWith('https://storage.googleapis.com/'));
+      expect(storage.at(-1)![1].headers).toEqual({'Content-Range':`bytes 4194304-${file.size-1}/${file.size}`});
+      expect(fetch.mock.calls.filter(([url])=>url===`${grant.url}/complete`)).toHaveLength(1);
+      expect(fetch.mock.calls.filter(([url])=>url===grant.complete_url)).toHaveLength(1);
+      expect(card.control('upload-form').hidden).toBe(true);
+    }finally{await card.app.onteardown();}
+  });
+});
+
+it('supports standard MCP Apps hosts without the optional OpenAI persistence bridge', () => {
+  vi.stubGlobal('window', {});
+  try {
+    expect(readHostState('analysis:a')).toBeNull();
+    expect(() => saveHostState('analysis:a', 'studio', { query: 'lecture' }, { video_id: 'v1' })).not.toThrow();
+  } finally { vi.unstubAllGlobals(); }
 });

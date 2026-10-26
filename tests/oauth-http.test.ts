@@ -217,8 +217,8 @@ describe('hosted MCP OAuth authentication', () => {
       mimeType: 'text/html;profile=mcp-app',
       text: await readFile(new URL('../dist/ui/results-card.html', import.meta.url), 'utf8'),
       _meta: {
-        ui: { csp: { connectDomains: ['https://api.example.com'] }, prefersBorder: true },
-        'openai/widgetCSP': { connect_domains: ['https://api.example.com'], resource_domains: ['https://storage.googleapis.com'] },
+        ui: { csp: { connectDomains: ['https://api.example.com', 'https://storage.googleapis.com'] }, prefersBorder: true },
+        'openai/widgetCSP': { connect_domains: ['https://api.example.com', 'https://storage.googleapis.com'], resource_domains: ['https://storage.googleapis.com'] },
         'openai/widgetPrefersBorder': true,
       },
     }]);
@@ -248,10 +248,10 @@ describe('hosted MCP OAuth authentication', () => {
       // Assert the complete allowlists so a missing policy, extra domain, or
       // wildcard cannot silently reappear in either metadata format.
       expect(meta.ui.csp).toEqual({
-        resourceDomains: ['https://storage.googleapis.com'], connectDomains: ['https://api.example.com'],
+        resourceDomains: ['https://storage.googleapis.com'], connectDomains: ['https://api.example.com', 'https://storage.googleapis.com'],
       });
       expect(meta['openai/widgetCSP']).toEqual({
-        resource_domains: ['https://storage.googleapis.com'], connect_domains: ['https://api.example.com'],
+        resource_domains: ['https://storage.googleapis.com'], connect_domains: ['https://api.example.com', 'https://storage.googleapis.com'],
       });
     }
 
