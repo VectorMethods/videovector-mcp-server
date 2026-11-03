@@ -134,15 +134,6 @@ export interface WorkflowIntakeResponse {
   }>;
 }
 
-export interface WorkflowUploadRequest {
-  file_path: string;
-  title?: string;
-  index_id?: string;
-  index_name?: string;
-}
-
-export type WorkflowUploadResponse = WorkflowIntakeResponse;
-
 export interface WorkflowDefineRequest {
   instruction: string;
   save?: boolean;

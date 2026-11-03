@@ -68,8 +68,6 @@ import {
   type WorkflowProcessRequest,
   type WorkflowProcessResponse,
   type WorkflowSearchResponse,
-  type WorkflowUploadRequest,
-  type WorkflowUploadResponse,
   type WorkflowAttachment,
   type WorkflowAttachmentRequest,
   type WorkflowFindRequest,
@@ -267,32 +265,6 @@ function createIdempotencyKey(prefix: string, providedKey?: string): string {
     return candidate;
   }
   return `${prefix}:${randomUUID().replace(/-/g, '')}`;
-}
-
-function workflowMultipartField(name: string, value: string, boundary: string): Buffer {
-  if (!/^[a-z_]+$/.test(name)) {
-    throw new Error('Invalid multipart field name');
-  }
-  return Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
-    'utf8'
-  );
-}
-
-function workflowMultipartFileHeader(
-  filePath: string,
-  boundary: string,
-  contentType: string
-): Buffer {
-  const originalName = basename(filePath);
-  const asciiName = originalName.replace(/[^\x20-\x7E]|["\\\r\n]/g, '_') || 'media';
-  const encodedName = encodeURIComponent(originalName).replace(/'/g, '%27');
-  return Buffer.from(
-    `--${boundary}\r\n`
-      + `Content-Disposition: form-data; name="file"; filename="${asciiName}"; filename*=UTF-8''${encodedName}\r\n`
-      + `Content-Type: ${contentType}\r\n\r\n`,
-    'utf8'
-  );
 }
 
 function workflowUploadContentType(filePath: string): string {
@@ -913,18 +885,6 @@ export class VideoVectorClient {
   // ==========================================================================
   // Simplified Workflow Operations
   // ==========================================================================
-
-  async workflowUploadMedia(
-    request: WorkflowUploadRequest,
-    idempotencyKey?: string,
-    expectedIdentity?: WorkflowUploadFileIdentity
-  ): Promise<WorkflowUploadResponse> {
-    return this.requestWorkflowUpload<WorkflowUploadResponse>(
-      request,
-      createIdempotencyKey('workflow-upload', idempotencyKey),
-      expectedIdentity
-    );
-  }
 
   async workflowFind(request: WorkflowFindRequest, idempotencyKey?: string): Promise<WorkflowIntakeResponse> {
     return this.request('POST', '/workflow/find', {
@@ -1675,208 +1635,6 @@ export class VideoVectorClient {
 
   async getWebhookEvents(): Promise<string[]> {
     return this.request<string[]>('GET', '/webhooks/events');
-  }
-
-  // ==========================================================================
-  // Streaming Workflow Upload Helper
-  // ==========================================================================
-
-  /**
-   * Stream a local media file as multipart data. Each retry opens a fresh file
-   * descriptor while retaining one backend idempotency key; the file is never
-   * buffered into memory. Transfers use the configured per-attempt timeout,
-   * separate from the short analysis admission and observation deadlines.
-   */
-  private async requestWorkflowUpload<T>(
-    request: WorkflowUploadRequest,
-    idempotencyKey: string,
-    expectedIdentity?: WorkflowUploadFileIdentity,
-    signal?: AbortSignal,
-  ): Promise<T> {
-    const boundary = `videovector-${randomUUID()}`;
-    const fields: Buffer[] = [];
-    // Send the file part first so Starlette can spool the large payload before
-    // retaining any subsequent scalar multipart fields.
-    if (request.title !== undefined) {
-      fields.push(workflowMultipartField('title', request.title, boundary));
-    }
-    if (request.index_id !== undefined) {
-      fields.push(workflowMultipartField('index_id', request.index_id, boundary));
-    }
-    if (request.index_name !== undefined) {
-      fields.push(workflowMultipartField('index_name', request.index_name, boundary));
-    }
-
-    const fileHeader = workflowMultipartFileHeader(
-      request.file_path,
-      boundary,
-      workflowUploadContentType(request.file_path)
-    );
-    const fileFooter = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-    const url = new URL(`${this.baseUrl}/workflow/upload`);
-
-    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
-      if (signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
-      let fileHandle: Awaited<ReturnType<typeof fs.open>>;
-      try {
-        fileHandle = await fs.open(
-          request.file_path,
-          fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)
-        );
-      } catch (error) {
-        throw new VideoVectorApiError(
-          error instanceof Error ? error.message : 'Unable to open upload source',
-          'upload_source_error',
-          400
-        );
-      }
-      let body: Readable | undefined;
-      let retryDelay: number | undefined;
-      const controller = new AbortController();
-      const abort = () => controller.abort();
-      signal?.addEventListener('abort', abort, { once: true });
-      const timeoutId = setTimeout(abort, this.timeout);
-
-      try {
-        const fileStat = await fileHandle.stat();
-        if (!fileStat.isFile()) {
-          throw new Error('Upload source must be a regular file');
-        }
-        if (
-          expectedIdentity
-          && (
-            fileStat.dev !== expectedIdentity.device
-            || fileStat.ino !== expectedIdentity.inode
-            || fileStat.size !== expectedIdentity.size
-            || fileStat.mtimeMs !== expectedIdentity.modifiedMs
-          )
-        ) {
-          throw new Error('Upload source changed after it was authorized');
-        }
-
-        const fileStream = fileHandle.createReadStream({ autoClose: false });
-        const streamParts = async function* (): AsyncGenerator<Buffer> {
-          try {
-            yield fileHeader;
-            for await (const chunk of fileStream) {
-              yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-            }
-            yield Buffer.from('\r\n', 'utf8');
-            for (const field of fields) {
-              yield field;
-            }
-            yield fileFooter.subarray(2);
-          } finally {
-            fileStream.destroy();
-          }
-        };
-        body = Readable.from(streamParts());
-
-        const contentLength = fields.reduce((total, field) => total + field.length, 0)
-          + fileHeader.length
-          + fileStat.size
-          + 2
-          + fileFooter.length - 2;
-        const init: RequestInit & { duplex: 'half' } = {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': `videovector-mcp/${PACKAGE_VERSION}`,
-            'Idempotency-Key': idempotencyKey,
-            'Content-Type': `multipart/form-data; boundary=${boundary}`,
-            'Content-Length': String(contentLength),
-            ...this.authenticationHeaders(),
-          },
-          body: body as unknown as RequestInit['body'],
-          signal: controller.signal,
-          duplex: 'half',
-          redirect: 'error',
-        };
-        const response = await fetch(url.toString(), init);
-
-        if (!response.ok) {
-          const errorBody = await this.parseErrorResponse(response);
-          if (
-            attempt < this.maxRetries
-            && RETRY_STATUS_CODES.includes(response.status)
-          ) {
-            retryDelay = this.calculateRetryDelay(response, attempt);
-          } else {
-            throw new VideoVectorApiError(
-              errorBody.message,
-              errorBody.code,
-              response.status,
-              errorBody.details,
-              errorBody.requestId
-            );
-          }
-        } else {
-          const text = await response.text();
-          if (!text) {
-            throw new VideoVectorApiError(
-              'Received empty response body from API',
-              'empty_response',
-              response.status,
-              { url: url.toString(), method: 'POST' }
-            );
-          }
-          return this.parseSuccessfulJson<T>(text);
-        }
-      } catch (error) {
-        if (isAbortError(error)) {
-          if (signal?.aborted) throw new VideoVectorApiError('Request cancelled', 'request_cancelled', 499);
-          if (attempt < this.maxRetries) {
-            retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-          } else {
-            throw new VideoVectorApiError('Request timed out', 'timeout_error', 408);
-          }
-        } else if (isNetworkTransportError(error)) {
-          if (attempt < this.maxRetries) {
-            retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-          } else {
-            throw new VideoVectorApiError(
-              'Network error: Unable to connect to VideoVector API',
-              'network_error',
-              0
-            );
-          }
-        } else if (isRetryableResponsePayloadError(error)) {
-          if (attempt < this.maxRetries) {
-            retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-          } else {
-            throw error;
-          }
-        } else if (error instanceof VideoVectorApiError) {
-          throw error;
-        } else {
-          throw new VideoVectorApiError(
-            error instanceof Error ? error.message : 'Unable to upload media',
-            error instanceof TypeError ? 'network_error' : 'upload_source_error',
-            error instanceof TypeError ? 0 : 400
-          );
-        }
-      } finally {
-        clearTimeout(timeoutId);
-        signal?.removeEventListener('abort', abort);
-        body?.destroy();
-        await fileHandle.close().catch(() => undefined);
-      }
-
-      if (retryDelay === undefined) {
-        throw new VideoVectorApiError(
-          'Upload retry state was not established',
-          'upload_retry_state_error',
-          500
-        );
-      }
-      await this.sleep(retryDelay);
-    }
-
-    throw new VideoVectorApiError(
-      'Network error: Unable to connect to VideoVector API',
-      'network_error',
-      0
-    );
   }
 
   // ==========================================================================
