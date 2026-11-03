@@ -33,6 +33,7 @@ export interface WorkflowAttachment {
 }
 
 export interface WorkflowAttachmentRequest {
+  urls?: string | string[];
   files?: WorkflowAttachment[];
   title?: string;
   index_id?: string;

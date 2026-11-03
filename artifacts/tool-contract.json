@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "server": {
     "name": "videovector",
-    "version": "6.0.0",
+    "version": "6.1.0",
     "protocol": "mcp",
     "primary_transport": "stdio",
     "supported_transports": [
@@ -12,7 +12,7 @@
   },
   "package": {
     "name": "@vectormethods/videovector-mcp-server",
-    "version": "6.0.0",
+    "version": "6.1.0",
     "bin": "videovector-mcp",
     "npm_install_command": "npx -y @vectormethods/videovector-mcp-server"
   },
@@ -33,7 +33,7 @@
     {
       "name": "analyze",
       "title": "Analyze media",
-      "description": "Analyze media using exactly one of instruction or prompt_id and exactly one of files or source. Root files are native chat attachments: use the host-provided descriptors unchanged, including temporary authorized HTTPS URLs; do not ask users to publish videos. source selects existing media, a direct import, or local stdio file_paths within configured upload roots. Hosted tools cannot read local or sandbox paths. If the host has not supplied attachment descriptors, ask the user to attach files through a host that supports forwarding, or select existing VideoVector media. destination is only for new media. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips without OAuth headers; claim a file was saved only after saving succeeds.",
+      "description": "Analyze media using exactly one of instruction or prompt_id and exactly one of files or source. Root files are native chat attachments: use the host-provided descriptors unchanged, including temporary authorized HTTPS URLs; do not ask users to publish videos. source.urls imports public HTTPS media or individual YouTube URLs. Other source selectors choose existing media, a cloud import, or local stdio file_paths within configured upload roots. Hosted tools cannot read local or sandbox paths. If the host has not supplied attachment descriptors, ask the user to attach files through a host that supports forwarding, or select existing VideoVector media. destination is only for new media. Default to content-aware segmentation; choose fixed intervals and durations only when the user explicitly requests them. Whole-video output requires content-aware audio and video segmentation. A new analysis consumes credits: never resubmit active work. A replacement analysis requires terminal=true on the original and explicit user intent to retry. Retry delivery only with retry_same_submission and identical arguments/key. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips without OAuth headers; claim a file was saved only after saving succeeds.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -81,6 +81,30 @@
           "source": {
             "type": "object",
             "properties": {
+              "urls": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16384,
+                    "format": "uri",
+                    "pattern": "^https://"
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16384,
+                      "format": "uri",
+                      "pattern": "^https://"
+                    }
+                  }
+                ],
+                "description": "One public HTTPS media or individual YouTube URL, or up to eight URLs. The backend imports them directly; do not download them first."
+              },
               "file_paths": {
                 "type": "array",
                 "minItems": 1,
@@ -292,16 +316,18 @@
               "video_segmentation_type": {
                 "type": "string",
                 "enum": [
-                  "fixed",
-                  "content_aware"
-                ]
+                  "content_aware",
+                  "fixed"
+                ],
+                "description": "Use content_aware unless the user explicitly requests fixed-length video intervals. Omit duration for content-aware segmentation."
               },
               "audio_segmentation_type": {
                 "type": "string",
                 "enum": [
-                  "fixed",
-                  "content_aware"
-                ]
+                  "content_aware",
+                  "fixed"
+                ],
+                "description": "Use content_aware unless the user explicitly requests fixed-length audio intervals. Whole-video output requires content-aware segmentation for both audio and video."
               },
               "video_segment_duration": {
                 "type": [
@@ -309,7 +335,8 @@
                   "null"
                 ],
                 "minimum": 1,
-                "maximum": 300
+                "maximum": 300,
+                "description": "Required integer seconds when video_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration."
               },
               "audio_segment_duration": {
                 "type": [
@@ -317,7 +344,8 @@
                   "null"
                 ],
                 "minimum": 1,
-                "maximum": 300
+                "maximum": 300,
+                "description": "Required integer seconds when audio_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration."
               },
               "processing_model": {
                 "type": [
@@ -402,6 +430,7 @@
         "required": [
           "analysis_id",
           "status",
+          "terminal",
           "stage",
           "message",
           "progress",
@@ -414,6 +443,10 @@
           },
           "status": {
             "type": "string"
+          },
+          "terminal": {
+            "type": "boolean",
+            "description": "True only when the analysis execution has ended. Media/indexing work may still be pending; results.final describes the extraction snapshot, not asset readiness."
           },
           "stage": {
             "type": "string"
@@ -467,7 +500,6 @@
               "pagination": {
                 "type": "object"
               },
-              "preview": {},
               "segment_downloads": {
                 "type": "array",
                 "maxItems": 6,
@@ -525,6 +557,12 @@
               "type": "object"
             }
           },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
           "files": {
             "type": "array",
             "items": {
@@ -563,7 +601,7 @@
     {
       "name": "get_analysis",
       "title": "Get analysis",
-      "description": "Read progress or results without rerunning analysis. Use analysis_id, or video_id for its latest complete analysis. Wait at most 30 seconds for progress; no revision argument is needed. Follow next_action using the same ID. Accepted parts are available while other parts continue; media and image indexing may finish after extraction. Refresh expired JSON/clip grants here, or use full detail with page_size/cursor when files are unavailable.",
+      "description": "Read progress or results without rerunning analysis. Use analysis_id, or video_id for its latest complete analysis. Wait at most 30 seconds for progress; no revision argument is needed. Follow next_action using the same ID. terminal confirms execution has ended; results.final confirms the extraction result is final; media and image indexing readiness are independent and may still change. Observation errors, timeouts and pending responses do not mean execution stopped and never authorize a new paid analysis. Accepted parts are available while other parts continue; media and image indexing may finish after extraction. Refresh expired JSON/clip grants here, or use full detail with page_size/cursor when files are unavailable.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -620,6 +658,7 @@
         "required": [
           "analysis_id",
           "status",
+          "terminal",
           "stage",
           "message",
           "progress",
@@ -632,6 +671,10 @@
           },
           "status": {
             "type": "string"
+          },
+          "terminal": {
+            "type": "boolean",
+            "description": "True only when the analysis execution has ended. Media/indexing work may still be pending; results.final describes the extraction snapshot, not asset readiness."
           },
           "stage": {
             "type": "string"
@@ -685,7 +728,6 @@
               "pagination": {
                 "type": "object"
               },
-              "preview": {},
               "segment_downloads": {
                 "type": "array",
                 "maxItems": 6,
@@ -738,6 +780,12 @@
             ]
           },
           "newer_processing": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "warnings": {
             "type": "array",
             "items": {
               "type": "object"
@@ -960,43 +1008,16 @@
               "type": "object"
             }
           },
-          "run_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "prompt_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "job_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "target_index_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "status": {
+          "search_id": {
             "type": "string"
           },
-          "phase": {
-            "type": "string"
-          },
-          "source_kind": {
+          "snapshot_id": {
             "type": "string"
           },
           "source_id": {
             "type": "string"
           },
-          "snapshot_id": {
+          "source_kind": {
             "type": "string"
           },
           "mode": {
@@ -1011,401 +1032,20 @@
           "expires_at": {
             "type": "string"
           },
-          "prompt_name": {
-            "type": "string"
+          "results": {
+            "type": "object"
           },
-          "prompt_type": {
-            "type": "string"
-          },
-          "billing_status": {
-            "type": "string"
-          },
-          "executed_at": {
-            "type": "string"
-          },
-          "error_message": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "billing_error": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "saved": {
-            "type": "boolean"
-          },
-          "prompt_created_inline": {
-            "type": "boolean"
-          },
-          "video_level_enabled": {
-            "type": "boolean"
-          },
-          "total_videos": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "completed_videos": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "failed_videos": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "partial_videos": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "cancelled_videos": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "total_audios": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "completed_audios": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "failed_audios": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "total_images": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "completed_images": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "failed_images": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "total_segments": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "completed_segments": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "billing_estimated_mt": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "billing_actual_mt": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "video_level_total_items": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "video_level_completed_items": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "video_level_failed_items": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "failed_files_count": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "skipped_files_count": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "failed_files_omitted_count": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "skipped_files_omitted_count": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "outputs": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "execution": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "progress": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "video_level": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "selection_summary": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "selection_filter": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "execution_config": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "reuse_summary": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "configuration": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "media_breakdown": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "operations": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "prompt": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "draft": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "definition": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "scope": {
-            "type": [
-              "object",
-              "null"
-            ]
+          "next_action": {
+            "type": "object"
           },
           "coverage": {
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": "object"
           },
-          "destination": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "filtered": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "unfiltered": {
-            "type": [
-              "object",
-              "null"
-            ]
+          "scope": {
+            "type": "object"
           },
           "pagination": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "failed_files_next_cursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "video_ids": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 100
-          },
-          "failed_files": {
-            "type": "array",
-            "maxItems": 100,
-            "items": {
-              "type": "object",
-              "required": [
-                "path"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "file_id": {
-                  "type": "string",
-                  "maxLength": 512
-                },
-                "video_id": {
-                  "type": "string",
-                  "maxLength": 512
-                },
-                "error_code": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "error": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "reason": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "message": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "http_status": {
-                  "type": "integer",
-                  "minimum": 400,
-                  "maximum": 599
-                },
-                "refresh_required": {
-                  "type": "boolean"
-                }
-              }
-            }
-          },
-          "skipped_files": {
-            "type": "array",
-            "maxItems": 100,
-            "items": {
-              "type": "object",
-              "required": [
-                "path"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "file_id": {
-                  "type": "string",
-                  "maxLength": 512
-                },
-                "video_id": {
-                  "type": "string",
-                  "maxLength": 512
-                },
-                "error_code": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "error": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "reason": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "message": {
-                  "type": "string",
-                  "maxLength": 240
-                },
-                "http_status": {
-                  "type": "integer",
-                  "minimum": 400,
-                  "maximum": 599
-                },
-                "refresh_required": {
-                  "type": "boolean"
-                }
-              }
-            }
+            "type": "object"
           },
           "data": {
             "type": "array",
@@ -1413,18 +1053,14 @@
               "type": "object"
             }
           },
-          "search_id": {
-            "type": "string"
-          },
-          "results": {
-            "type": "object"
-          },
-          "next_action": {
-            "type": "object"
-          },
           "warnings": {
             "type": "array",
-            "items": {},
+            "items": {
+              "type": [
+                "string",
+                "object"
+              ]
+            },
             "maxItems": 5
           }
         },
@@ -1432,7 +1068,14 @@
           "contract_version",
           "detail",
           "links",
-          "artifacts"
+          "artifacts",
+          "results",
+          "next_action",
+          "coverage",
+          "scope",
+          "pagination",
+          "data",
+          "warnings"
         ],
         "additionalProperties": false
       },
@@ -1454,7 +1097,7 @@
     {
       "name": "import_media",
       "title": "Import media",
-      "description": "Import media without analysis, inspect an existing import, or retry failed files. New imports require exactly one of root files or source. files are native host-provided attachment descriptors with temporary authorized HTTPS URLs, not publicly published videos. Local stdio can use source.file_paths within configured upload roots; hosted tools cannot read local or sandbox paths. If no attachment descriptors are available, ask the user to attach files through a supporting host. destination selects the library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry with retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.",
+      "description": "Import media without analysis, inspect an existing import, or retry failed files. New imports require exactly one of root files or source. files are native host-provided attachment descriptors with temporary authorized HTTPS URLs, not publicly published videos. source.urls accepts public HTTPS media or individual YouTube URLs without client downloading. Local stdio can use source.file_paths within configured upload roots; hosted tools cannot read local or sandbox paths. If no attachment descriptors are available, ask the user to attach files through a supporting host. destination selects the library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry only terminal failed intake when the user explicitly requests recovery, using retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. This resumes the same intake; it is not a new analysis or a retry of active processing. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1494,6 +1137,30 @@
           "source": {
             "type": "object",
             "properties": {
+              "urls": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16384,
+                    "format": "uri",
+                    "pattern": "^https://"
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16384,
+                      "format": "uri",
+                      "pattern": "^https://"
+                    }
+                  }
+                ],
+                "description": "One public HTTPS media or individual YouTube URL, or up to eight URLs. The backend imports them directly; do not download them first."
+              },
               "file_paths": {
                 "type": "array",
                 "minItems": 1,
@@ -1937,16 +1604,18 @@
                   "video_segmentation_type": {
                     "type": "string",
                     "enum": [
-                      "fixed",
-                      "content_aware"
-                    ]
+                      "content_aware",
+                      "fixed"
+                    ],
+                    "description": "Use content_aware unless the user explicitly requests fixed-length video intervals. Omit duration for content-aware segmentation."
                   },
                   "audio_segmentation_type": {
                     "type": "string",
                     "enum": [
-                      "fixed",
-                      "content_aware"
-                    ]
+                      "content_aware",
+                      "fixed"
+                    ],
+                    "description": "Use content_aware unless the user explicitly requests fixed-length audio intervals. Whole-video output requires content-aware segmentation for both audio and video."
                   },
                   "video_segment_duration": {
                     "type": [
@@ -1954,7 +1623,8 @@
                       "null"
                     ],
                     "minimum": 1,
-                    "maximum": 300
+                    "maximum": 300,
+                    "description": "Required integer seconds when video_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration."
                   },
                   "audio_segment_duration": {
                     "type": [
@@ -1962,7 +1632,8 @@
                       "null"
                     ],
                     "minimum": 1,
-                    "maximum": 300
+                    "maximum": 300,
+                    "description": "Required integer seconds when audio_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration."
                   },
                   "processing_model": {
                     "type": [
@@ -3379,16 +3050,18 @@
                   "video_segmentation_type": {
                     "type": "string",
                     "enum": [
-                      "fixed",
-                      "content_aware"
-                    ]
+                      "content_aware",
+                      "fixed"
+                    ],
+                    "description": "Use content_aware unless the user explicitly requests fixed-length video intervals. Omit duration for content-aware segmentation."
                   },
                   "audio_segmentation_type": {
                     "type": "string",
                     "enum": [
-                      "fixed",
-                      "content_aware"
-                    ]
+                      "content_aware",
+                      "fixed"
+                    ],
+                    "description": "Use content_aware unless the user explicitly requests fixed-length audio intervals. Whole-video output requires content-aware segmentation for both audio and video."
                   },
                   "video_segment_duration": {
                     "type": [
@@ -3396,7 +3069,8 @@
                       "null"
                     ],
                     "minimum": 1,
-                    "maximum": 300
+                    "maximum": 300,
+                    "description": "Required integer seconds when video_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration."
                   },
                   "audio_segment_duration": {
                     "type": [
@@ -3404,7 +3078,8 @@
                       "null"
                     ],
                     "minimum": 1,
-                    "maximum": 300
+                    "maximum": 300,
+                    "description": "Required integer seconds when audio_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration."
                   },
                   "processing_model": {
                     "type": [
@@ -3418,7 +3093,53 @@
                     "type": "boolean"
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "required": [
+                        "video_segmentation_type"
+                      ],
+                      "properties": {
+                        "video_segmentation_type": {
+                          "const": "fixed"
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "video_segment_duration"
+                      ],
+                      "properties": {
+                        "video_segment_duration": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "required": [
+                        "audio_segmentation_type"
+                      ],
+                      "properties": {
+                        "audio_segmentation_type": {
+                          "const": "fixed"
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "audio_segment_duration"
+                      ],
+                      "properties": {
+                        "audio_segment_duration": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                ]
               },
               "selection_filter": {
                 "type": [

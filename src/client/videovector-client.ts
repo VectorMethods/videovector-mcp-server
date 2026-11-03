@@ -1,4 +1,5 @@
 import type { McpToolResponse } from '../types/mcp.js';
+import type { ToolName } from '../tools/definitions.js';
 /**
  * VideoVector API Client
  *
@@ -889,17 +890,12 @@ export class VideoVectorClient {
   }
 
   /**
-   * Explicit foreground readiness signal. Credential checks and ordinary API
-   * requests never call this, so cache refreshes and polling cannot renew warmth.
+   * Explicit MCP tool-call readiness signal. Protocol initialization, discovery,
+   * credential checks and internal API polling never call this.
    * POST has no transport retry; the server owns receipt deduplication and leases.
    */
   async recordProcessingActivity(
-    activity:
-      | { reason: 'authentication' }
-      | {
-          reason: 'processing_intent';
-          operation: 'import_media' | 'analyze';
-        },
+    activity: { reason: 'processing_intent'; operation: ToolName },
     eventId: string = randomUUID()
   ): Promise<void> {
     try {
@@ -909,7 +905,7 @@ export class VideoVectorClient {
       });
     } catch {
       // Warming is advisory. Do not expose backend bodies/credentials or turn
-      // successful authentication or a real processing intent into a failure.
+      // a tool invocation into a failure.
       console.error('[videovector-mcp] Processing readiness unavailable; continuing.');
     }
   }

@@ -153,20 +153,20 @@ to 16 concurrent calls plus a 64-request queue with a five-second timeout.
 Plaintext keys are never written to caches or logs. Requests that combine
 `X-API-Key` and `Authorization` are rejected as ambiguous.
 
-Authenticated HTTP initialization and a local stdio session's initialized
-notification send one explicit `POST /auth/processing-activity` using the same
-credential. The control service starts API and LOW capacity without waiting for
-the main API to cold-start. New `import_media` and `analyze` submissions
-also signal processing intent before backend work.
-The server owns event receipts, coalescing and readiness windows (15 minutes
-for LOW, 30 minutes for API).
+Every authenticated `tools/call` for a published tool sends one explicit
+`POST /auth/processing-activity` before execution, using the same credential.
+This includes `analyze`, `import_media` (including progress reads), `save_prompt`
+(including prompt generation), `get_analysis`, `search`, and `browse` on both
+HTTP and stdio. Initialization, initialized notifications, tool listing,
+credential validation/cache refresh, token refresh and internal API polling
+never signal readiness. Control rejects MCP authentication-only activity,
+including initialization signals from older clients.
 
-These requests are advisory, bounded to three seconds (or the configured
-shorter timeout), and never automatically retried. Failure does not change
-authentication or tool results. An acknowledgement is not proof that startup
-has completed. Read-only credential validation, its cache refresh, token
-refresh, discovery, status polling and ordinary reads do not send
-readiness activity.
+The server owns receipts, 30-second per-user coalescing and readiness windows
+(15 minutes for enabled worker reserves, 30 minutes for API/MCP). Signals are
+advisory, bounded to three seconds (or the configured shorter timeout), and
+never automatically retried. Failure does not change tool results. An
+acknowledgement is not proof that startup has completed.
 
 OAuth access tokens are verified locally with the pinned WorkOS issuer,
 resource audience, and process-cached JWKS. Verification requires RS256,
@@ -209,7 +209,7 @@ One six-tool catalog is shared by stdio, API-key HTTP, and OAuth:
 
 There are no Simple/Full profiles or retired-name aliases. OAuth omits cloud source credentials, cloud import, and webhook arguments while keeping the same six names. Direct integrations can supply terminal-only task callbacks. Local paths are nested under `source.file_paths` and appear only on stdio. All schemas include conditional rules and examples; see the [hierarchical contract](docs/tool-contract.md) and [generated JSON Schema](artifacts/tool-contract.json).
 
-Analysis retains one durable ID across upload and processing. Observations wait at most 30 seconds; local transfers use the configured request timeout. Typed `next_action` distinguishes required input, progress, results, and errors. Continue observing within host/user controls, preserving the ID and retry identity. Pending does not mean stuck.
+Analysis retains one durable ID across upload and processing. Observations wait at most 30 seconds; local transfers use the configured request timeout. Typed `next_action` distinguishes required input, progress, results, and errors. Continue observing within host/user controls, preserving the ID and retry identity. Pending or a failed observation does not mean processing stopped. `terminal` confirms execution completion; `results.final` confirms the extraction snapshot, independently of later media and image readiness. Content-aware video/audio segmentation is the default. Choose fixed intervals only when the user explicitly requests them. New analysis consumes credits: never resubmit active work, and replace terminal work only on explicit user retry intent. `retry_same_submission` replays identical arguments/key to confirm the original delivery; it does not start a new execution.
 
 Local attachments upload directly to storage in resumable chunks of at most 8 MiB. The job-scoped grant authorizes JSON session and completion requests; it is never sent to storage. A retry asks the backend for the storage-confirmed byte offset and sends only the remaining bytes. The client verifies the authorized local file identity before each chunk and finalizes the exact attachment batch after every file is durable.
 
@@ -272,3 +272,5 @@ The optional `video_level` configuration contains `instructions_text` and
 available while whole-video synthesis and media/image enrichment continue. Use
 the reported phase and independent readiness rather than treating the first
 metadata page or main completion as completion of every artifact.
+
+Public HTTPS media and individual YouTube videos can be submitted with `source.urls` (one URL or up to eight URLs) to `analyze` or `import_media`. URL transfer is owned by the backend; clients keep the existing task ID and observation flow. `destination` applies to newly imported media.

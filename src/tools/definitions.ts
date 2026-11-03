@@ -1,7 +1,7 @@
 /** The single model-facing catalog. Native REST client methods are independent. */
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { MAX_ATTACHMENT_FILES } from '../attachments/limits.js';
-import { ANALYSIS_RESULT_SCHEMA, WORKFLOW_RESULT_SCHEMA } from './workflow-result-contract.js';
+import { ANALYSIS_RESULT_SCHEMA, SEARCH_RESULT_SCHEMA } from './workflow-result-contract.js';
 
 export const ATTACHMENT_FILES_SCHEMA = {
   type: 'array', minItems: 1, maxItems: MAX_ATTACHMENT_FILES,
@@ -35,7 +35,9 @@ const connector = { ...object({ provider: { type: 'string', enum: ['gcs', 's3', 
   { properties: { provider: { const: 'azure' }, config: object({ storage_account: string, container: string, tenant_id: string, client_id: string, client_secret: { ...string, writeOnly: true } }, ['storage_account', 'container', 'tenant_id', 'client_id', 'client_secret']) } },
 ] };
 function sourceSchema(analysis: boolean, options: ToolDefinitionOptions = {}): Schema {
+  const url = { type: 'string', minLength: 1, maxLength: 16384, format: 'uri', pattern: '^https://' };
   const selectors: Record<string, unknown> = {
+    urls: { oneOf: [url, { type: 'array', minItems: 1, maxItems: MAX_ATTACHMENT_FILES, items: url }], description: 'One public HTTPS media or individual YouTube URL, or up to eight URLs. The backend imports them directly; do not download them first.' },
     ...(options.includeLocalUpload === false ? {} : { file_paths: { type: 'array', minItems: 1, maxItems: MAX_ATTACHMENT_FILES, items: string, description: 'Local stdio paths within configured upload roots.' } }),
     ...(options.advertiseOAuth ? {} : { connector_id: string, connector }),
     ...(analysis ? { video_ids: ids, index_id: string, index_name: string, playground: { const: true, type: 'boolean' }, import_id: string } : {}),
@@ -141,12 +143,19 @@ const FILTER_CONDITION_SCHEMA_VARIANTS = Object.entries(
 );
 
 const EXECUTION_CONFIGURATION_PROPERTIES = {
-  video_segmentation_type: { type: 'string', enum: ['fixed', 'content_aware'] },
-  audio_segmentation_type: { type: 'string', enum: ['fixed', 'content_aware'] },
-  video_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300 },
-  audio_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300 },
+  video_segmentation_type: { type: 'string', enum: ['content_aware', 'fixed'], description: 'Use content_aware unless the user explicitly requests fixed-length video intervals. Omit duration for content-aware segmentation.' },
+  audio_segmentation_type: { type: 'string', enum: ['content_aware', 'fixed'], description: 'Use content_aware unless the user explicitly requests fixed-length audio intervals. Whole-video output requires content-aware segmentation for both audio and video.' },
+  video_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300, description: 'Required integer seconds when video_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration.' },
+  audio_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300, description: 'Required integer seconds when audio_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration.' },
   processing_model: { type: ['string', 'null'], minLength: 1, description: 'Model ID published by the billing pricing API.' },
   enable_image_embedding: { type: 'boolean' },
+};
+const EXECUTION_CONFIGURATION_SCHEMA = {
+  ...object(EXECUTION_CONFIGURATION_PROPERTIES),
+  allOf: ['video', 'audio'].map(media => ({
+    if: { required: [`${media}_segmentation_type`], properties: { [`${media}_segmentation_type`]: { const: 'fixed' } } },
+    then: { required: [`${media}_segment_duration`], properties: { [`${media}_segment_duration`]: { type: 'integer' } } },
+  })),
 };
 
 const SELECTION_FILTER_GROUP_SCHEMA = {
@@ -195,7 +204,7 @@ const searchFilters = { type: 'array', minItems: 1, maxItems: 4, items: {
 } };
 const promptDefinition = { ...object({ name: string, description: { type: ['string', 'null'] }, prompt_text: string, json_schema: { type: 'object', additionalProperties: true },
   video_level: { ...object({ instructions_text: { ...string, maxLength: 12000 }, json_schema: { type: 'object', additionalProperties: true } }, ['instructions_text', 'json_schema']), type: ['object', 'null'] }, semantic_indexing: { ...object({ disabled_segment_fields: { type: 'array', uniqueItems: true, items: string }, disabled_video_level_fields: { type: 'array', uniqueItems: true, items: string } }), type: ['object', 'null'] },
-  execution_config: object(EXECUTION_CONFIGURATION_PROPERTIES), selection_filter: SELECTION_FILTER_SCHEMA,
+  execution_config: EXECUTION_CONFIGURATION_SCHEMA, selection_filter: SELECTION_FILTER_SCHEMA,
 }, ['name', 'prompt_text', 'json_schema']) };
 const browseFields: Record<string, string[]> = {
   indexes: ['ids', 'name'], videos: ['ids', 'name', 'index_id', 'index_name'],
@@ -228,17 +237,17 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
   const all: Tool[] = [
     {
       name: TOOL_NAMES.ANALYZE, title: 'Analyze media',
-      description: 'Analyze media using exactly one of instruction or prompt_id and exactly one of files or source. Root files are native chat attachments: use the host-provided descriptors unchanged, including temporary authorized HTTPS URLs; do not ask users to publish videos. source selects existing media, a direct import, or local stdio file_paths within configured upload roots. Hosted tools cannot read local or sandbox paths. If the host has not supplied attachment descriptors, ask the user to attach files through a host that supports forwarding, or select existing VideoVector media. destination is only for new media. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips without OAuth headers; claim a file was saved only after saving succeeds.',
-      inputSchema: { ...object({ instruction: string, prompt_id: string, files: ATTACHMENT_FILES_SCHEMA, source, destination, execution: object(EXECUTION_CONFIGURATION_PROPERTIES), ...(oauth ? {} : { webhook }), wait_seconds: wait, idempotency_key: key, detail }),
+      description: 'Analyze media using exactly one of instruction or prompt_id and exactly one of files or source. Root files are native chat attachments: use the host-provided descriptors unchanged, including temporary authorized HTTPS URLs; do not ask users to publish videos. source.urls imports public HTTPS media or individual YouTube URLs. Other source selectors choose existing media, a cloud import, or local stdio file_paths within configured upload roots. Hosted tools cannot read local or sandbox paths. If the host has not supplied attachment descriptors, ask the user to attach files through a host that supports forwarding, or select existing VideoVector media. destination is only for new media. Default to content-aware segmentation; choose fixed intervals and durations only when the user explicitly requests them. Whole-video output requires content-aware audio and video segmentation. A new analysis consumes credits: never resubmit active work. A replacement analysis requires terminal=true on the original and explicit user intent to retry. Retry delivery only with retry_same_submission and identical arguments/key. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips without OAuth headers; claim a file was saved only after saving succeeds.',
+      inputSchema: { ...object({ instruction: string, prompt_id: string, files: ATTACHMENT_FILES_SCHEMA, source, destination, execution: EXECUTION_CONFIGURATION_SCHEMA, ...(oauth ? {} : { webhook }), wait_seconds: wait, idempotency_key: key, detail }),
         ...oneSelector(['instruction', 'prompt_id']), allOf: [
           { not: { required: ['files', 'source'] } },
-          { if: { required: ['destination', 'source'] }, then: oauth ? { not: {} } : { properties: { source: { anyOf: [...(options.includeLocalUpload === false ? [] : ['file_paths']), 'connector_id', 'connector'].map(name => ({ required: [name] })) } } } },
+          { if: { required: ['destination', 'source'] }, then: { properties: { source: { anyOf: ['urls', ...(options.includeLocalUpload === false ? [] : ['file_paths']), ...(oauth ? [] : ['connector_id', 'connector'])].map(name => ({ required: [name] })) } } } },
         ], examples: [ { instruction: 'Find product demonstrations', files: [{ file_id: 'file_123', download_url: 'https://files.example/clip.mp4' }] }, { prompt_id: 'prompt_123', source: { index_name: 'Interviews' } } ],
       } as Tool['inputSchema'], outputSchema: ANALYSIS_RESULT_SCHEMA,
     },
     {
       name: TOOL_NAMES.GET_ANALYSIS, title: 'Get analysis',
-      description: 'Read progress or results without rerunning analysis. Use analysis_id, or video_id for its latest complete analysis. Wait at most 30 seconds for progress; no revision argument is needed. Follow next_action using the same ID. Accepted parts are available while other parts continue; media and image indexing may finish after extraction. Refresh expired JSON/clip grants here, or use full detail with page_size/cursor when files are unavailable.',
+      description: 'Read progress or results without rerunning analysis. Use analysis_id, or video_id for its latest complete analysis. Wait at most 30 seconds for progress; no revision argument is needed. Follow next_action using the same ID. terminal confirms execution has ended; results.final confirms the extraction result is final; media and image indexing readiness are independent and may still change. Observation errors, timeouts and pending responses do not mean execution stopped and never authorize a new paid analysis. Accepted parts are available while other parts continue; media and image indexing may finish after extraction. Refresh expired JSON/clip grants here, or use full detail with page_size/cursor when files are unavailable.',
       inputSchema: { ...object({ analysis_id: string, video_id: string, wait_seconds: wait, detail, page_size: { type: 'integer', minimum: 1, maximum: 20, default: 1 }, cursor: string }), anyOf: [{ required: ['analysis_id'] }, { required: ['video_id'] }],
         allOf: [{ if: { anyOf: [{ required: ['cursor'] }, { required: ['page_size'] }] }, then: { required: ['detail'], properties: { detail: { const: 'full' } } } }],
         examples: [{ analysis_id: 'analysis_123' }, { video_id: 'video_123', detail: 'full', page_size: 1, wait_seconds: 0 }],
@@ -255,14 +264,14 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
         { required: ['scope'], anyOf: [{ required: ['query'] }, { required: ['image_data'] }, { required: ['filters'] }], ...excludes('search_id', 'cursor') },
         { required: ['search_id'], ...excludes('query', 'image_data', 'filters', 'scope', 'text_weight', 'image_weight', 'result_level', 'max_results', 'idempotency_key') },
       ], examples: [{ query: 'presenter on stage', scope: { index_name: 'Interviews' }, max_results: 25, page_size: 10 }, { search_id: 'search_123' }],
-      } as Tool['inputSchema'], outputSchema: WORKFLOW_RESULT_SCHEMA,
+      } as Tool['inputSchema'], outputSchema: SEARCH_RESULT_SCHEMA,
     },
     {
       name: TOOL_NAMES.IMPORT_MEDIA, title: 'Import media',
-      description: 'Import media without analysis, inspect an existing import, or retry failed files. New imports require exactly one of root files or source. files are native host-provided attachment descriptors with temporary authorized HTTPS URLs, not publicly published videos. Local stdio can use source.file_paths within configured upload roots; hosted tools cannot read local or sandbox paths. If no attachment descriptors are available, ask the user to attach files through a supporting host. destination selects the library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry with retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.',
+      description: 'Import media without analysis, inspect an existing import, or retry failed files. New imports require exactly one of root files or source. files are native host-provided attachment descriptors with temporary authorized HTTPS URLs, not publicly published videos. source.urls accepts public HTTPS media or individual YouTube URLs without client downloading. Local stdio can use source.file_paths within configured upload roots; hosted tools cannot read local or sandbox paths. If no attachment descriptors are available, ask the user to attach files through a supporting host. destination selects the library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry only terminal failed intake when the user explicitly requests recovery, using retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. This resumes the same intake; it is not a new analysis or a retry of active processing. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.',
       inputSchema: { ...object({ ...intakeProperties, import_id: string, retry: { type: 'boolean', const: true }, outputs_cursor: string, failures_cursor: string, page_size: { type: 'integer', minimum: 1, maximum: 100, default: 50 }, wait_seconds: wait, detail }), allOf: [
         { not: { required: ['files', 'source'] } },
-        { if: { required: ['title'] }, then: options.includeLocalUpload === false ? excludes('source') : { properties: { source: { required: ['file_paths'] } } } },
+        { if: { required: ['title'] }, then: { properties: { source: { anyOf: ['urls', ...(options.includeLocalUpload === false ? [] : ['file_paths'])].map(name => ({ required: [name] })) } } } },
         { if: { required: ['import_id'] }, then: { allOf: [
           excludes('source', 'destination', 'title', ...(oauth ? [] : ['webhook'])),
           { if: { required: ['files'] }, then: { required: ['retry'] } },

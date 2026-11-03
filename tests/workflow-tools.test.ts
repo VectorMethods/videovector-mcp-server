@@ -4,12 +4,39 @@ import { VideoVectorClient } from '../src/client/index.js';
 import { VideoVectorApiError } from '../src/types/index.js';
 import { executeTool, getToolDefinitions, getToolDefinition, getToolRequiredScope } from '../src/tools/index.js';
 const names = ['analyze','get_analysis','search','import_media','save_prompt','browse'];
-const data = { analysis_id:'analysis-1',status:'processing',stage:'extracting',message:'One video complete',scope:{type:'videos',video_ids:['video-1','video-2']},progress:{total:2,imported:2,completed:1,failed:0},results:{included_videos:1,final:false,download_url:'https://api.example/results?token=grant',expires_in_seconds:3600},next_action:{type:'continue_polling',after_seconds:15} };
+const data = { analysis_id:'analysis-1',status:'processing',terminal:false,stage:'extracting',message:'One video complete',scope:{type:'videos',video_ids:['video-1','video-2']},progress:{total:2,imported:2,completed:1,failed:0},results:{included_videos:1,final:false,download_url:'https://api.example/results?token=grant',expires_in_seconds:3600},next_action:{type:'continue_polling',after_seconds:15} };
 const response = (value: Record<string, unknown> = data, meta = {}) => ({content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value,_meta:meta});
 function client() { return { mcpTool:vi.fn().mockResolvedValue(response()) } as unknown as VideoVectorClient; }
 const parse = (result:any) => result.structuredContent ?? JSON.parse(result.content[0].text);
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('single six-tool facade', () => {
+  it.each(['api-key', 'oauth'] as const)('forwards URL sources once through the existing facade for %s', async authenticationKind => {
+    for (const name of ['analyze', 'import_media']) {
+      const backend = client();
+      if (name === 'import_media') vi.mocked(backend.mcpTool).mockResolvedValue(response({ import_id: 'import-1', status: 'pending', next_action: { type: 'continue_polling' } }));
+      const args = { ...(name === 'analyze' ? { instruction: 'Describe' } : { title: 'URL clip' }),
+        source: { urls: ['https://media.example/clip.mp4', 'https://youtu.be/video'] }, destination: { index_name: 'Research' }, wait_seconds: 0 };
+      const result = await executeTool(name, args, backend, { authenticationKind, transportMode: 'http' });
+      expect(result.isError).not.toBe(true);
+      expect(backend.mcpTool).toHaveBeenCalledExactlyOnceWith(name, expect.objectContaining(args), expect.any(Object));
+    }
+  });
+  it.each([{ urls: [] }, { urls: Array(9).fill('https://media.example/clip.mp4') },
+    { urls: 'https://media.example/clip.mp4', video_ids: ['v'] }])('rejects invalid URL source before admission: %j', async source => {
+    const backend = client();
+    const result = await executeTool('analyze', { instruction: 'Describe', source }, backend);
+    expect(result.isError).toBe(true); expect(backend.mcpTool).not.toHaveBeenCalled();
+  });
+  it.each(['video', 'audio'])('rejects incomplete fixed %s execution before upload or admission', async media => {
+    for (const duration of [undefined, null]) {
+      const backend = client();
+      const execution = { [`${media}_segmentation_type`]: 'fixed', ...(duration === null ? { [`${media}_segment_duration`]: null } : {}) };
+      const out = await executeTool('analyze', { instruction: 'Describe', execution,
+        files: [{ file_id: 'file-1', download_url: 'https://files.example/recording.mp4' }] }, backend);
+      expect(parse(out).next_action.type).toBe('correct_arguments');
+      expect(backend.mcpTool).not.toHaveBeenCalled();
+    }
+  });
   it('publishes identical names on both transports and OAuth, with no profile or aliases', () => {
     for(const includeLocalUpload of [true,false]) for(const advertiseOAuth of [true,false]) expect(getToolDefinitions({includeLocalUpload,advertiseOAuth}).map(t=>t.name)).toEqual(names);
     for(const name of ['find','process_media','list_indexes','list_analyses','upload_media','get_import_job','retry_import_job','get_export_status','cancel_prompt_run']) expect(getToolDefinition(name)).toBeUndefined();
@@ -55,6 +82,51 @@ describe('single six-tool facade', () => {
       expect(JSON.stringify(out)).not.toContain('private socket token');
       expect(backend.mcpTool).toHaveBeenCalledExactlyOnceWith(name,args,expect.objectContaining({idempotencyKey:undefined}));
     }
+  });
+  it.each([
+    ['database_unavailable', 500, 'service_error'],
+    ['authentication_service_unavailable', 503, 'authentication_service_unavailable'],
+    ['rate_limit_exceeded', 429, 'rate_limit_exceeded'],
+    ['empty_response', 502, 'empty_response'],
+    ['invalid_json_response', 502, 'invalid_json_response'],
+  ] as const)('observes the same run after transient %s without inferring execution failure', async (code, status, safeCode) => {
+    const backend = client();
+    const args = { analysis_id: 'analysis-1', wait_seconds: 0 };
+    vi.mocked(backend.mcpTool)
+      .mockRejectedValueOnce(new VideoVectorApiError('private lease/worker detail', code, status))
+      .mockResolvedValueOnce(response({ ...data, warnings: [{ code: 'observation_timeout', message: 'Processing continues.', retryable: true }] }))
+      .mockResolvedValueOnce(response({ ...data, status: 'completed', terminal: true, results: { included_videos: 2, final: true }, next_action: { type: 'download_and_answer' } }));
+    const interrupted = parse(await executeTool('get_analysis', args, backend));
+    expect(interrupted).toMatchObject({ analysis_id: 'analysis-1', code: safeCode, next_action: { type: 'continue_polling', tool: 'get_analysis' } });
+    expect(interrupted.message).toContain('does not establish that execution stopped');
+    expect(interrupted).not.toHaveProperty('status');
+    expect(interrupted).not.toHaveProperty('terminal');
+    expect(JSON.stringify(interrupted)).not.toContain('private lease');
+    const active = parse(await executeTool('get_analysis', args, backend));
+    expect(active).toMatchObject({ terminal: false, warnings: [{ code: 'observation_timeout' }] });
+    expect(active).not.toHaveProperty('errors');
+    expect(parse(await executeTool('get_analysis', args, backend))).toMatchObject({ status: 'completed', terminal: true });
+    expect(vi.mocked(backend.mcpTool).mock.calls.map(call => call[0])).toEqual(['get_analysis', 'get_analysis', 'get_analysis']);
+    for (const call of vi.mocked(backend.mcpTool).mock.calls) expect(call[1]).toEqual(args);
+  });
+  it('preserves ordinary account quota guidance during observation without claiming the run stopped', async () => {
+    const backend = client();
+    vi.mocked(backend.mcpTool).mockRejectedValue(new VideoVectorApiError('private', 'resource_rate_quota_exceeded', 429));
+    const out = parse(await executeTool('get_analysis', { analysis_id: 'a' }, backend));
+    expect(out).toMatchObject({ analysis_id: 'a', next_action: { type: 'request_input' } });
+    expect(out).not.toHaveProperty('terminal');
+    expect(out).not.toHaveProperty('status');
+    expect(backend.mcpTool).toHaveBeenCalledTimes(1);
+  });
+  it('preserves a terminal extraction snapshot with independently pending assets', async () => {
+    const backend = client();
+    const result = response({ ...data, status: 'completed', terminal: true, results: { included_videos: 2, final: true, videos: [{ video_id: 'video-1', readiness: { assets_ready: false, image_index_ready: false } }] } });
+    vi.mocked(backend.mcpTool).mockResolvedValue(result);
+    const out = await executeTool('get_analysis', { analysis_id: 'analysis-1', wait_seconds: 0 }, backend);
+    expect(out).toEqual(result);
+    const validator = new AjvJsonSchemaValidator().getValidator(getToolDefinition('get_analysis')!.outputSchema!);
+    expect(validator(out.structuredContent).valid).toBe(true);
+    expect(validator({ ...out.structuredContent, terminal: undefined }).valid).toBe(false);
   });
   it('returns same-analysis continuation after a real API response stream interruption without replaying its POST',async()=>{
     const fetch=vi.fn().mockResolvedValue({ok:true,text:async()=>{throw new TypeError('terminated');}});vi.stubGlobal('fetch',fetch);
