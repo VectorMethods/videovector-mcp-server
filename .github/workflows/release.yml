@@ -61,7 +61,7 @@ env:
 jobs:
   guard:
     name: Validate bot release request
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       resume: ${{ steps.validate.outputs.resume }}
@@ -117,7 +117,7 @@ jobs:
   build:
     name: Build immutable reproducible release bundle
     needs: guard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     # Recovery reads the private draft asset, which requires repository push access.
     permissions:
@@ -278,7 +278,7 @@ jobs:
     needs:
       - guard
       - build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       attestations: write
@@ -350,7 +350,7 @@ jobs:
       - guard
       - build
       - stage-draft
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     environment: npm
     permissions:
@@ -474,7 +474,7 @@ jobs:
       - build
       - stage-draft
       - publish-npm
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read

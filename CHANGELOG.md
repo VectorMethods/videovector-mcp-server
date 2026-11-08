@@ -1,12 +1,15 @@
-# 7.0.0 unified extraction contract
+# Changelog
+
+## 7.0.1 — Release runner compatibility
+
+- Pin the release validation runner to support the required Python 3.11.13 toolchain.
+- Carry the unified five-tool extraction contract described below. The 7.0.0 release attempt failed before publication because its runner could not install the pinned Python version; 7.0.0 was never published.
+
+## 7.0.0 — Unified extraction contract (unpublished release attempt)
 
 - Require segment and whole-media schemas and extract both scopes together, including images.
 - Remove fixed segmentation, prompt selection filters, and separate whole-media execution states.
 - Return extraction results through one page and cursor; keep downstream conditional search.
-
-# Changelog
-
-## 7.0.0
 
 - Remove the standalone `save_prompt` tool. Analyses already save generated prompts; return their verified identity as `scope.prompt_id` for reuse. The public catalog now contains five tools.
 - Give each tool a short, distinct purpose: extraction, result loading, large-collection search, transfer-only imports, or resource discovery. General Q&A uses loaded analysis results.

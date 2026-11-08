@@ -8,7 +8,7 @@ import { validateStdioSmoke } from '../scripts/validate-stdio-smoke.mjs';
 
 const names = ['analyze', 'get_analysis', 'search', 'import_media', 'browse'];
 const contract = {
-  server: { name: 'videovector', version: '7.0.0' },
+  server: { name: 'videovector', version: '7.0.1' },
   tools: [
     ...names.map(name => ({ name, availability: { transports: ['stdio', 'streamable-http'] } })),
     { name: 'http_only', availability: { transports: ['streamable-http'] } },
@@ -23,7 +23,7 @@ function response(toolNames = [...names].reverse(), version = contract.server.ve
 
 describe('release artifact stdio discovery', () => {
   it('compares the complete five-tool catalog without profiles or list-order assumptions', () => {
-    expect(validateStdioSmoke(response(), contract)).toEqual({ version: '7.0.0', toolCount: 5 });
+    expect(validateStdioSmoke(response(), contract)).toEqual({ version: '7.0.1', toolCount: 5 });
   });
   it.each([
     { toolNames: names.slice(1) },

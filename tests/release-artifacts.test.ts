@@ -443,6 +443,8 @@ describe('release registry verification', () => {
     expect(workflow).toContain('node-version: "24.14.0"');
     expect(workflow).not.toContain('node-version: "20.');
     expect(workflow).toContain('python-version: "3.11.13"');
+    expect(workflow.match(/runs-on: ubuntu-24\.04/g)).toHaveLength(5);
+    expect(workflow).not.toContain('runs-on: ubuntu-latest');
     expect(workflow).not.toContain('docker/setup-qemu-action@');
     expect(workflow).not.toContain('tonistiigi/binfmt');
     expect(workflow).not.toContain('NPM_BOOTSTRAP_TOKEN');
