@@ -119,8 +119,18 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 function payload(result: McpToolResponse): Record<string, unknown> { return result.structuredContent ?? {}; }
-function updateResult(result: McpToolResponse, changes: Record<string, unknown>): McpToolResponse {
+function updateResult(result: McpToolResponse, changes: Record<string, unknown>, navigationSource = result): McpToolResponse {
   const data = { ...payload(result), ...changes };
+  const previous = payload(navigationSource);
+  const promptId = record(previous.scope).prompt_id;
+  if (typeof data.analysis_id === 'string' && data.analysis_id === previous.analysis_id
+      && record(data.scope).prompt_id === undefined && typeof promptId === 'string' && promptId) {
+    data.scope = { ...record(data.scope), prompt_id: promptId };
+  }
+  const links = record(previous.next_action).links;
+  if (links !== undefined && data.next_action !== undefined && record(data.next_action).links === undefined) {
+    data.next_action = { ...record(data.next_action), links };
+  }
   return { ...result, structuredContent: data, content: [{ type: 'text', text: JSON.stringify(data) }] };
 }
 async function notifyProgress(context: WorkflowToolContext, message: string, completed?: number, total?: number): Promise<void> {
@@ -224,7 +234,8 @@ async function intake(name: 'analyze' | 'import_media', args: Record<string, unk
       const retryableObservation = observedData[idField] === id
         && record(observedData.next_action).type === 'continue_polling'
         && ['observation_unavailable', 'network_error', 'timeout_error'].includes(String(observedData.code));
-      if (!observed.isError || retryableObservation) result = observed;
+      if (!observed.isError) result = observed;
+      else if (retryableObservation) result = updateResult(observed, {}, result);
       else {
         result = updateResult(result, { message: 'Work was accepted, but reading its status needs attention. Retain the same task ID.', next_action: { type: 'review_error' } });
         result.isError = true;
@@ -252,7 +263,7 @@ export async function executeWorkflowTool(name: string, args: Record<string, unk
   try {
     validateArguments(name, args, context);
     if (name === 'analyze' || name === 'import_media') return await intake(name, args, client, context);
-    const mutation = name === 'save_prompt' || (name === 'search' && args.search_id === undefined && args.cursor === undefined);
+    const mutation = name === 'search' && args.search_id === undefined && args.cursor === undefined;
     const idempotencyKey = mutation ? args.idempotency_key as string | undefined ?? `${name}:${randomUUID()}` : undefined;
     const request = idempotencyKey ? { ...args, idempotency_key: idempotencyKey } : args;
     try {

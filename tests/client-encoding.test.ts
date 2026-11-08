@@ -52,19 +52,17 @@ describe('VideoVectorClient request encoding', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it.each([
-    ['index', 'all'],
-    ['index', 'matches'],
-    ['prompt_run', 'all'],
-    ['prompt_run', 'matches'],
-    ['search_snapshot', 'all'],
-  ])('accepts canonical %s export status with result_scope=%s through the retained native client API', async (exportType, resultScope) => {
-    const payload = exportStatusPayload({ export_type: exportType, export_params: { result_scope: resultScope } });
+    'index',
+    'prompt_run',
+    'search_snapshot',
+  ])('accepts canonical %s export status through the retained native client API', async (exportType) => {
+    const payload = exportStatusPayload({ export_type: exportType, export_params: {} });
     const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify([payload]), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     const client = new VideoVectorClient({ apiKey: 'sk_test_abc', baseUrl: 'https://example.com/api/v2', maxRetries: 0 });
 
     await expect(client.listExports()).resolves.toEqual([expect.objectContaining({
-      export_type: exportType, export_params: { result_scope: resultScope },
+      export_type: exportType, export_params: {},
     })]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

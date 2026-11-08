@@ -153,7 +153,7 @@ describe('hosted MCP OAuth authentication', () => {
       .set('Accept', 'application/json, text/event-stream')
       .send(listToolsRequest('anonymous-tools'));
     expect(listed.status).toBe(200);
-    expect(listed.body.result.tools).toHaveLength(6);
+    expect(listed.body.result.tools).toHaveLength(5);
     const names = listed.body.result.tools.map((tool: { name: string }) => tool.name);
     expect(names).toContain('get_analysis');
     for (const unpublishedTool of OAUTH_UNPUBLISHED_TOOLS) {
@@ -251,7 +251,7 @@ describe('hosted MCP OAuth authentication', () => {
       .send(listToolsRequest('oauth-tools'));
 
     expect(response.status).toBe(200);
-    expect(response.body.result.tools).toHaveLength(6);
+    expect(response.body.result.tools).toHaveLength(5);
     expect(response.body.result.tools.map((tool: { name: string }) => tool.name))
       .toContain('analyze');
     const names = response.body.result.tools.map((tool: { name: string }) => tool.name);
@@ -289,7 +289,7 @@ describe('hosted MCP OAuth authentication', () => {
     expect(context.activeRequests.size).toBe(0);
   });
 
-  it('preserves the same six-name HTTP tool surface for API-key clients', async () => {
+  it('preserves the same five-name HTTP tool surface for API-key clients', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal('fetch', fetchSpy);
     const { app } = createHttpApp(oauthHttpConfig);
@@ -301,7 +301,7 @@ describe('hosted MCP OAuth authentication', () => {
 
     expect(response.status).toBe(200);
     const names = response.body.result.tools.map((tool: { name: string }) => tool.name);
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(5);
     for (const retired of OAUTH_UNPUBLISHED_TOOLS) expect(names).not.toContain(retired);
     expect(names).toContain('analyze');
     for (const tool of response.body.result.tools as Array<Record<string, any>>) {

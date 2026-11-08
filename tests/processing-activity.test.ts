@@ -41,14 +41,14 @@ describe('explicit processing activity transport', () => {
   it('sends the existing credential and stable event to the canonical control route', async () => {
     const fetchSpy = vi.fn().mockImplementation(async () => activityResponse());
     vi.stubGlobal('fetch', fetchSpy);
-    await apiClient().recordProcessingActivity({ reason: 'processing_intent', operation: 'save_prompt' }, EVENT_ID);
+    await apiClient().recordProcessingActivity({ reason: 'processing_intent', operation: 'analyze' }, EVENT_ID);
     const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${config.baseUrl}/auth/processing-activity`);
     expect(init.method).toBe('POST');
     expect(init.headers).toMatchObject({ 'X-API-Key': API_KEY });
     expect(init.headers).not.toHaveProperty('Idempotency-Key');
     expect(JSON.parse(init.body as string)).toEqual({
-      event_id: EVENT_ID, surface: 'mcp', reason: 'processing_intent', operation: 'save_prompt',
+      event_id: EVENT_ID, surface: 'mcp', reason: 'processing_intent', operation: 'analyze',
     });
   });
 
@@ -72,7 +72,7 @@ describe('explicit processing activity transport', () => {
     ));
     vi.stubGlobal('fetch', fetchSpy);
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await expect(apiClient().recordProcessingActivity({ reason: 'processing_intent', operation: 'save_prompt' })).resolves.toBeUndefined();
+    await expect(apiClient().recordProcessingActivity({ reason: 'processing_intent', operation: 'analyze' })).resolves.toBeUndefined();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith('[videovector-mcp] Processing readiness unavailable; continuing.');
     expect(JSON.stringify(log.mock.calls)).not.toContain('private');
@@ -85,7 +85,7 @@ describe('explicit processing activity transport', () => {
     }));
     vi.stubGlobal('fetch', fetchSpy);
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const work = apiClient(timeout).recordProcessingActivity({ reason: 'processing_intent', operation: 'save_prompt' });
+    const work = apiClient(timeout).recordProcessingActivity({ reason: 'processing_intent', operation: 'analyze' });
     await vi.advanceTimersByTimeAsync(Math.min(timeout, 3_000));
     await expect(work).resolves.toBeUndefined();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -134,7 +134,6 @@ describe('foreground MCP triggers', () => {
   const toolArguments: Record<ToolName, Record<string, unknown>> = {
     analyze: { instruction: 'Summarize', source: { video_ids: ['video-1'] }, wait_seconds: 0 },
     import_media: { files: [{ file_id: 'file-1', download_url: 'https://media.example/video.mp4' }], wait_seconds: 0 },
-    save_prompt: { instruction: 'Extract decisions', save: false },
     get_analysis: { analysis_id: 'analysis-1', wait_seconds: 0 },
     search: { query: 'decisions', scope: { playground: true } },
     browse: { resource: 'indexes' },
@@ -170,11 +169,11 @@ describe('foreground MCP triggers', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it('does not warm unknown tools or unauthenticated tool calls', async () => {
+  it.each(['unknown', 'save_prompt'])('does not warm retired or unknown %s or unauthenticated tool calls', async name => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
     const activity = vi.spyOn(VideoVectorClient.prototype, 'recordProcessingActivity').mockResolvedValue();
     const { app } = createHttpApp(config);
-    const unknown = await send(app, { jsonrpc: '2.0', id: 'unknown', method: 'tools/call', params: { name: 'unknown' } });
+    const unknown = await send(app, { jsonrpc: '2.0', id: 'unknown', method: 'tools/call', params: { name } });
     expect(unknown.body.result.isError).toBe(true);
     const unauthenticated = await request(app).post('/mcp').set('Accept', 'application/json, text/event-stream')
       .send({ jsonrpc: '2.0', id: 'unauthenticated', method: 'tools/call', params: { name: 'browse', arguments: toolArguments.browse } });
@@ -194,10 +193,10 @@ describe('foreground MCP triggers', () => {
       await host.listTools();
       expect(activity).not.toHaveBeenCalled();
       await host.callTool({ name: 'browse', arguments: toolArguments.browse });
-      await host.callTool({ name: 'save_prompt', arguments: toolArguments.save_prompt });
+      await host.callTool({ name: 'analyze', arguments: toolArguments.analyze });
       expect(activity.mock.calls.map(([value]) => value)).toEqual([
         { reason: 'processing_intent', operation: 'browse' },
-        { reason: 'processing_intent', operation: 'save_prompt' },
+        { reason: 'processing_intent', operation: 'analyze' },
       ]);
     } finally {
       await host.close();

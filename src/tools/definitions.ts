@@ -11,7 +11,7 @@ export const ATTACHMENT_FILES_SCHEMA = {
     mime_type: { type: 'string' }, file_name: { type: 'string' },
   }, required: ['download_url', 'file_id'], additionalProperties: false },
 };
-export const TOOL_NAMES = { ANALYZE: 'analyze', GET_ANALYSIS: 'get_analysis', SEARCH: 'search', IMPORT_MEDIA: 'import_media', SAVE_PROMPT: 'save_prompt', BROWSE: 'browse' } as const;
+export const TOOL_NAMES = { ANALYZE: 'analyze', GET_ANALYSIS: 'get_analysis', SEARCH: 'search', IMPORT_MEDIA: 'import_media', BROWSE: 'browse' } as const;
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
 export type ToolRequiredScope = 'read' | 'write' | 'search';
 export type ToolTransport = 'stdio' | 'streamable-http';
@@ -49,163 +49,15 @@ function sourceSchema(analysis: boolean, options: ToolDefinitionOptions = {}): S
     ] }),
   };
 }
-export const FILTER_CONDITION_VALIDATION = {
-  max_conditions: 4,
-  allowed_request_fields: ['index_id', 'conditions', 'page_size', 'cursor', 'run_ids', 'index_ids'],
-  allowed_condition_fields: ['field', 'operator', 'value', 'type'],
-  supported_types: ['string', 'integer', 'number', 'boolean', 'array'],
-  operators_by_type: {
-    string: [
-      { value: 'equals', requires_value: true },
-      { value: 'contains', requires_value: true },
-      { value: 'starts_with', requires_value: true },
-      { value: 'ends_with', requires_value: true },
-      { value: 'is_empty', requires_value: false },
-      { value: 'is_not_empty', requires_value: false },
-    ],
-    integer: [
-      { value: 'equals', requires_value: true },
-      { value: 'greater_than', requires_value: true },
-      { value: 'greater_equal', requires_value: true },
-      { value: 'less_than', requires_value: true },
-      { value: 'less_equal', requires_value: true },
-    ],
-    number: [
-      { value: 'equals', requires_value: true },
-      { value: 'greater_than', requires_value: true },
-      { value: 'greater_equal', requires_value: true },
-      { value: 'less_than', requires_value: true },
-      { value: 'less_equal', requires_value: true },
-    ],
-    boolean: [{ value: 'equals', requires_value: true }],
-    array: [
-      { value: 'item_equals', requires_value: true },
-      { value: 'item_contains', requires_value: true },
-      { value: 'length_equals', requires_value: true },
-      { value: 'length_greater', requires_value: true },
-      { value: 'length_less', requires_value: true },
-      { value: 'is_empty', requires_value: false },
-      { value: 'is_not_empty', requires_value: false },
-    ],
-  },
-  forbidden_condition_fields: ['fuzzyMatch'],
-  pagination: {
-    cursor_field: 'cursor',
-    forbidden_fields: ['start_after'],
-  },
-} as const;
-
-const ARRAY_LENGTH_FILTER_OPERATORS = new Set(['length_equals', 'length_greater', 'length_less']);
-
-function getFilterConditionValueSchema(type: string, operator: string): Record<string, unknown> {
-  if (type === 'string') {
-    return { type: 'string' };
-  }
-  if (type === 'integer') {
-    return { type: 'integer' };
-  }
-  if (type === 'number') {
-    return { type: 'number' };
-  }
-  if (type === 'boolean') {
-    return { type: 'boolean' };
-  }
-  if (type === 'array' && ARRAY_LENGTH_FILTER_OPERATORS.has(operator)) {
-    return { type: 'integer', minimum: 0 };
-  }
-  if (type === 'array' && operator === 'item_contains') {
-    return { type: 'string' };
-  }
-  if (type === 'array' && operator === 'item_equals') {
-    return {
-      oneOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }],
-    };
-  }
-  return {};
-}
-
-const FILTER_CONDITION_SCHEMA_VARIANTS = Object.entries(
-  FILTER_CONDITION_VALIDATION.operators_by_type
-).flatMap(([type, operators]) =>
-  operators.map((operator) => ({
-    properties: {
-      type: { enum: [type] },
-      operator: { enum: [operator.value] },
-      ...(operator.requires_value
-        ? { value: getFilterConditionValueSchema(type, operator.value) }
-        : {}),
-    },
-    required: operator.requires_value
-      ? ['field', 'operator', 'type', 'value']
-      : ['field', 'operator', 'type'],
-    ...(operator.requires_value ? {} : { not: { required: ['value'] } }),
-  }))
-);
-
-const EXECUTION_CONFIGURATION_PROPERTIES = {
-  video_segmentation_type: { type: 'string', enum: ['content_aware', 'fixed'], description: 'Use content_aware unless the user explicitly requests fixed-length video intervals. Omit duration for content-aware segmentation.' },
-  audio_segmentation_type: { type: 'string', enum: ['content_aware', 'fixed'], description: 'Use content_aware unless the user explicitly requests fixed-length audio intervals. Whole-video output requires content-aware segmentation for both audio and video.' },
-  video_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300, description: 'Required integer seconds when video_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration.' },
-  audio_segment_duration: { type: ['integer', 'null'], minimum: 1, maximum: 300, description: 'Required integer seconds when audio_segmentation_type is fixed; otherwise omit. Use only an explicitly requested fixed length; do not invent a duration.' },
+const EXECUTION_CONFIGURATION_SCHEMA = object({
   processing_model: { type: ['string', 'null'], minLength: 1, description: 'Model ID published by the billing pricing API.' },
   enable_image_embedding: { type: 'boolean' },
-};
-const EXECUTION_CONFIGURATION_SCHEMA = {
-  ...object(EXECUTION_CONFIGURATION_PROPERTIES),
-  allOf: ['video', 'audio'].map(media => ({
-    if: { required: [`${media}_segmentation_type`], properties: { [`${media}_segmentation_type`]: { const: 'fixed' } } },
-    then: { required: [`${media}_segment_duration`], properties: { [`${media}_segment_duration`]: { type: 'integer' } } },
-  })),
-};
-
-const SELECTION_FILTER_GROUP_SCHEMA = {
-  type: 'object',
-  properties: {
-    logic: { type: 'string', enum: ['and', 'or'] },
-    conditions: {
-      type: 'array', minItems: 1, maxItems: 4,
-      items: {
-        type: 'object',
-        properties: {
-          field: { type: 'string', minLength: 1 },
-          operator: { type: 'string' },
-          type: { type: 'string', enum: FILTER_CONDITION_VALIDATION.supported_types },
-          item_type: { type: ['string', 'null'], enum: ['string', 'integer', 'number', 'boolean', null] },
-          value: {},
-        },
-        oneOf: FILTER_CONDITION_SCHEMA_VARIANTS.map(({ not, ...variant }) => (
-          not ? { ...variant, properties: { ...variant.properties, value: { type: 'null' } } } : variant
-        )),
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['logic', 'conditions'],
-  additionalProperties: false,
-};
-
-const SELECTION_FILTER_SCHEMA = {
-  type: ['object', 'null'],
-  description: 'Optional schema-bound selection after extraction. At most four conditions total. Fields and types must match the corresponding segment or video schema.',
-  properties: {
-    segment: { ...SELECTION_FILTER_GROUP_SCHEMA, type: ['object', 'null'] },
-    video: { ...SELECTION_FILTER_GROUP_SCHEMA, type: ['object', 'null'] },
-    level_logic: { type: 'string', enum: ['and', 'or'] },
-  },
-  required: ['level_logic'],
-  anyOf: [{ required: ['segment'] }, { required: ['video'] }],
-  additionalProperties: false,
-};
-
+});
 
 const searchFilters = { type: 'array', minItems: 1, maxItems: 4, items: {
   ...object({ field: string, operator: { type: 'string', enum: ['equals', 'greater_than', 'greater_equal', 'less_than', 'less_equal', 'contains', 'starts_with', 'ends_with', 'is_empty', 'is_not_empty', 'item_equals', 'item_contains', 'length_equals', 'length_greater', 'length_less'], default: 'equals' }, value: {} }, ['field']),
   if: { required: ['operator'], properties: { operator: { enum: ['is_empty', 'is_not_empty'] } } }, then: excludes('value'), else: { required: ['value'] },
 } };
-const promptDefinition = { ...object({ name: string, description: { type: ['string', 'null'] }, prompt_text: string, json_schema: { type: 'object', additionalProperties: true },
-  video_level: { ...object({ instructions_text: { ...string, maxLength: 12000 }, json_schema: { type: 'object', additionalProperties: true } }, ['instructions_text', 'json_schema']), type: ['object', 'null'] }, semantic_indexing: { ...object({ disabled_segment_fields: { type: 'array', uniqueItems: true, items: string }, disabled_video_level_fields: { type: 'array', uniqueItems: true, items: string } }), type: ['object', 'null'] },
-  execution_config: EXECUTION_CONFIGURATION_SCHEMA, selection_filter: SELECTION_FILTER_SCHEMA,
-}, ['name', 'prompt_text', 'json_schema']) };
 const browseFields: Record<string, string[]> = {
   indexes: ['ids', 'name'], videos: ['ids', 'name', 'index_id', 'index_name'],
   analyses: ['ids', 'index_id', 'index_name', 'video_ids', 'status'],
@@ -217,9 +69,6 @@ const importResultSchema: NonNullable<Tool['outputSchema']> = {
   ...object({ import_id: string, analysis_id: string, status: string, stage: string, message: string, scope: {type:'object'}, progress:{type:'object'},
     results:{type:'object'},files:{type:'object'},failures:{type:'object'},errors:{type:'array',items:{type:'object'}},next_action:nextAction,
   }, ['import_id','status','stage','progress','results','next_action']),
-};
-const promptResultSchema: NonNullable<Tool['outputSchema']> = {
-  ...object({ saved:{type:'boolean'},prompt_id:string,prompt:{type:'object'},definition:promptDefinition,next_action:nextAction }, ['saved','next_action']),
 };
 const browseResultSchema: NonNullable<Tool['outputSchema']> = {
   ...object({ resource:{type:'string',enum:Object.keys(browseFields)},entries:{type:'array',items:{type:'object'}},pagination:{type:'object'},next_action:nextAction }, ['resource','entries','pagination','next_action']),
@@ -237,7 +86,7 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
   const all: Tool[] = [
     {
       name: TOOL_NAMES.ANALYZE, title: 'Analyze media',
-      description: 'Analyze media using exactly one of instruction or prompt_id and exactly one of files or source. Root files are native chat attachments: use the host-provided descriptors unchanged, including temporary authorized HTTPS URLs; do not ask users to publish videos. source.urls imports public HTTPS media or individual YouTube URLs. Other source selectors choose existing media, a cloud import, or local stdio file_paths within configured upload roots. Hosted tools cannot read local or sandbox paths. If the host has not supplied attachment descriptors, ask the user to attach files through a host that supports forwarding, or select existing VideoVector media. destination is only for new media. Default to content-aware segmentation; choose fixed intervals and durations only when the user explicitly requests them. Whole-video output requires content-aware audio and video segmentation. A new analysis consumes credits: never resubmit active work. A replacement analysis requires terminal=true on the original and explicit user intent to retry. Retry delivery only with retry_same_submission and identical arguments/key. Returns analysis_id, progress, incremental accepted-part JSON and direct segment downloads. Retain the ID and follow next_action until terminal within host/user controls; after_seconds is a polling interval, not an ETA. Local transfers use the configured request timeout; observation is bounded to 30 seconds after upload. Download JSON/clips without OAuth headers; claim a file was saved only after saving succeeds.',
+      description: 'Extract segment and whole-media information together from attached files, media links, or saved media. Start here when the user asks to summarize, understand, classify, find moments, or answer a question requiring new extraction. Describe the desired fields and evidence clearly. Every extraction includes both scopes; use results or search for downstream filtering. Returns processing progress and available results or clip downloads. New processing uses credits.',
       inputSchema: { ...object({ instruction: string, prompt_id: string, files: ATTACHMENT_FILES_SCHEMA, source, destination, execution: EXECUTION_CONFIGURATION_SCHEMA, ...(oauth ? {} : { webhook }), wait_seconds: wait, idempotency_key: key, detail }),
         ...oneSelector(['instruction', 'prompt_id']), allOf: [
           { not: { required: ['files', 'source'] } },
@@ -247,7 +96,7 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
     },
     {
       name: TOOL_NAMES.GET_ANALYSIS, title: 'Get analysis',
-      description: 'Read progress or results without rerunning analysis. Use analysis_id, or video_id for its latest complete analysis. Wait at most 30 seconds for progress; no revision argument is needed. Follow next_action using the same ID. terminal confirms execution has ended; results.final confirms the extraction result is final; media and image indexing readiness are independent and may still change. Observation errors, timeouts and pending responses do not mean execution stopped and never authorize a new paid analysis. Accepted parts are available while other parts continue; media and image indexing may finish after extraction. Refresh expired JSON/clip grants here, or use full detail with page_size/cursor when files are unavailable.',
+      description: 'Read the extracted content and progress of an existing analysis. Load these results into context for general questions about a video, unless the needed content is already available. Also retrieves partial or final output and refreshes download links. Reading results does not start another analysis; continue observing an unfinished task until it reaches a terminal state.',
       inputSchema: { ...object({ analysis_id: string, video_id: string, wait_seconds: wait, detail, page_size: { type: 'integer', minimum: 1, maximum: 20, default: 1 }, cursor: string }), anyOf: [{ required: ['analysis_id'] }, { required: ['video_id'] }],
         allOf: [{ if: { anyOf: [{ required: ['cursor'] }, { required: ['page_size'] }] }, then: { required: ['detail'], properties: { detail: { const: 'full' } } } }],
         examples: [{ analysis_id: 'analysis_123' }, { video_id: 'video_123', detail: 'full', page_size: 1, wait_seconds: 0 }],
@@ -255,7 +104,7 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
     },
     {
       name: TOOL_NAMES.SEARCH, title: 'Search media',
-      description: 'Search extracted results with text, an image, metadata filters, or a combination. Filters apply before ranking. A new search requires scope selecting one library, videos, Playground, or historical analyses. Library/video scopes use latest complete results per video. max_results bounds the saved match set; page_size bounds this response. Resume with search_id and an optional cursor without rerunning. Prefer the included JSON download over large inline results.',
+      description: 'Find relevant videos or scenes in a large, already-processed index or collection whose extracted content cannot fit in chat context. Query by meaning, reference image, or metadata filters within an explicit scope. Returns a limited set of matching results and continuation pages. It retrieves existing information rather than extracting new details.',
       inputSchema: { ...object({ query: string, image_data: string, filters: searchFilters,
         scope: { ...object({ analysis_ids: ids, video_ids: ids, index_id: string, index_name: string, playground: { type: 'boolean', const: true } }), ...oneSelector(['analysis_ids', 'video_ids', 'index_id', 'index_name', 'playground']) },
         text_weight: { type: 'number', minimum: 0, maximum: 1 }, image_weight: { type: 'number', minimum: 0, maximum: 1 }, result_level: { type: 'string', enum: ['segment', 'video'], default: 'segment' },
@@ -268,7 +117,7 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
     },
     {
       name: TOOL_NAMES.IMPORT_MEDIA, title: 'Import media',
-      description: 'Import media without analysis, inspect an existing import, or retry failed files. New imports require exactly one of root files or source. files are native host-provided attachment descriptors with temporary authorized HTTPS URLs, not publicly published videos. source.urls accepts public HTTPS media or individual YouTube URLs without client downloading. Local stdio can use source.file_paths within configured upload roots; hosted tools cannot read local or sandbox paths. If no attachment descriptors are available, ask the user to attach files through a supporting host. destination selects the library. Use import_id alone to inspect progress, outputs_cursor/failures_cursor for pages. Retry only terminal failed intake when the user explicitly requests recovery, using retry=true and an idempotency_key; optional files renew expired attachment descriptors using the original file_ids. For failed analysis intake, use its analysis_id as import_id and follow the returned get_analysis action. This resumes the same intake; it is not a new analysis or a retry of active processing. Source, destination, prompt and title remain unchanged. Keep the returned import_id; analysis can later use source.import_id.',
+      description: 'Transfer attached files or linked media into VideoVector for later use, without requesting extraction. Use for upload, copy, or import jobs when the user has no question about the content or explicitly wants transfer only. Can import into Playground or an index, report progress, and resume a failed transfer when the user requests recovery.',
       inputSchema: { ...object({ ...intakeProperties, import_id: string, retry: { type: 'boolean', const: true }, outputs_cursor: string, failures_cursor: string, page_size: { type: 'integer', minimum: 1, maximum: 100, default: 50 }, wait_seconds: wait, detail }), allOf: [
         { not: { required: ['files', 'source'] } },
         { if: { required: ['title'] }, then: { properties: { source: { anyOf: ['urls', ...(options.includeLocalUpload === false ? [] : ['file_paths'])].map(name => ({ required: [name] })) } } } },
@@ -281,13 +130,8 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
       } as Tool['inputSchema'], outputSchema: importResultSchema,
     },
     {
-      name: TOOL_NAMES.SAVE_PROMPT, title: 'Save prompt',
-      description: 'Generate a reusable prompt from instruction or save an explicit definition. Supply prompt_id to update an owned prompt. save defaults to true; save=false returns a draft without persistence. Definitions contain extraction schemas and optional saved execution/selection settings. Reuse the same idempotency_key when retrying a save.',
-      inputSchema: { ...object({ instruction: string, definition: promptDefinition, prompt_id: string, save: { type: 'boolean', default: true }, idempotency_key: key, detail }), ...oneSelector(['instruction', 'definition']), examples: [{ instruction: 'Extract visible brands and confidence', save: true }, { prompt_id: 'prompt_123', instruction: 'Also identify the product category', save: false }] } as Tool['inputSchema'], outputSchema: promptResultSchema,
-    },
-    {
       name: TOOL_NAMES.BROWSE, title: 'Browse media resources',
-      description: 'Read indexes, videos, analyses, imports, or prompts. Choose resource first; optional ids select exact records and page_size/cursor paginate. name filters indexes/videos/prompts. index_id or index_name scopes videos/analyses/imports. video_ids filters analyses; status filters analyses/imports; include_defaults and active_only apply only to prompts. No creation, retries, exports, or webhook administration.',
+      description: 'Find saved indexes, videos, analyses, imports, or prompts in the account. Use names, identifiers, or resource-specific filters to locate an item, inspect its basic information, or choose an existing processing result. Returns resource records and paginated lists; it does not search inside extracted video content or start processing.',
       inputSchema: { ...object({ resource: { type: 'string', enum: Object.keys(browseFields) }, ids, name: string, index_id: string, index_name: string, video_ids: ids, status: string, include_defaults: { type: 'boolean', default: true }, active_only: { type: 'boolean', default: true }, page_size: pageSize, cursor: string, detail }, ['resource']),
         oneOf: Object.entries(browseFields).map(([resource, allowed]) => ({ properties: { resource: { const: resource } }, ...excludes(...browseSelectors.filter(name => !allowed.includes(name))) })),
         allOf: [{ not: { required: ['index_id', 'index_name'] } }, { not: { required: ['ids', 'name'] } }],
@@ -300,7 +144,7 @@ function definitions(options: ToolDefinitionOptions = {}): Tool[] {
     ...(['analyze', 'import_media'].includes(tool.name) ? { _meta: { 'openai/fileParams': ['files'] } } : {}),
   }));
 }
-export function getToolCategory(name: string): string { return name === 'search' ? 'Search' : name === 'save_prompt' ? 'Prompts' : name === 'browse' ? 'Discovery' : 'Media'; }
+export function getToolCategory(name: string): string { return name === 'search' ? 'Search' : name === 'browse' ? 'Discovery' : 'Media'; }
 export function getToolAvailability(_name: string): ToolAvailability { return { transports: ['stdio', 'streamable-http'] }; }
 export function getToolRequiredScope(name: string, args?: Record<string, unknown>): ToolRequiredScope {
   if (name === 'search') return 'search';
@@ -309,8 +153,11 @@ export function getToolRequiredScope(name: string, args?: Record<string, unknown
 }
 export function getToolAnnotations(name: string, options: ToolDefinitionOptions = {}): NonNullable<Tool['annotations']> {
   const read = ['browse', 'get_analysis'].includes(name);
-  const callbacks = !options.advertiseOAuth && ['analyze', 'import_media'].includes(name);
-  return { readOnlyHint: read, destructiveHint: callbacks || name === 'save_prompt', idempotentHint: read, openWorldHint: callbacks };
+  const importsMedia = ['analyze', 'import_media'].includes(name);
+  const callbacks = !options.advertiseOAuth && importsMedia;
+  // Both OAuth and direct clients can import user-supplied public media URLs.
+  // Disabling callbacks does not restrict those tools to a private workspace.
+  return { readOnlyHint: read, destructiveHint: callbacks, idempotentHint: read, openWorldHint: importsMedia };
 }
 export function getValidationToolDefinitions(options: ToolDefinitionOptions = {}): Tool[] {
   const selected = definitions(options);

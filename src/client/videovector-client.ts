@@ -147,7 +147,6 @@ const EXPORT_QUEUE_STATUS_VALUES = new Set([
 ]);
 const PUBLIC_EXPORT_PARAM_FIELDS = new Set([
   'prompt_run_ids',
-  'result_scope',
   'destination_connector_id',
   'destination_base_path',
   'destination_subpath',
@@ -247,10 +246,7 @@ function isPublicExportParams(value: unknown): value is Record<string, unknown> 
   }
 
   return (
-    (value.result_scope === undefined
-      || value.result_scope === 'all'
-      || value.result_scope === 'matches')
-    && (value.destination_connector_id === undefined
+    (value.destination_connector_id === undefined
       || isNullableNonEmptyString(value.destination_connector_id))
     && (value.destination_base_path === undefined
       || isNullableString(value.destination_base_path))
@@ -893,7 +889,7 @@ export class VideoVectorClient {
     });
   }
 
-  async mcpTool(name: 'analyze' | 'get_analysis' | 'search' | 'import_media' | 'save_prompt' | 'browse', args: Record<string, unknown>, options: { idempotencyKey?: string; signal?: AbortSignal; deadline?: number } = {}): Promise<McpToolResponse> {
+  async mcpTool(name: 'analyze' | 'get_analysis' | 'search' | 'import_media' | 'browse', args: Record<string, unknown>, options: { idempotencyKey?: string; signal?: AbortSignal; deadline?: number } = {}): Promise<McpToolResponse> {
     const result = await this.request<McpToolResponse>('POST', `/workflow/mcp/${name}`, {
       body: args, signal: options.signal, deadline: options.deadline ?? Date.now() + 30000,
       ...(options.idempotencyKey ? { headers: { 'Idempotency-Key': options.idempotencyKey } } : {}),

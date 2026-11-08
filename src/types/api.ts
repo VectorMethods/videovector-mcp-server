@@ -245,18 +245,6 @@ export interface SegmentRunProcessingStatus {
   attempt_id?: string | null;
 }
 
-export interface VideoLevelProcessingStatus {
-  status: string;
-  result_available: boolean;
-  successful_segment_count: number;
-  failed_segment_count: number;
-  started_at?: string | null;
-  completed_at?: string | null;
-  updated_at?: string | null;
-  error_message?: string | null;
-  attempt_id?: string | null;
-}
-
 export interface PromptRunProcessingStatus {
   total_parts?: number;
   completed_parts?: number;
@@ -276,7 +264,6 @@ export interface PromptRunProcessingStatus {
   created_at?: string | null;
   updated_at?: string | null;
   attempt_id?: string | null;
-  video_level?: VideoLevelProcessingStatus | null;
   segments: SegmentRunProcessingStatus[];
 }
 
@@ -495,10 +482,9 @@ export interface Prompt {
   description: string;
   prompt_text: string;
   json_schema: Record<string, unknown>;
-  video_level: PromptVideoLevelConfig | null;
+  video_level: PromptVideoLevelConfig;
   semantic_indexing: PromptSemanticIndexingConfig;
   execution_config?: PromptExecutionConfig;
-  selection_filter?: PromptSelectionFilter | null;
   is_active: boolean;
   created_at: string;
 }
@@ -542,26 +528,9 @@ export interface PromptSemanticIndexingConfig {
   disabled_video_level_fields: string[];
 }
 
-export interface PromptSelectionFilter {
-  segment?: { logic: 'and' | 'or'; conditions: FilterCondition[] } | null;
-  video?: { logic: 'and' | 'or'; conditions: FilterCondition[] } | null;
-  level_logic: 'and' | 'or';
-}
-
 export interface PromptExecutionConfig {
-  video_segmentation_type: VideoSegmentationType;
-  audio_segmentation_type: AudioSegmentationType;
-  video_segment_duration: number | null;
-  audio_segment_duration: number | null;
   processing_model: string | null;
   enable_image_embedding: boolean;
-}
-
-export interface PromptRunSelectionSummary {
-  status: 'not_applicable' | 'pending' | 'ready' | 'failed';
-  selected_media_count: number;
-  selected_video_count: number;
-  selected_segment_count: number;
 }
 
 // ============================================================================
@@ -575,8 +544,6 @@ export type PromptRunStatus =
   | 'completed_with_failures'
   | 'failed'
   | 'cancelled';
-export type VideoSegmentationType = 'fixed' | 'content_aware';
-export type AudioSegmentationType = 'fixed' | 'content_aware';
 
 export interface ExecutePromptTarget {
   type: 'index' | 'videos' | 'playground';
@@ -587,10 +554,6 @@ export interface ExecutePromptTarget {
 export interface ExecutePromptRequest {
   prompt_id: string;
   target: ExecutePromptTarget;
-  video_segmentation_type?: VideoSegmentationType;
-  audio_segmentation_type?: AudioSegmentationType;
-  video_segment_duration?: number | null;
-  audio_segment_duration?: number | null;
   processing_model?: string | null;
   enable_image_embedding?: boolean;
 }
@@ -617,11 +580,6 @@ export interface PromptRun {
   cancelled_videos: number;
   total_videos: number;
   error_message: string | null;
-  video_segmentation_type: string;
-  audio_segmentation_type: string;
-  image_segmentation_type: string;
-  video_segment_duration: number | null;
-  audio_segment_duration: number | null;
   created_new_segments: boolean;
   processing_model: string | null;
   total_video_seconds: number;
@@ -640,17 +598,10 @@ export interface PromptRun {
   completed_segments: number;
   field_extraction_failures: number;
   field_extraction_succeeded: boolean | null;
-  video_level_enabled: boolean;
-  video_level_total_items: number;
-  video_level_completed_items: number;
-  video_level_failed_items: number;
-  video_level_partial_items: number;
   billing_estimated_mt: number;
   billing_actual_mt: number;
   billing_status: string | null;
   billing_error: string | null;
-  selection_summary?: PromptRunSelectionSummary;
-  selection_filter?: PromptSelectionFilter | null;
   reuse_summary?: { target_media_count: number; reused_media_count: number; fresh_media_count: number };
   marker: MarkerInfo;
 }
@@ -753,10 +704,9 @@ export interface CreatePromptRequest {
   description?: string;
   prompt_text: string;
   json_schema: Record<string, unknown>;
-  video_level?: PromptVideoLevelConfig | null;
+  video_level: PromptVideoLevelConfig;
   semantic_indexing?: PromptSemanticIndexingConfig | null;
   execution_config?: Partial<PromptExecutionConfig>;
-  selection_filter?: PromptSelectionFilter | null;
 }
 
 export interface UpdatePromptRequest {
@@ -764,12 +714,9 @@ export interface UpdatePromptRequest {
   description?: string;
   prompt_text?: string;
   json_schema?: Record<string, unknown>;
-  video_level?: PromptVideoLevelConfig | null;
+  video_level?: PromptVideoLevelConfig;
   semantic_indexing?: PromptSemanticIndexingConfig | null;
   execution_config?: Partial<PromptExecutionConfig>;
-  selection_filter?: PromptSelectionFilter | null;
-  clear_selection_filter?: boolean;
-  clear_video_level?: boolean;
 }
 
 // ============================================================================

@@ -65,9 +65,12 @@ describe('native analysis protocol', () => {
       .send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'get_analysis', arguments: args } });
     const unavailable = await send(1);
     expect(unavailable.status).toBe(200);
-    expect(unavailable.body.result).toMatchObject({ isError: true, structuredContent: { analysis_id: 'active-analysis', cursor: 'page-1', next_action: { type: 'continue_polling' } } });
-    expect(unavailable.body.result.structuredContent).not.toHaveProperty('status');
-    expect(unavailable.body.result.structuredContent).not.toHaveProperty('terminal');
+    expect(unavailable.body.result.isError).toBe(true);
+    expect(unavailable.body.result).not.toHaveProperty('structuredContent');
+    const error = JSON.parse(unavailable.body.result.content[0].text);
+    expect(error).toMatchObject({ analysis_id: 'active-analysis', cursor: 'page-1', next_action: { type: 'continue_polling' } });
+    expect(error).not.toHaveProperty('status');
+    expect(error).not.toHaveProperty('terminal');
     const complete = await send(2);
     expect(complete.body.result.isError).not.toBe(true);
     expect(complete.body.result.structuredContent).toMatchObject({ analysis_id: 'active-analysis', terminal: true });
@@ -115,7 +118,7 @@ describe('native analysis protocol', () => {
     const initialized = await send('init', 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'local-native-test', version: '1' } });
     expect(initialized.status).toBe(200);
     expect(initialized.body.result.serverInfo.name).toBe('videovector');
-    expect(initialized.body.result.instructions).toContain('Default to content-aware');
+    expect(initialized.body.result.instructions).toContain('segment and whole-media fields together');
     expect(initialized.body.result.instructions).toContain('Never resubmit an active analysis');
     expect(initialized.body.result.instructions).toContain('explicit user intent to retry');
     expect(initialized.body.result.instructions).toContain('An observation error does not prove execution stopped');
@@ -123,8 +126,8 @@ describe('native analysis protocol', () => {
     const find = listed.body.result.tools.find((tool: any) => tool.name === 'analyze');
     expect(find.inputSchema.properties.files.maxItems).toBe(8);
     for (const media of ['video', 'audio']) {
-      expect(find.inputSchema.properties.execution.properties[`${media}_segmentation_type`].enum).toEqual(['content_aware', 'fixed']);
-      expect(find.inputSchema.properties.execution.properties[`${media}_segment_duration`]).toMatchObject({ type: ['integer', 'null'], minimum: 1, maximum: 300 });
+      expect(find.inputSchema.properties.execution.properties[`${media}_segmentation_type`]).toBeUndefined();
+      expect(find.inputSchema.properties.execution.properties[`${media}_segment_duration`]).toBeUndefined();
       const incomplete = await send(`invalid-${media}`, 'tools/call', { name: 'analyze', arguments: {
         instruction: 'Find cars', files, execution: { [`${media}_segmentation_type`]: 'fixed' },
       } });

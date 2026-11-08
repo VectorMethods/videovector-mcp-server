@@ -20,24 +20,13 @@ function schemaValidator() {
 }
 
 describe('published JSON Schema validity', () => {
-  it.each(transports)('requires explicit fixed durations in strict execution contracts for $name', ({ options }) => {
-    const ajv = schemaValidator();
-    const tools = getValidationToolDefinitions(options);
-    const analyze = ajv.compile(tools.find(tool => tool.name === 'analyze')!.inputSchema);
-    const save = ajv.compile(tools.find(tool => tool.name === 'save_prompt')!.inputSchema);
-    for (const media of ['video', 'audio']) {
-      const execution = { [`${media}_segmentation_type`]: 'fixed' };
-      const request = { prompt_id: 'prompt-1', source: { video_ids: ['video-1'] }, execution };
-      const definition = { name: 'Example', prompt_text: 'Describe', json_schema: { type: 'object' }, execution_config: execution };
-      expect(analyze(request)).toBe(false);
-      expect(save({ definition })).toBe(false);
-      for (const duration of [null, 0, 301]) {
-        expect(analyze({ ...request, execution: { ...execution, [`${media}_segment_duration`]: duration } })).toBe(false);
-      }
-      expect(analyze({ ...request, execution: { ...execution, [`${media}_segment_duration`]: 120 } })).toBe(true);
-      expect(save({ definition: { ...definition, execution_config: { ...execution, [`${media}_segment_duration`]: 120 } } })).toBe(true);
+  it.each(transports)('accepts only model and image-indexing execution overrides for $name', ({ options }) => {
+    const analyze = schemaValidator().compile(getValidationToolDefinitions(options).find(tool => tool.name === 'analyze')!.inputSchema);
+    const request = { prompt_id: 'prompt-1', source: { video_ids: ['video-1'] } };
+    expect(analyze({ ...request, execution: { processing_model: 'model-1', enable_image_embedding: false } })).toBe(true);
+    for (const field of ['video_segmentation_type', 'audio_segmentation_type', 'video_segment_duration', 'audio_segment_duration', 'selection_filter']) {
+      expect(analyze({ ...request, execution: { [field]: 'fixed' } })).toBe(false);
     }
-    expect(analyze({ prompt_id: 'prompt-1', source: { video_ids: ['video-1'] }, execution: { enable_image_embedding: false } })).toBe(true);
   });
   it.each(catalogs)('compiles every input and output schema for $name', ({ options, catalog }) => {
     const ajv = schemaValidator();
@@ -109,7 +98,7 @@ describe('published JSON Schema validity', () => {
     }
   });
 
-  it('retains structural cloud-provider configurations and typed filter alternatives', () => {
+  it('retains structural cloud-provider configurations', () => {
     const tools = getToolDefinitions({ includeLocalUpload: false });
     const analyze = tools.find(tool => tool.name === 'analyze')!;
     const source = analyze.inputSchema.properties!.source as any;
@@ -123,12 +112,6 @@ describe('published JSON Schema validity', () => {
     expect(configurations.gcs.properties.credentials_json).toMatchObject({ type: 'object', writeOnly: true });
     expect(configurations.s3.properties.aws_secret_access_key).toMatchObject({ type: 'string', writeOnly: true });
 
-    const prompt = tools.find(tool => tool.name === 'save_prompt')!.inputSchema.properties!.definition as any;
-    const variants = prompt.properties.selection_filter.properties.segment.properties.conditions.items.oneOf;
-    expect(variants.map((branch: any) => branch.properties.operator.enum[0])).toContain('item_equals');
-    const arrayEquals = variants.find((branch: any) => branch.properties.type.enum[0] === 'array'
-      && branch.properties.operator.enum[0] === 'item_equals');
-    expect(arrayEquals.properties.value.oneOf).toEqual([{ type: 'string' }, { type: 'number' }, { type: 'boolean' }]);
   });
 
   it('keeps selector constraints in the canonical validator without duplicating them in presentation', () => {

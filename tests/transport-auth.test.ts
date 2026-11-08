@@ -150,7 +150,7 @@ describe('stateless HTTP transport authentication', () => {
       .set('Accept', 'application/json, text/event-stream')
       .send(listToolsRequest('simple-tools'));
     const names = listed.body.result.tools.map((tool: { name: string }) => tool.name);
-    expect(names).toEqual(['analyze', 'get_analysis', 'search', 'import_media', 'save_prompt', 'browse']);
+    expect(names).toEqual(['analyze', 'get_analysis', 'search', 'import_media', 'browse']);
     for (const tool of listed.body.result.tools) {
       expect(tool._meta?.ui).toBeUndefined();
       expect(tool._meta?.['openai/outputTemplate']).toBeUndefined();
